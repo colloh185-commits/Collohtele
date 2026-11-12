@@ -1,0 +1,6 @@
+{
+  "name": "Telefam",
+  "description": "Offline-first family messaging and rate-limited OTP authentication built with KMP, C++ core engine, and Go backend.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

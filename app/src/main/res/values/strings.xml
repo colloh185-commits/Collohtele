@@ -1,0 +1,173 @@
+<resources>
+    <string name="app_name">Telefam</string>
+    <string name="brand_tagline">Stay connected. Stay together.</string>
+
+    <!-- Email Auth Screen -->
+    <string name="auth_email_title">Enter Your Email</string>
+    <string name="auth_email_subtitle">Enter your email to get OTP</string>
+    <string name="auth_email_label">Email</string>
+    <string name="auth_email_placeholder">Enter your email</string>
+    <string name="auth_send_otp">Send OTP</string>
+    <string name="auth_or">or</string>
+    <string name="auth_continue_google">Continue with Google</string>
+    <string name="auth_continue_apple">Continue with Apple</string>
+
+    <!-- OTP Verification Screen -->
+    <string name="auth_otp_title">Enter OTP</string>
+    <string name="auth_otp_subtitle">We sent a verification code to</string>
+    <string name="auth_otp_link_hint">Enter the code or tap the verification link in your email</string>
+    <string name="auth_verify_otp">Verify OTP</string>
+    <string name="auth_resend_in_prefix">Resend code in</string>
+    <string name="auth_after_prefix">After</string>
+    <string name="auth_you_can_prefix">you can</string>
+    <string name="auth_resend_code">Resend code</string>
+    <string name="auth_change_email">Change email</string>
+
+    <!-- Profile Setup Screen -->
+    <string name="profile_setup_title">Profile Setup</string>
+    <string name="profile_setup_subtitle">Tell us about yourself</string>
+    <string name="profile_upload_photo">Upload Profile Photo</string>
+    <string name="profile_upload_photo_desc">Add a clear photo to help your friends recognize you.</string>
+    <string name="profile_full_name">Full Name</string>
+    <string name="profile_full_name_hint">Enter your full name</string>
+    <string name="profile_username">Username</string>
+    <string name="profile_username_hint">Choose a username</string>
+    <string name="profile_phone">Phone Number</string>
+    <string name="profile_phone_hint">Enter your phone number</string>
+    <string name="profile_gender">Gender</string>
+    <string name="profile_gender_hint">Select gender</string>
+    <string name="profile_dob">Date of Birth</string>
+    <string name="profile_dob_hint">Select date of birth</string>
+    <string name="profile_location">Location</string>
+    <string name="profile_location_hint">Enter your city or country</string>
+    <string name="profile_bio">Bio</string>
+    <string name="profile_bio_hint">Tell us something about yourself...</string>
+    <string name="profile_continue">Continue</string>
+    <string name="profile_crop_title">Adjust Photo</string>
+    <string name="profile_crop_apply">Use Photo</string>
+    <string name="profile_crop_cancel">Cancel</string>
+    <string name="profile_search_country">Search country or code</string>
+    <string name="profile_age_error">You must be at least 13 years old to use Telefam.</string>
+    <string name="profile_username_taken">This username is already taken.</string>
+    <string name="profile_username_invalid">Username must be 3 to 24 letters, numbers, or underscores.</string>
+    <string name="profile_required_error">Please complete all required profile fields.</string>
+
+    <!-- Home Screen -->
+    <string name="home_search_placeholder">Search chats, people, groups</string>
+    <string name="home_start_conversation">Start a conversation</string>
+    <string name="home_start_conversation_desc">Tap the button below to chat with your friends, family or groups</string>
+    <string name="home_start_chat">Start chat</string>
+    <string name="nav_chats">Chats</string>
+    <string name="nav_contacts">Contacts</string>
+    <string name="nav_post">Post</string>
+    <string name="nav_feeds">Feeds</string>
+    <string name="nav_profile">Profile</string>
+    <string name="coming_soon_title">Coming soon</string>
+    <string name="coming_soon_subtitle">This feature is on the way in an upcoming Telefam update.</string>
+
+    <!-- Contacts Screen -->
+    <string name="contacts_search_placeholder">Search by name or username</string>
+    <string name="contacts_tab_all">All</string>
+    <string name="contacts_tab_suggestions">Suggestions</string>
+    <string name="contacts_tab_followers">Followers</string>
+    <string name="contacts_tab_following">Following</string>
+    <string name="contacts_tab_friends">Friends</string>
+    <string name="contacts_action_follow">Follow</string>
+    <string name="contacts_action_following">Following</string>
+    <string name="contacts_action_follow_back">Follow back</string>
+    <string name="contacts_action_friends">Friends</string>
+    <string name="contacts_empty_title">No people found</string>
+    <string name="contacts_empty_subtitle">Try a different search or filter tab.</string>
+    <string name="contacts_rate_limited">Try again later</string>
+    <string name="cd_clear_search">Clear search</string>
+    <string name="cd_contact_avatar">Contact avatar</string>
+
+    <!-- Theme Labels -->
+    <string name="theme_system">System</string>
+    <string name="theme_light">Light</string>
+    <string name="theme_dark">Dark</string>
+
+    <!-- Sanitized Generic Error Messages -->
+    <string name="error_generic">An error has occurred. Please try again.</string>
+    <string name="error_invalid_email">Please enter a valid email address.</string>
+    <string name="error_invalid_otp">Please enter the 6-digit verification code.</string>
+    <string name="error_try_later">An error has occurred. Please try again later.</string>
+
+    <!-- Accessibility Content Descriptions -->
+    <string name="cd_telefam_logo">Telefam logo</string>
+    <string name="cd_email_icon">Email icon</string>
+    <string name="cd_google_icon">Google logo</string>
+    <string name="cd_back">Go back</string>
+    <string name="cd_upload_photo">Upload profile photo</string>
+    <string name="cd_more_options">More options</string>
+    <string name="cd_theme_toggle">Switch theme</string>
+    <string name="cd_sign_out">Sign out</string>
+    <string name="cd_close_post">Close post composer</string>
+
+    <!-- New Post Composer -->
+    <string name="post_new_title">New post</string>
+    <string name="post_share">Share</string>
+    <string name="post_mode_text">Text</string>
+    <string name="post_mode_photos">Photos</string>
+    <string name="post_mode_video">Video</string>
+    <string name="post_text_placeholder">What\'s on your mind?</string>
+    <string name="post_caption_placeholder">Write a caption...</string>
+    <string name="post_add_photos">Add photos</string>
+    <string name="post_up_to_10">Up to 10</string>
+    <string name="post_add_video">Add video</string>
+    <string name="post_up_to_200mb">Up to 200 MB</string>
+    <string name="post_song">Song</string>
+    <string name="post_tag_people">Tag people</string>
+    <string name="post_hashtags">Hashtags</string>
+    <string name="post_add">Add</string>
+    <string name="post_done">Done</string>
+    <string name="post_search_people">Search people</string>
+    <string name="post_search_songs">Search songs</string>
+    <string name="post_search_hashtags">Search hashtags</string>
+    <string name="post_mute_audio">Mute original audio</string>
+    <string name="post_uploaded">Uploaded</string>
+    <string name="post_queued">Queued</string>
+    <string name="post_edit_title">Edit post</string>
+    <string name="post_save_changes">Save</string>
+
+    <!-- Feeds & Search -->
+    <string name="feed_tab_following">Following</string>
+    <string name="feed_tab_for_you">For You</string>
+    <string name="feed_live">LIVE</string>
+    <string name="feed_you_might_like">You might like this</string>
+    <string name="feed_reposted">Reposted</string>
+    <string name="feed_original_sound">Original sound</string>
+    <string name="feed_paused">Paused</string>
+    <string name="feed_speed_2x">2x</string>
+    <string name="feed_search_hint">Search videos, hashtags, audio...</string>
+    <string name="feed_search_all">All</string>
+    <string name="feed_empty_title">No videos yet</string>
+    <string name="feed_empty_subtitle">Follow people or publish a video to start streaming.</string>
+    <string name="feed_share_title">Share</string>
+    <string name="feed_share_apps">Share via apps</string>
+    <string name="feed_copy_link">Copy link</string>
+    <string name="feed_link_copied">Link copied</string>
+    <string name="feed_action_repost">Repost</string>
+    <string name="feed_action_unrepost">Remove repost</string>
+    <string name="feed_action_download">Download</string>
+    <string name="feed_action_not_interested">Not interested</string>
+    <string name="feed_action_report">Report</string>
+    <string name="feed_action_block">Block</string>
+    <string name="feed_action_edit_video">Edit video</string>
+    <string name="feed_action_delete_video">Delete video</string>
+    <string name="feed_downloaded_toast">Saved to Downloads</string>
+    <string name="feed_download_failed">Download unavailable</string>
+    <string name="feed_reported_toast">Report submitted</string>
+    <string name="feed_report_reason_spam">Spam or misleading</string>
+    <string name="feed_report_reason_harmful">Harassment or unsafe content</string>
+    <string name="feed_report_reason_copyright">Duplicate or unauthorized re-upload</string>
+    <string name="feed_report_reason_other">Other</string>
+    <string name="cd_feed_live">Live coming soon</string>
+    <string name="cd_feed_search">Search feeds</string>
+    <string name="cd_feed_like">Like</string>
+    <string name="cd_feed_comment">Comments coming soon</string>
+    <string name="cd_feed_share">Share</string>
+    <string name="cd_feed_favourite">Save to favourites</string>
+    <string name="cd_feed_more">More video options</string>
+    <string name="cd_feed_audio">Audio</string>
+</resources>
