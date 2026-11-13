@@ -207,6 +207,7 @@ data class DesktopFeedPost(
   val fontOption: SharedPostFont,
   val song: SharedSongTrack?,
   val hashtags: List<String>,
+  val thumbnailUrl: String = "",
   val mediaWidth: Int = 1080,
   val mediaHeight: Int = 1920,
   val likesCount: Long = 0L,
@@ -214,12 +215,14 @@ data class DesktopFeedPost(
   val sharesCount: Long = 0L,
   val favouritesCount: Long = 0L,
   val repostsCount: Long = 0L,
+  val viewsCount: Long = 0L,
   val isLiked: Boolean = false,
   val isFavourited: Boolean = false,
   val isReposted: Boolean = false,
   val repostedByUsername: String = "",
   val recommendationLabel: String = "",
   val muteOriginalAudio: Boolean = false,
+  val createdAtMs: Long = 0L,
 )
 
 private sealed interface DesktopPostLaunchTarget {
@@ -228,6 +231,11 @@ private sealed interface DesktopPostLaunchTarget {
   data class PrefillSong(val song: SharedSongTrack, val mode: SharedPostMode) : DesktopPostLaunchTarget
   data class EditPost(val item: DesktopFeedPost) : DesktopPostLaunchTarget
 }
+
+private data class DesktopProfileViewerState(
+  val items: List<DesktopFeedPost>,
+  val initialIndex: Int,
+)
 
 fun main() = application {
   val vault = remember { DesktopEncryptedSessionVault() }
@@ -265,6 +273,14 @@ fun main() = application {
   val recentActionEpochsMs = remember { mutableStateListOf<Long>() }
   var toastMessage by remember { mutableStateOf<String?>(null) }
   var showChatsRail by remember { mutableStateOf(true) }
+  val profileBackStack = remember { mutableStateListOf<String>() }
+  var profileViewerState by remember { mutableStateOf<DesktopProfileViewerState?>(null) }
+  val openUserProfile: (String) -> Unit = { uid ->
+    val clean = uid.trim()
+    if (clean.isNotBlank() && profileBackStack.lastOrNull() != clean) {
+      profileBackStack.add(clean)
+    }
+  }
 
   LaunchedEffect(Unit) {
     delay(700L)
@@ -416,8 +432,8 @@ fun main() = application {
           )
         } else {
           Column(modifier = Modifier.fillMaxSize()) {
-            // Top Crimson Header matching mobile/tablet (hidden during fullscreen Feeds)
-            if (activeTab != "feeds") {
+            // Top Crimson Header matching mobile/tablet (hidden during fullscreen Feeds & Profile)
+            if (activeTab != "feeds" && activeTab != "profile") {
               Column(
                 modifier = Modifier
                   .fillMaxWidth()
@@ -596,40 +612,45 @@ fun main() = application {
                           )
                         }
                         items(contacts, key = { it.userId }) { contact ->
-                          DesktopContactCard(contact = contact, isDark = isDark) {
-                            val now = System.currentTimeMillis()
-                            recentActionEpochsMs.removeAll { now - it >= TelefamContactsRules.ONE_MINUTE_MS }
-                            if (recentActionEpochsMs.size >= TelefamContactsRules.MAX_ACTIONS_PER_MINUTE) {
-                              toastMessage = TelefamContactsRules.RATE_LIMIT_TOAST_MESSAGE
-                            } else {
-                              recentActionEpochsMs.add(now)
-                              val wantFollow = !contact.isFollowing
-                              val idx = contacts.indexOfFirst { it.userId == contact.userId }
-                              if (idx >= 0) {
-                                contacts[idx] = contact.copy(isFollowing = wantFollow)
-                              }
-                              scope.launch {
-                                val res = withContext(Dispatchers.IO) {
-                                  apiClient.setFollowContact(contact.userId, wantFollow)
+                          DesktopContactCard(
+                            contact = contact,
+                            isDark = isDark,
+                            onOpenProfile = { openUserProfile(contact.userId) },
+                            onToggle = {
+                              val now = System.currentTimeMillis()
+                              recentActionEpochsMs.removeAll { now - it >= TelefamContactsRules.ONE_MINUTE_MS }
+                              if (recentActionEpochsMs.size >= TelefamContactsRules.MAX_ACTIONS_PER_MINUTE) {
+                                toastMessage = TelefamContactsRules.RATE_LIMIT_TOAST_MESSAGE
+                              } else {
+                                recentActionEpochsMs.add(now)
+                                val wantFollow = !contact.isFollowing
+                                val idx = contacts.indexOfFirst { it.userId == contact.userId }
+                                if (idx >= 0) {
+                                  contacts[idx] = contact.copy(isFollowing = wantFollow)
                                 }
-                                when (res) {
-                                  is DesktopApiOutcome.Ok -> {
-                                    val i2 = contacts.indexOfFirst { it.userId == contact.userId }
-                                    if (i2 >= 0) contacts[i2] = contacts[i2].copy(isFollowing = res.data)
+                                scope.launch {
+                                  val res = withContext(Dispatchers.IO) {
+                                    apiClient.setFollowContact(contact.userId, wantFollow)
                                   }
-                                  is DesktopApiOutcome.Fail -> {
-                                    if (res.statusCode == 429) {
+                                  when (res) {
+                                    is DesktopApiOutcome.Ok -> {
                                       val i2 = contacts.indexOfFirst { it.userId == contact.userId }
-                                      if (i2 >= 0) contacts[i2] = contact
-                                      toastMessage = TelefamContactsRules.RATE_LIMIT_TOAST_MESSAGE
-                                    } else {
-                                      pendingContactOps.add(DesktopPendingContactOp(contact.userId, wantFollow))
+                                      if (i2 >= 0) contacts[i2] = contacts[i2].copy(isFollowing = res.data)
+                                    }
+                                    is DesktopApiOutcome.Fail -> {
+                                      if (res.statusCode == 429) {
+                                        val i2 = contacts.indexOfFirst { it.userId == contact.userId }
+                                        if (i2 >= 0) contacts[i2] = contact
+                                        toastMessage = TelefamContactsRules.RATE_LIMIT_TOAST_MESSAGE
+                                      } else {
+                                        pendingContactOps.add(DesktopPendingContactOp(contact.userId, wantFollow))
+                                      }
                                     }
                                   }
                                 }
                               }
-                            }
-                          }
+                            },
+                          )
                         }
                         if (contactsHasMore) {
                           item(span = { GridItemSpan(maxLineSpan) }) {
@@ -762,6 +783,7 @@ fun main() = application {
                       },
                       onTapHashtag = { tag, mode -> postLaunchTarget = DesktopPostLaunchTarget.PrefillHashtag(tag, mode) },
                       onTapAudio = { song, mode -> postLaunchTarget = DesktopPostLaunchTarget.PrefillSong(song, mode) },
+                      onOpenAuthorProfile = { uid -> openUserProfile(uid) },
                       onLoadMore = {
                         if (feedHasMore) {
                           scope.launch {
@@ -783,55 +805,26 @@ fun main() = application {
                   }
 
                   "profile" -> {
-                    Column(
-                      modifier = Modifier.fillMaxSize().padding(32.dp),
-                      horizontalAlignment = Alignment.CenterHorizontally,
-                      verticalArrangement = Arrangement.Center,
-                    ) {
-                      Surface(
-                        shape = RoundedCornerShape(22.dp),
-                        color = MaterialTheme.colorScheme.surface,
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                        modifier = Modifier.widthIn(max = 460.dp).fillMaxWidth(),
-                      ) {
-                        Column(
-                          modifier = Modifier.padding(24.dp),
-                          horizontalAlignment = Alignment.CenterHorizontally,
-                          verticalArrangement = Arrangement.spacedBy(10.dp),
-                        ) {
-                          Box(
-                            modifier = Modifier.size(72.dp).clip(CircleShape).background(DesktopCrimson),
-                            contentAlignment = Alignment.Center,
-                          ) {
-                            Text(
-                              text = TelefamContactsRules.initialsFor(session.fullName, session.username),
-                              color = Color.White,
-                              fontWeight = FontWeight.Bold,
-                              fontSize = 22.sp,
-                            )
-                          }
-                          Text(session.fullName.ifBlank { session.email }, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                          if (session.username.isNotBlank()) {
-                            Text("@${session.username}", color = DesktopCrimson, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                          }
-                          if (session.location.isNotBlank()) {
-                            Text(session.location, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
-                          }
-                          if (session.bio.isNotBlank()) {
-                            Text(session.bio, textAlign = TextAlign.Center, fontSize = 13.5.sp)
-                          }
-                          HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
-                          OutlinedButton(
-                            onClick = { apiClient.signOut() },
-                            shape = RoundedCornerShape(14.dp),
-                            border = BorderStroke(1.dp, DesktopCrimson),
-                            modifier = Modifier.fillMaxWidth().height(44.dp),
-                          ) {
-                            Text("Sign out", color = DesktopCrimson, fontWeight = FontWeight.Bold)
+                    DesktopUserProfileScreen(
+                      apiClient = apiClient,
+                      targetUserId = session.userId.ifBlank { "me" },
+                      isDark = isDark,
+                      isEmbeddedOwnProfileTab = true,
+                      onBack = {},
+                      onOpenUserProfile = { uid -> openUserProfile(uid) },
+                      onOpenPostAtIndex = { list, idx ->
+                        val picked = list.getOrNull(idx)
+                        if (picked != null) {
+                          scope.launch {
+                            withContext(Dispatchers.IO) { apiClient.interactFeed(picked.postId, SharedFeedAction.VIEW) }
                           }
                         }
-                      }
-                    }
+                        profileViewerState = DesktopProfileViewerState(list, idx)
+                      },
+                      onToggleTheme = toggleTheme,
+                      onSignOut = { apiClient.signOut() },
+                      onToast = { toastMessage = it },
+                    )
                   }
 
                   else -> {
@@ -955,6 +948,150 @@ fun main() = application {
                 showFeedSearch = false
                 postLaunchTarget = DesktopPostLaunchTarget.PrefillSong(song, mode)
               },
+              onOpenAuthorProfile = { uid ->
+                showFeedSearch = false
+                openUserProfile(uid)
+              },
+              onToast = { toastMessage = it },
+            )
+          }
+
+          val activeProfUid = profileBackStack.lastOrNull()
+          if (activeProfUid != null) {
+            DesktopUserProfileScreen(
+              apiClient = apiClient,
+              targetUserId = activeProfUid,
+              isDark = isDark,
+              isEmbeddedOwnProfileTab = false,
+              onBack = {
+                if (profileBackStack.isNotEmpty()) {
+                  profileBackStack.removeAt(profileBackStack.lastIndex)
+                }
+              },
+              onOpenUserProfile = { uid -> openUserProfile(uid) },
+              onOpenPostAtIndex = { list, idx ->
+                val picked = list.getOrNull(idx)
+                if (picked != null) {
+                  scope.launch {
+                    withContext(Dispatchers.IO) { apiClient.interactFeed(picked.postId, SharedFeedAction.VIEW) }
+                  }
+                }
+                profileViewerState = DesktopProfileViewerState(list, idx)
+              },
+              onToggleTheme = toggleTheme,
+              onSignOut = {
+                profileBackStack.clear()
+                apiClient.signOut()
+              },
+              onToast = { toastMessage = it },
+            )
+          }
+
+          val viewerState = profileViewerState
+          if (viewerState != null) {
+            DesktopReusableFeedStage(
+              items = viewerState.items,
+              initialIndex = viewerState.initialIndex,
+              activeTab = SharedFeedTab.FOR_YOU,
+              isStandaloneViewer = true,
+              onSelectTab = {},
+              onLiveClick = {},
+              onSearchClick = { profileViewerState = null; showFeedSearch = true },
+              onBackClick = { profileViewerState = null },
+              onCommentClick = { toastMessage = "Comments — Coming soon" },
+              onToggleAuthorFollow = { authorId, currentlyFollowing ->
+                val wantFollow = !currentlyFollowing
+                profileViewerState = viewerState.copy(
+                  items = viewerState.items.map {
+                    if (it.authorUserId == authorId) it.copy(isFollowingAuthor = wantFollow) else it
+                  },
+                )
+                scope.launch { withContext(Dispatchers.IO) { apiClient.setFollowContact(authorId, wantFollow) } }
+              },
+              onToggleLike = { pid ->
+                profileViewerState = viewerState.copy(
+                  items = viewerState.items.map {
+                    if (it.postId == pid) {
+                      val next = !it.isLiked
+                      it.copy(isLiked = next, likesCount = if (next) it.likesCount + 1 else (it.likesCount - 1).coerceAtLeast(0))
+                    } else it
+                  },
+                )
+                val target = viewerState.items.firstOrNull { it.postId == pid }
+                scope.launch {
+                  withContext(Dispatchers.IO) {
+                    apiClient.interactFeed(pid, if (target?.isLiked != true) SharedFeedAction.LIKE else SharedFeedAction.UNLIKE)
+                  }
+                }
+              },
+              onToggleFavourite = { pid ->
+                profileViewerState = viewerState.copy(
+                  items = viewerState.items.map {
+                    if (it.postId == pid) {
+                      val next = !it.isFavourited
+                      it.copy(isFavourited = next, favouritesCount = if (next) it.favouritesCount + 1 else (it.favouritesCount - 1).coerceAtLeast(0))
+                    } else it
+                  },
+                )
+              },
+              onToggleRepost = { pid ->
+                profileViewerState = viewerState.copy(
+                  items = viewerState.items.map {
+                    if (it.postId == pid) {
+                      val next = !it.isReposted
+                      it.copy(isReposted = next, repostsCount = if (next) it.repostsCount + 1 else (it.repostsCount - 1).coerceAtLeast(0))
+                    } else it
+                  },
+                )
+                toastMessage = "Reposted"
+              },
+              onCopyShareLink = { post ->
+                val url = apiClient.shareUrlForPost(post.postId)
+                runCatching { Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(url), null) }
+                toastMessage = "Link copied"
+              },
+              onDownloadVideo = { post ->
+                scope.launch {
+                  val outFile = File(System.getProperty("user.home"), "Downloads/telefam_${post.postId}.mp4")
+                  val res = withContext(Dispatchers.IO) { apiClient.downloadFeedVideo(post.postId, outFile) }
+                  toastMessage = if (res is DesktopApiOutcome.Ok) "Saved to Downloads" else "Download unavailable"
+                }
+              },
+              onNotInterested = { pid ->
+                val remaining = viewerState.items.filterNot { it.postId == pid }
+                profileViewerState = if (remaining.isEmpty()) null else viewerState.copy(items = remaining, initialIndex = 0)
+              },
+              onReport = { pid, reason ->
+                scope.launch { withContext(Dispatchers.IO) { apiClient.interactFeed(pid, SharedFeedAction.REPORT, reason) } }
+                toastMessage = "Report submitted"
+              },
+              onBlock = { _, uid ->
+                profileViewerState = null
+                scope.launch { withContext(Dispatchers.IO) { apiClient.blockUser(uid) } }
+              },
+              onEditOwnerPost = { item ->
+                profileViewerState = null
+                postLaunchTarget = DesktopPostLaunchTarget.EditPost(item)
+              },
+              onDeleteOwnerPost = { pid ->
+                val remaining = viewerState.items.filterNot { it.postId == pid }
+                profileViewerState = if (remaining.isEmpty()) null else viewerState.copy(items = remaining, initialIndex = 0)
+                scope.launch { withContext(Dispatchers.IO) { apiClient.deletePost(pid) } }
+              },
+              onTapHashtag = { tag, mode ->
+                profileViewerState = null
+                postLaunchTarget = DesktopPostLaunchTarget.PrefillHashtag(tag, mode)
+              },
+              onTapAudio = { song, mode ->
+                profileViewerState = null
+                postLaunchTarget = DesktopPostLaunchTarget.PrefillSong(song, mode)
+              },
+              onOpenAuthorProfile = { uid ->
+                profileViewerState = null
+                openUserProfile(uid)
+              },
+              onLoadMore = {},
+              onCreateFirstPost = { profileViewerState = null; postLaunchTarget = DesktopPostLaunchTarget.CreateNew },
               onToast = { toastMessage = it },
             )
           }
@@ -1034,7 +1171,8 @@ private enum class DesktopIconKind {
   CLOSE, PLUS, TEXT_MODE, PHOTOS_MODE, VIDEO_MODE, MUSIC, TAG_PEOPLE, HASHTAG,
   MUTE, UNMUTE, CHECK, CHEVRON_RIGHT, HEART, HEART_FILLED, COMMENT, SHARE_ARROW,
   BOOKMARK, BOOKMARK_FILLED, MORE_DOTS, CHEVRON_UP, CHEVRON_DOWN, BACK_ARROW,
-  SEARCH, LIVE_TV, SPARKLE, CHATS, CONTACTS, FEEDS, PROFILE
+  SEARCH, LIVE_TV, SPARKLE, CHATS, CONTACTS, FEEDS, PROFILE,
+  INVITE_T_BADGE, LOCATION_PIN, GRID_2X2, FILTER_SLIDERS, PLAY_OUTLINE, CROWN, PERSON_ADD
 }
 
 @Composable
@@ -1263,6 +1401,79 @@ private fun DesktopSvgIcon(
           cubicTo(w * 0.20f, h * 0.58f, w * 0.80f, h * 0.58f, w * 0.80f, h * 0.82f)
         }
         drawPath(shoulders, tint, style = stroke)
+      }
+      DesktopIconKind.INVITE_T_BADGE -> {
+        val tail = Path().apply {
+          moveTo(w * 0.42f, h * 0.78f)
+          lineTo(w * 0.50f, h * 0.94f)
+          lineTo(w * 0.58f, h * 0.78f)
+          close()
+        }
+        drawRoundRect(tint, Offset(w * 0.08f, h * 0.08f), Size(w * 0.84f, h * 0.72f), CornerRadius(w * 0.22f))
+        drawPath(tail, tint)
+        val ts = w * 0.11f
+        drawLine(Color.White, Offset(w * 0.33f, h * 0.34f), Offset(w * 0.67f, h * 0.34f), ts, StrokeCap.Round)
+        drawLine(Color.White, Offset(w * 0.50f, h * 0.34f), Offset(w * 0.50f, h * 0.62f), ts, StrokeCap.Round)
+      }
+      DesktopIconKind.LOCATION_PIN -> {
+        val pin = Path().apply {
+          moveTo(w * 0.50f, h * 0.88f)
+          cubicTo(w * 0.22f, h * 0.62f, w * 0.20f, h * 0.44f, w * 0.20f, h * 0.38f)
+          cubicTo(w * 0.20f, h * 0.20f, w * 0.34f, h * 0.10f, w * 0.50f, h * 0.10f)
+          cubicTo(w * 0.66f, h * 0.10f, w * 0.80f, h * 0.20f, w * 0.80f, h * 0.38f)
+          cubicTo(w * 0.80f, h * 0.44f, w * 0.78f, h * 0.62f, w * 0.50f, h * 0.88f)
+          close()
+        }
+        drawPath(pin, tint, style = stroke)
+        drawCircle(tint, radius = w * 0.11f, center = Offset(w * 0.50f, h * 0.38f), style = stroke)
+      }
+      DesktopIconKind.GRID_2X2 -> {
+        val box = w * 0.30f
+        val r = CornerRadius(w * 0.06f)
+        drawRoundRect(tint, Offset(w * 0.14f, h * 0.14f), Size(box, box), r, style = stroke)
+        drawRoundRect(tint, Offset(w * 0.56f, h * 0.14f), Size(box, box), r, style = stroke)
+        drawRoundRect(tint, Offset(w * 0.14f, h * 0.56f), Size(box, box), r, style = stroke)
+        drawRoundRect(tint, Offset(w * 0.56f, h * 0.56f), Size(box, box), r, style = stroke)
+      }
+      DesktopIconKind.FILTER_SLIDERS -> {
+        listOf(0.28f, 0.50f, 0.72f).forEach { y ->
+          drawLine(tint, Offset(w * 0.14f, h * y), Offset(w * 0.86f, h * y), stroke.width, StrokeCap.Round)
+        }
+        drawCircle(tint, radius = w * 0.09f, center = Offset(w * 0.36f, h * 0.28f))
+        drawCircle(tint, radius = w * 0.09f, center = Offset(w * 0.66f, h * 0.50f))
+        drawCircle(tint, radius = w * 0.09f, center = Offset(w * 0.42f, h * 0.72f))
+      }
+      DesktopIconKind.PLAY_OUTLINE -> {
+        val tri = Path().apply {
+          moveTo(w * 0.26f, h * 0.18f)
+          lineTo(w * 0.82f, h * 0.50f)
+          lineTo(w * 0.26f, h * 0.82f)
+          close()
+        }
+        drawPath(tri, tint, style = stroke)
+      }
+      DesktopIconKind.CROWN -> {
+        val cr = Path().apply {
+          moveTo(w * 0.16f, h * 0.76f)
+          lineTo(w * 0.14f, h * 0.32f)
+          lineTo(w * 0.36f, h * 0.52f)
+          lineTo(w * 0.50f, h * 0.22f)
+          lineTo(w * 0.64f, h * 0.52f)
+          lineTo(w * 0.86f, h * 0.32f)
+          lineTo(w * 0.84f, h * 0.76f)
+          close()
+        }
+        drawPath(cr, tint, style = stroke)
+      }
+      DesktopIconKind.PERSON_ADD -> {
+        drawCircle(tint, radius = w * 0.16f, center = Offset(w * 0.40f, h * 0.34f), style = stroke)
+        val arc = Path().apply {
+          moveTo(w * 0.16f, h * 0.78f)
+          cubicTo(w * 0.16f, h * 0.56f, w * 0.64f, h * 0.56f, w * 0.64f, h * 0.78f)
+        }
+        drawPath(arc, tint, style = stroke)
+        drawLine(tint, Offset(w * 0.78f, h * 0.34f), Offset(w * 0.78f, h * 0.56f), stroke.width, StrokeCap.Round)
+        drawLine(tint, Offset(w * 0.67f, h * 0.45f), Offset(w * 0.89f, h * 0.45f), stroke.width, StrokeCap.Round)
       }
     }
   }
@@ -2305,6 +2516,7 @@ private fun DesktopMetadataRow(
 private fun DesktopContactCard(
   contact: DesktopContactItem,
   isDark: Boolean,
+  onOpenProfile: () -> Unit = {},
   onToggle: () -> Unit,
 ) {
   val rel = contact.relationship
@@ -2315,6 +2527,7 @@ private fun DesktopContactCard(
     ContactRelationshipState.FRIENDS -> "Friends"
   }
   Surface(
+    onClick = onOpenProfile,
     shape = RoundedCornerShape(14.dp),
     color = MaterialTheme.colorScheme.surface,
     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
@@ -2427,6 +2640,7 @@ private fun DesktopReusableFeedStage(
   onDeleteOwnerPost: (String) -> Unit,
   onTapHashtag: (String, SharedPostMode) -> Unit,
   onTapAudio: (SharedSongTrack, SharedPostMode) -> Unit,
+  onOpenAuthorProfile: (String) -> Unit = {},
   onLoadMore: () -> Unit,
   onCreateFirstPost: () -> Unit,
   onToast: (String) -> Unit,
@@ -2633,7 +2847,13 @@ private fun DesktopReusableFeedStage(
             }
           }
         }
-        Text(current.authorUsername, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+        Text(
+          text = current.authorUsername,
+          color = Color.White,
+          fontWeight = FontWeight.Bold,
+          fontSize = 17.sp,
+          modifier = Modifier.clickable { onOpenAuthorProfile(current.authorUserId) },
+        )
         if (current.caption.isNotEmpty()) {
           Text(current.caption, color = Color.White.copy(alpha = 0.92f), fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
@@ -2696,7 +2916,8 @@ private fun DesktopReusableFeedStage(
               .size(46.dp)
               .clip(CircleShape)
               .background(Color(0xFF1F2430))
-              .border(1.5.dp, Color.White, CircleShape),
+              .border(1.5.dp, Color.White, CircleShape)
+              .clickable { onOpenAuthorProfile(current.authorUserId) },
             contentAlignment = Alignment.Center,
           ) {
             Text(
@@ -2854,6 +3075,7 @@ private fun DesktopFeedSearchOverlay(
   onDeleteOwnerPost: (String) -> Unit,
   onTapHashtag: (String, SharedPostMode) -> Unit,
   onTapAudio: (SharedSongTrack, SharedPostMode) -> Unit,
+  onOpenAuthorProfile: (String) -> Unit = {},
   onToast: (String) -> Unit,
 ) {
   var viewerStartIndex by remember { mutableStateOf<Int?>(null) }
@@ -2883,6 +3105,7 @@ private fun DesktopFeedSearchOverlay(
       onDeleteOwnerPost = onDeleteOwnerPost,
       onTapHashtag = onTapHashtag,
       onTapAudio = onTapAudio,
+      onOpenAuthorProfile = onOpenAuthorProfile,
       onLoadMore = {},
       onCreateFirstPost = {},
       onToast = onToast,
@@ -2979,7 +3202,9 @@ private fun DesktopFeedSearchOverlay(
                     color = Color.White,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
-                    modifier = Modifier.align(Alignment.BottomStart),
+                    modifier = Modifier
+                      .align(Alignment.BottomStart)
+                      .clickable { onOpenAuthorProfile(item.authorUserId) },
                   )
                   Row(
                     modifier = Modifier.align(Alignment.BottomEnd),
@@ -2992,6 +3217,819 @@ private fun DesktopFeedSearchOverlay(
                       color = Color.White,
                       fontSize = 11.5.sp,
                     )
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+private enum class DesktopProfileFilter(val apiValue: String, val label: String) {
+  ALL("all", "All posts"),
+  VIDEOS("video", "Videos"),
+  PHOTOS("photos", "Photos"),
+  TEXT("text", "Text"),
+}
+
+private enum class DesktopProfileSort(val label: String) {
+  LATEST("Latest"),
+  MOST_VIEWED("Most viewed"),
+  MOST_LIKED("Most liked"),
+}
+
+private val DesktopReportCategories = listOf(
+  "Spam or misleading",
+  "Harassment or bullying",
+  "Impersonation",
+  "Hate or abusive content",
+  "Scam or fraud",
+  "Inappropriate content",
+  "Other",
+)
+
+private fun formatDesktopProfileCount(count: Long): String {
+  if (count <= 0L) return "0"
+  if (count >= 1_000_000L) {
+    val tenths = count / 100_000L
+    val w = tenths / 10L
+    val r = tenths % 10L
+    return if (r == 0L) "${w}M" else "$w.${r}M"
+  }
+  if (count >= 1_000L) {
+    val tenths = count / 100L
+    val w = tenths / 10L
+    val r = tenths % 10L
+    return if (r == 0L) "${w}K" else "$w.${r}K"
+  }
+  return count.toString()
+}
+
+@Composable
+private fun DesktopRemoteCachedImage(
+  apiClient: DesktopApiClient,
+  pathOrUrl: String,
+  modifier: Modifier = Modifier,
+  contentScale: ContentScale = ContentScale.Crop,
+  fallback: @Composable () -> Unit,
+) {
+  var bitmap by remember(pathOrUrl) { mutableStateOf<ImageBitmap?>(null) }
+  LaunchedEffect(pathOrUrl) {
+    if (pathOrUrl.isBlank()) {
+      bitmap = null
+      return@LaunchedEffect
+    }
+    bitmap = withContext(Dispatchers.IO) {
+      val bytes = apiClient.fetchCachedMediaBytes(pathOrUrl) ?: return@withContext null
+      runCatching { SkiaImage.makeFromEncoded(bytes).toComposeImageBitmap() }.getOrNull()
+    }
+  }
+  val bmp = bitmap
+  if (bmp != null) {
+    Image(
+      bitmap = bmp,
+      contentDescription = null,
+      contentScale = contentScale,
+      modifier = modifier,
+    )
+  } else {
+    fallback()
+  }
+}
+
+@Composable
+private fun DesktopUserProfileScreen(
+  apiClient: DesktopApiClient,
+  targetUserId: String,
+  isDark: Boolean,
+  isEmbeddedOwnProfileTab: Boolean,
+  onBack: () -> Unit,
+  onOpenUserProfile: (String) -> Unit,
+  onOpenPostAtIndex: (List<DesktopFeedPost>, Int) -> Unit,
+  onToggleTheme: () -> Unit,
+  onSignOut: () -> Unit,
+  onToast: (String) -> Unit,
+) {
+  val scope = rememberCoroutineScope()
+  val accentCrimson = DesktopCrimson
+  var profile by remember(targetUserId) { mutableStateOf<DesktopUserProfile?>(null) }
+  var isLoading by remember(targetUserId) { mutableStateOf(true) }
+  var postFilter by remember(targetUserId) { mutableStateOf(DesktopProfileFilter.ALL) }
+  var postSort by remember(targetUserId) { mutableStateOf(DesktopProfileSort.LATEST) }
+  var showFilterPopup by remember { mutableStateOf(false) }
+  var showSortPopup by remember { mutableStateOf(false) }
+  var showMoreDialog by remember { mutableStateOf(false) }
+  var showReportCategories by remember { mutableStateOf(false) }
+  var pendingReportReason by remember { mutableStateOf<String?>(null) }
+  var reportDetails by remember { mutableStateOf("") }
+
+  var connectionsType by remember { mutableStateOf<String?>(null) } // "followers" or "following"
+  var connectionsItems by remember { mutableStateOf<List<DesktopContactItem>>(emptyList()) }
+  var connectionsPage by remember { mutableStateOf(1) }
+  var connectionsHasMore by remember { mutableStateOf(false) }
+  var connectionsLoading by remember { mutableStateOf(false) }
+
+  LaunchedEffect(targetUserId) {
+    isLoading = true
+    val res = withContext(Dispatchers.IO) { apiClient.getUserProfile(targetUserId) }
+    if (res is DesktopApiOutcome.Ok) {
+      profile = res.data
+    } else if (res is DesktopApiOutcome.Fail) {
+      onToast(res.message)
+    }
+    isLoading = false
+  }
+
+  val openConnections: (Boolean) -> Unit = { isFollowers ->
+    val p = profile
+    if (p != null) {
+      connectionsType = if (isFollowers) "followers" else "following"
+      connectionsItems = emptyList()
+      connectionsPage = 1
+      connectionsHasMore = false
+      connectionsLoading = true
+      scope.launch {
+        val res = withContext(Dispatchers.IO) { apiClient.getUserConnections(p.userId, isFollowers, 1) }
+        if (res is DesktopApiOutcome.Ok) {
+          connectionsItems = res.data.items
+          connectionsPage = res.data.page
+          connectionsHasMore = res.data.hasMore
+        }
+        connectionsLoading = false
+      }
+    }
+  }
+
+  val p = profile
+  val profileLink = apiClient.shareUrlForProfile(p?.username?.ifBlank { p.userId } ?: targetUserId)
+  val copyLinkAction: () -> Unit = {
+    runCatching { Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(profileLink), null) }
+    onToast("Link copied")
+  }
+  val inviteAction: () -> Unit = {
+    val msg = "Join me on Telefam: $profileLink"
+    runCatching { Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(msg), null) }
+    onToast("Invite link copied")
+  }
+
+  val filteredPosts = remember(p?.posts, postFilter, postSort) {
+    val raw = p?.posts.orEmpty().filter { item ->
+      when (postFilter) {
+        DesktopProfileFilter.ALL -> true
+        DesktopProfileFilter.VIDEOS -> item.mode == SharedPostMode.VIDEO
+        DesktopProfileFilter.PHOTOS -> item.mode == SharedPostMode.PHOTOS
+        DesktopProfileFilter.TEXT -> item.mode == SharedPostMode.TEXT
+      }
+    }
+    when (postSort) {
+      DesktopProfileSort.LATEST -> raw.sortedByDescending { it.createdAtMs }
+      DesktopProfileSort.MOST_VIEWED -> raw.sortedByDescending { it.viewsCount }
+      DesktopProfileSort.MOST_LIKED -> raw.sortedByDescending { it.likesCount }
+    }
+  }
+
+  Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+    Box(modifier = Modifier.fillMaxSize()) {
+      Column(modifier = Modifier.fillMaxSize()) {
+        // Top Header Bar matching uploaded Alex Mwangi reference
+        Row(
+          modifier = Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 12.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          if (!isEmbeddedOwnProfileTab) {
+            Box(
+              modifier = Modifier.size(44.dp).clip(CircleShape).clickable(onClick = onBack),
+              contentAlignment = Alignment.Center,
+            ) {
+              DesktopSvgIcon(DesktopIconKind.BACK_ARROW, MaterialTheme.colorScheme.onBackground, 20.dp)
+            }
+          } else {
+            Spacer(modifier = Modifier.width(44.dp))
+          }
+
+          Text(
+            text = p?.fullName?.ifBlank { "@${p.username.ifBlank { p.userId }}" } ?: "Profile",
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onBackground,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.weight(1f),
+          )
+
+          Box(
+            modifier = Modifier.size(44.dp).clip(RoundedCornerShape(10.dp)).clickable(onClick = inviteAction),
+            contentAlignment = Alignment.Center,
+          ) {
+            DesktopSvgIcon(DesktopIconKind.INVITE_T_BADGE, accentCrimson, 26.dp)
+          }
+
+          Box(
+            modifier = Modifier.size(44.dp).clip(CircleShape).clickable { showMoreDialog = true },
+            contentAlignment = Alignment.Center,
+          ) {
+            DesktopSvgIcon(DesktopIconKind.MORE_DOTS, MaterialTheme.colorScheme.onBackground, 22.dp)
+          }
+        }
+
+        BoxWithConstraints(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
+          val cols = when {
+            maxWidth >= 900.dp -> 5
+            maxWidth >= 640.dp -> 4
+            else -> 3
+          }
+
+          LazyVerticalGrid(
+            columns = GridCells.Fixed(cols),
+            modifier = Modifier.fillMaxSize().widthIn(max = 920.dp),
+            contentPadding = PaddingValues(bottom = 28.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+          ) {
+            item(key = "header", span = { GridItemSpan(maxLineSpan) }) {
+              Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                Spacer(modifier = Modifier.height(6.dp))
+                val ringBrush = Brush.linearGradient(
+                  listOf(Color(0xFFD946EF), DesktopCrimson, Color(0xFFF97316)),
+                )
+                Box(
+                  modifier = Modifier.size(94.dp).clip(CircleShape).border(2.6.dp, ringBrush, CircleShape).padding(4.dp),
+                  contentAlignment = Alignment.Center,
+                ) {
+                  DesktopRemoteCachedImage(
+                    apiClient = apiClient,
+                    pathOrUrl = p?.avatarUrl.orEmpty(),
+                    modifier = Modifier.fillMaxSize().clip(CircleShape),
+                  ) {
+                    Box(
+                      modifier = Modifier.fillMaxSize().clip(CircleShape).background(if (isDark) DesktopDarkBlush else DesktopBlush),
+                      contentAlignment = Alignment.Center,
+                    ) {
+                      Text(
+                        text = TelefamContactsRules.initialsFor(p?.fullName.orEmpty(), p?.username.orEmpty()),
+                        color = accentCrimson,
+                        fontSize = 26.sp,
+                        fontWeight = FontWeight.Bold,
+                      )
+                    }
+                  }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                  text = "@${p?.username?.ifBlank { p.userId } ?: targetUserId}",
+                  fontSize = 15.5.sp,
+                  fontWeight = FontWeight.Bold,
+                  color = MaterialTheme.colorScheme.onBackground,
+                )
+
+                Spacer(modifier = Modifier.height(14.dp))
+                Row(
+                  modifier = Modifier.widthIn(max = 360.dp).fillMaxWidth().padding(horizontal = 24.dp),
+                  verticalAlignment = Alignment.CenterVertically,
+                ) {
+                  Column(
+                    modifier = Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).clickable { openConnections(false) }.padding(vertical = 4.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                  ) {
+                    Text(formatDesktopProfileCount(p?.followingCount ?: 0L), fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    Text("Following", fontSize = 12.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                  }
+                  Box(modifier = Modifier.width(1.dp).height(26.dp).background(MaterialTheme.colorScheme.outlineVariant))
+                  Column(
+                    modifier = Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).clickable { openConnections(true) }.padding(vertical = 4.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                  ) {
+                    Text(formatDesktopProfileCount(p?.followersCount ?: 0L), fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    Text("Followers", fontSize = 12.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                  }
+                  Box(modifier = Modifier.width(1.dp).height(26.dp).background(MaterialTheme.colorScheme.outlineVariant))
+                  Column(
+                    modifier = Modifier.weight(1f).padding(vertical = 4.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                  ) {
+                    Text(formatDesktopProfileCount(p?.likesCount ?: 0L), fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    Text("Likes", fontSize = 12.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                  }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+                if (p != null && p.isBlocked) {
+                  Column(
+                    modifier = Modifier.widthIn(max = 420.dp).fillMaxWidth().padding(horizontal = 20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                  ) {
+                    Text("You blocked this account.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.5.sp)
+                    Surface(
+                      onClick = {
+                        scope.launch {
+                          val res = withContext(Dispatchers.IO) { apiClient.unblockUser(p.userId) }
+                          if (res is DesktopApiOutcome.Ok) {
+                            profile = p.copy(isBlocked = false)
+                            onToast("Account unblocked")
+                            val fresh = withContext(Dispatchers.IO) { apiClient.getUserProfile(p.userId) }
+                            if (fresh is DesktopApiOutcome.Ok) profile = fresh.data
+                          }
+                        }
+                      },
+                      shape = RoundedCornerShape(8.dp),
+                      color = accentCrimson,
+                      modifier = Modifier.fillMaxWidth().height(40.dp),
+                    ) {
+                      Box(contentAlignment = Alignment.Center) {
+                        Text("Unblock", color = Color.White, fontWeight = FontWeight.SemiBold)
+                      }
+                    }
+                  }
+                } else if (p != null && !p.isOwner) {
+                  val rel = p.relationship
+                  val followLabel = when (rel) {
+                    ContactRelationshipState.FOLLOW -> "Follow"
+                    ContactRelationshipState.FOLLOWING -> "Following"
+                    ContactRelationshipState.FOLLOW_BACK -> "Follow back"
+                    ContactRelationshipState.FRIENDS -> "Friends"
+                  }
+                  val isPrimaryCrimson = rel == ContactRelationshipState.FOLLOW || rel == ContactRelationshipState.FOLLOW_BACK
+                  Row(
+                    modifier = Modifier.widthIn(max = 460.dp).fillMaxWidth().padding(horizontal = 18.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                  ) {
+                    Surface(
+                      onClick = {
+                        val wantFollow = !p.isFollowing
+                        profile = p.copy(
+                          isFollowing = wantFollow,
+                          followersCount = if (wantFollow) p.followersCount + 1 else (p.followersCount - 1).coerceAtLeast(0L),
+                        )
+                        scope.launch {
+                          val res = withContext(Dispatchers.IO) { apiClient.setFollowContact(p.userId, wantFollow) }
+                          if (res is DesktopApiOutcome.Fail && res.statusCode == 429) {
+                            profile = p
+                            onToast(TelefamContactsRules.RATE_LIMIT_TOAST_MESSAGE)
+                          }
+                        }
+                      },
+                      shape = RoundedCornerShape(8.dp),
+                      color = if (isPrimaryCrimson) accentCrimson else MaterialTheme.colorScheme.surface,
+                      border = if (isPrimaryCrimson) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                      modifier = Modifier.weight(1.08f).height(40.dp),
+                    ) {
+                      Row(
+                        modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically,
+                      ) {
+                        if (isPrimaryCrimson) {
+                          DesktopSvgIcon(DesktopIconKind.PERSON_ADD, Color.White, 16.dp)
+                          Spacer(modifier = Modifier.width(6.dp))
+                        }
+                        Text(
+                          text = followLabel,
+                          color = if (isPrimaryCrimson) Color.White else MaterialTheme.colorScheme.onSurface,
+                          fontSize = 13.5.sp,
+                          fontWeight = FontWeight.SemiBold,
+                          maxLines = 1,
+                        )
+                      }
+                    }
+
+                    Surface(
+                      onClick = { onToast("Message — Coming soon") },
+                      shape = RoundedCornerShape(8.dp),
+                      color = MaterialTheme.colorScheme.surface,
+                      border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                      modifier = Modifier.weight(1f).height(40.dp),
+                    ) {
+                      Row(
+                        modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically,
+                      ) {
+                        DesktopSvgIcon(DesktopIconKind.SHARE_ARROW, MaterialTheme.colorScheme.onSurface, 15.dp)
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Message", fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                      }
+                    }
+
+                    Surface(
+                      onClick = { onToast("Subscribe — Coming soon") },
+                      shape = RoundedCornerShape(8.dp),
+                      color = accentCrimson,
+                      modifier = Modifier.weight(1.05f).height(40.dp),
+                    ) {
+                      Row(
+                        modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically,
+                      ) {
+                        DesktopSvgIcon(DesktopIconKind.CROWN, Color.White, 15.dp)
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Subscribe", color = Color.White, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                      }
+                    }
+                  }
+                } else {
+                  Row(
+                    modifier = Modifier.widthIn(max = 380.dp).fillMaxWidth().padding(horizontal = 24.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                  ) {
+                    Surface(onClick = inviteAction, shape = RoundedCornerShape(8.dp), color = accentCrimson, modifier = Modifier.weight(1f).height(40.dp)) {
+                      Box(contentAlignment = Alignment.Center) {
+                        Text("Invite friends", color = Color.White, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold)
+                      }
+                    }
+                    Surface(
+                      onClick = copyLinkAction,
+                      shape = RoundedCornerShape(8.dp),
+                      color = MaterialTheme.colorScheme.surface,
+                      border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                      modifier = Modifier.weight(1f).height(40.dp),
+                    ) {
+                      Box(contentAlignment = Alignment.Center) {
+                        Text("Copy link", fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold)
+                      }
+                    }
+                  }
+                }
+
+                if (!p?.bio.isNullOrBlank()) {
+                  Spacer(modifier = Modifier.height(14.dp))
+                  Text(
+                    text = p!!.bio,
+                    fontSize = 13.5.sp,
+                    lineHeight = 19.sp,
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    modifier = Modifier.widthIn(max = 360.dp).padding(horizontal = 24.dp),
+                  )
+                }
+
+                if (!p?.location.isNullOrBlank()) {
+                  Spacer(modifier = Modifier.height(8.dp))
+                  Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
+                    DesktopSvgIcon(DesktopIconKind.LOCATION_PIN, accentCrimson, 15.dp)
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(p!!.location, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                  }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+                Column(modifier = Modifier.fillMaxWidth()) {
+                  Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(0.45f), horizontalAlignment = Alignment.CenterHorizontally) {
+                      Row(
+                        modifier = Modifier.padding(vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                      ) {
+                        DesktopSvgIcon(DesktopIconKind.GRID_2X2, MaterialTheme.colorScheme.onBackground, 17.dp)
+                        Text("Posts", fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                      }
+                      Box(modifier = Modifier.fillMaxWidth().height(2.5.dp).background(accentCrimson))
+                    }
+                    Box(modifier = Modifier.weight(0.55f))
+                  }
+                  HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
+                }
+
+                Row(
+                  modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                  horizontalArrangement = Arrangement.SpaceBetween,
+                  verticalAlignment = Alignment.CenterVertically,
+                ) {
+                  Row(
+                    modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable { showFilterPopup = true }.padding(horizontal = 4.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                  ) {
+                    Text(postFilter.label, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold)
+                    Spacer(modifier = Modifier.width(6.dp))
+                    DesktopSvgIcon(DesktopIconKind.CHEVRON_DOWN, MaterialTheme.colorScheme.onBackground, 14.dp)
+                  }
+                  Box(
+                    modifier = Modifier.size(36.dp).clip(RoundedCornerShape(8.dp)).clickable { showSortPopup = true },
+                    contentAlignment = Alignment.Center,
+                  ) {
+                    DesktopSvgIcon(DesktopIconKind.FILTER_SLIDERS, MaterialTheme.colorScheme.onBackground, 18.dp)
+                  }
+                }
+              }
+            }
+
+            if (isLoading && filteredPosts.isEmpty()) {
+              item(key = "loading", span = { GridItemSpan(maxLineSpan) }) {
+                Box(modifier = Modifier.fillMaxWidth().padding(vertical = 48.dp), contentAlignment = Alignment.Center) {
+                  DesktopTricolorSpinner(size = 34.dp)
+                }
+              }
+            } else if (p != null && !p.isBlocked && filteredPosts.isEmpty()) {
+              item(key = "empty", span = { GridItemSpan(maxLineSpan) }) {
+                Box(modifier = Modifier.fillMaxWidth().padding(vertical = 42.dp), contentAlignment = Alignment.Center) {
+                  Text("No posts yet", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
+                }
+              }
+            } else if (p != null && !p.isBlocked) {
+              itemsIndexed(filteredPosts, key = { _, item -> item.postId }) { idx, post ->
+                val theme = SharedPostRules.themes.firstOrNull { it.id == post.themeId } ?: SharedPostRules.themes.first()
+                Box(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(3f / 4f)
+                    .background(Color(0xFF101319))
+                    .clickable { onOpenPostAtIndex(filteredPosts, idx) },
+                ) {
+                  if (post.mode == SharedPostMode.TEXT) {
+                    DesktopPostThemeCanvas(theme = theme, modifier = Modifier.fillMaxSize()) {
+                      Box(modifier = Modifier.fillMaxSize().padding(10.dp), contentAlignment = Alignment.Center) {
+                        val ink = if (theme.isLightInk) Color.White else Color(0xFF1A1C1E)
+                        Text(
+                          text = post.textContent.ifBlank { post.caption },
+                          color = ink,
+                          fontSize = 12.sp,
+                          fontWeight = FontWeight.Bold,
+                          textAlign = TextAlign.Center,
+                          maxLines = 4,
+                          overflow = TextOverflow.Ellipsis,
+                        )
+                      }
+                    }
+                  } else {
+                    DesktopRemoteCachedImage(apiClient = apiClient, pathOrUrl = post.thumbnailUrl, modifier = Modifier.fillMaxSize()) {
+                      DesktopPostThemeCanvas(theme = theme, modifier = Modifier.fillMaxSize()) {
+                        Box(modifier = Modifier.fillMaxSize().padding(10.dp), contentAlignment = Alignment.Center) {
+                          Text(
+                            text = post.caption.ifBlank { post.hashtags.firstOrNull()?.let { "#$it" }.orEmpty() },
+                            color = Color.White,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis,
+                          )
+                        }
+                      }
+                    }
+                  }
+
+                  Box(
+                    modifier = Modifier
+                      .fillMaxWidth()
+                      .height(48.dp)
+                      .align(Alignment.BottomCenter)
+                      .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.65f)))),
+                  )
+
+                  Row(
+                    modifier = Modifier.align(Alignment.BottomStart).padding(horizontal = 8.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                  ) {
+                    DesktopSvgIcon(DesktopIconKind.PLAY_OUTLINE, Color.White, 13.dp)
+                    Text(
+                      text = formatDesktopProfileCount(post.viewsCount),
+                      color = Color.White,
+                      fontSize = 12.sp,
+                      fontWeight = FontWeight.SemiBold,
+                    )
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      if (showFilterPopup) {
+        Box(
+          modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.45f)).clickable { showFilterPopup = false },
+          contentAlignment = Alignment.Center,
+        ) {
+          Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surface, modifier = Modifier.width(280.dp)) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+              Text("Filter posts", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+              DesktopProfileFilter.entries.forEach { opt ->
+                DesktopDialogButton(opt.label) { postFilter = opt; showFilterPopup = false }
+              }
+            }
+          }
+        }
+      }
+
+      if (showSortPopup) {
+        Box(
+          modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.45f)).clickable { showSortPopup = false },
+          contentAlignment = Alignment.Center,
+        ) {
+          Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surface, modifier = Modifier.width(280.dp)) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+              Text("Sort posts", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+              DesktopProfileSort.entries.forEach { opt ->
+                DesktopDialogButton(opt.label) { postSort = opt; showSortPopup = false }
+              }
+            }
+          }
+        }
+      }
+
+      if (showMoreDialog && p != null) {
+        Box(
+          modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.50f)).clickable { showMoreDialog = false },
+          contentAlignment = Alignment.Center,
+        ) {
+          Surface(shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surface, modifier = Modifier.width(320.dp)) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+              Text("Profile options", fontWeight = FontWeight.Bold, fontSize = 17.sp)
+              DesktopDialogButton("Copy link") { showMoreDialog = false; copyLinkAction() }
+              DesktopDialogButton("Invite friends") { showMoreDialog = false; inviteAction() }
+              if (p.isOwner) {
+                DesktopDialogButton("Switch theme") { showMoreDialog = false; onToggleTheme() }
+                DesktopDialogButton("Sign out") { showMoreDialog = false; onSignOut() }
+              } else {
+                DesktopDialogButton(if (p.isBlocked) "Unblock @${p.username}" else "Block @${p.username}") {
+                  showMoreDialog = false
+                  scope.launch {
+                    val res = withContext(Dispatchers.IO) {
+                      if (p.isBlocked) apiClient.unblockUser(p.userId) else apiClient.blockUser(p.userId)
+                    }
+                    if (res is DesktopApiOutcome.Ok) {
+                      profile = p.copy(isBlocked = res.data, isFollowing = if (res.data) false else p.isFollowing)
+                      onToast(if (res.data) "Account blocked" else "Account unblocked")
+                      if (!res.data) {
+                        val fresh = withContext(Dispatchers.IO) { apiClient.getUserProfile(p.userId) }
+                        if (fresh is DesktopApiOutcome.Ok) profile = fresh.data
+                      }
+                    }
+                  }
+                }
+                DesktopDialogButton("Report") {
+                  showMoreDialog = false
+                  showReportCategories = true
+                }
+              }
+              DesktopDialogButton("Cancel") { showMoreDialog = false }
+            }
+          }
+        }
+      }
+
+      if (showReportCategories && p != null) {
+        Box(
+          modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.55f)).clickable { showReportCategories = false },
+          contentAlignment = Alignment.Center,
+        ) {
+          Surface(shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surface, modifier = Modifier.width(340.dp)) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+              Text("Report account", fontWeight = FontWeight.Bold, fontSize = 17.sp)
+              DesktopReportCategories.forEach { cat ->
+                DesktopDialogButton(cat) {
+                  showReportCategories = false
+                  pendingReportReason = cat
+                  reportDetails = ""
+                }
+              }
+              DesktopDialogButton("Cancel") { showReportCategories = false }
+            }
+          }
+        }
+      }
+
+      val activeReportReason = pendingReportReason
+      if (activeReportReason != null && p != null) {
+        Box(
+          modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.55f)).clickable { pendingReportReason = null },
+          contentAlignment = Alignment.Center,
+        ) {
+          Surface(
+            shape = RoundedCornerShape(18.dp),
+            color = MaterialTheme.colorScheme.surface,
+            modifier = Modifier.width(360.dp).clickable(enabled = false) {},
+          ) {
+            Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+              Text(activeReportReason, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+              Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.background,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                modifier = Modifier.fillMaxWidth().height(92.dp),
+              ) {
+                Box(modifier = Modifier.fillMaxSize().padding(12.dp)) {
+                  if (reportDetails.isEmpty()) {
+                    Text("Additional details (optional)", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.5.sp)
+                  }
+                  BasicTextField(
+                    value = reportDetails,
+                    onValueChange = { reportDetails = it.take(300) },
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface, fontSize = 13.5.sp),
+                    cursorBrush = SolidColor(accentCrimson),
+                    modifier = Modifier.fillMaxSize(),
+                  )
+                }
+              }
+              Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(onClick = { pendingReportReason = null }, modifier = Modifier.weight(1f)) {
+                  Text("Cancel")
+                }
+                Button(
+                  onClick = {
+                    val reason = activeReportReason
+                    val det = reportDetails.trim()
+                    pendingReportReason = null
+                    scope.launch {
+                      val res = withContext(Dispatchers.IO) { apiClient.reportUser(p.userId, reason, det) }
+                      onToast(if (res is DesktopApiOutcome.Ok) "Report submitted" else "Unable to submit report")
+                    }
+                  },
+                  colors = ButtonDefaults.buttonColors(containerColor = accentCrimson),
+                  modifier = Modifier.weight(1f),
+                ) {
+                  Text("Submit report", color = Color.White)
+                }
+              }
+            }
+          }
+        }
+      }
+
+      if (connectionsType != null && p != null) {
+        Box(
+          modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.50f)).clickable { connectionsType = null },
+          contentAlignment = Alignment.Center,
+        ) {
+          Surface(
+            shape = RoundedCornerShape(20.dp),
+            color = MaterialTheme.colorScheme.surface,
+            modifier = Modifier.width(440.dp).heightIn(min = 320.dp, max = 520.dp).clickable(enabled = false) {},
+          ) {
+            Column(modifier = Modifier.fillMaxWidth().padding(18.dp)) {
+              Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                  text = if (connectionsType == "followers") "Followers" else "Following",
+                  fontSize = 17.sp,
+                  fontWeight = FontWeight.Bold,
+                  modifier = Modifier.weight(1f),
+                )
+                Box(modifier = Modifier.size(32.dp).clip(CircleShape).clickable { connectionsType = null }, contentAlignment = Alignment.Center) {
+                  DesktopSvgIcon(DesktopIconKind.CLOSE, MaterialTheme.colorScheme.onSurfaceVariant, 16.dp)
+                }
+              }
+              Spacer(modifier = Modifier.height(8.dp))
+              HorizontalDivider()
+              if (connectionsLoading && connectionsItems.isEmpty()) {
+                Box(modifier = Modifier.fillMaxWidth().height(220.dp), contentAlignment = Alignment.Center) {
+                  DesktopTricolorSpinner(size = 32.dp)
+                }
+              } else if (connectionsItems.isEmpty()) {
+                Box(modifier = Modifier.fillMaxWidth().height(200.dp), contentAlignment = Alignment.Center) {
+                  Text("No users in this list yet", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
+                }
+              } else {
+                LazyColumn(
+                  modifier = Modifier.fillMaxWidth().weight(1f, fill = false),
+                  contentPadding = PaddingValues(vertical = 10.dp),
+                  verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                  items(connectionsItems, key = { it.userId }) { conn ->
+                    DesktopContactCard(
+                      contact = conn,
+                      isDark = isDark,
+                      onOpenProfile = {
+                        connectionsType = null
+                        onOpenUserProfile(conn.userId)
+                      },
+                      onToggle = {
+                        val wantFollow = !conn.isFollowing
+                        connectionsItems = connectionsItems.map {
+                          if (it.userId == conn.userId) it.copy(isFollowing = wantFollow) else it
+                        }
+                        scope.launch { withContext(Dispatchers.IO) { apiClient.setFollowContact(conn.userId, wantFollow) } }
+                      },
+                    )
+                  }
+                  if (connectionsHasMore) {
+                    item(key = "load_more") {
+                      OutlinedButton(
+                        onClick = {
+                          val nextP = connectionsPage + 1
+                          val isF = connectionsType == "followers"
+                          scope.launch {
+                            val res = withContext(Dispatchers.IO) { apiClient.getUserConnections(p.userId, isF, nextP) }
+                            if (res is DesktopApiOutcome.Ok) {
+                              connectionsItems = connectionsItems + res.data.items.filter { n -> connectionsItems.none { it.userId == n.userId } }
+                              connectionsPage = res.data.page
+                              connectionsHasMore = res.data.hasMore
+                            }
+                          }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                      ) {
+                        Text("Load more", color = accentCrimson)
+                      }
+                    }
                   }
                 }
               }

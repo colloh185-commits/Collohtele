@@ -170,4 +170,39 @@
     <string name="cd_feed_favourite">Save to favourites</string>
     <string name="cd_feed_more">More video options</string>
     <string name="cd_feed_audio">Audio</string>
+    <string name="feed_read_more">Read more</string>
+    <string name="feed_read_less">Read less</string>
+
+    <!-- User Profile Screen -->
+    <string name="profile_stat_following">Following</string>
+    <string name="profile_stat_followers">Followers</string>
+    <string name="profile_stat_likes">Likes</string>
+    <string name="profile_action_message">Message</string>
+    <string name="profile_action_subscribe">Subscribe</string>
+    <string name="profile_action_unblock">Unblock</string>
+    <string name="profile_action_block">Block</string>
+    <string name="profile_action_report">Report</string>
+    <string name="profile_action_copy_link">Copy link</string>
+    <string name="profile_action_invite_friends">Invite friends</string>
+    <string name="profile_posts_tab">Posts</string>
+    <string name="profile_filter_all">All posts</string>
+    <string name="profile_filter_videos">Videos</string>
+    <string name="profile_filter_photos">Photos</string>
+    <string name="profile_filter_text">Text</string>
+    <string name="profile_sort_latest">Latest</string>
+    <string name="profile_sort_most_viewed">Most viewed</string>
+    <string name="profile_sort_most_liked">Most liked</string>
+    <string name="profile_posts_empty">No posts yet</string>
+    <string name="profile_blocked_notice">You blocked this user</string>
+    <string name="profile_unblocked_toast">User unblocked</string>
+    <string name="profile_blocked_toast">User blocked</string>
+    <string name="profile_report_title">Report user</string>
+    <string name="profile_report_details_hint">Additional details (optional)</string>
+    <string name="profile_report_submit">Submit</string>
+    <string name="profile_report_submitted">Report submitted</string>
+    <string name="profile_connections_empty">No users yet</string>
+    <string name="profile_invite_text">Join me on Telefam!</string>
+    <string name="cd_profile_invite">Invite friends</string>
+    <string name="cd_profile_sort">Sort posts</string>
+    <string name="cd_profile_avatar">Profile photo</string>
 </resources>

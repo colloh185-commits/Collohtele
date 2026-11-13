@@ -1,14 +1,17 @@
 package telefam.company.app
 
 import android.app.Application
+import coil.ImageLoader
+import coil.ImageLoaderFactory
 import com.telefam.company.app.BuildConfig
 import telefam.company.data.local.DeviceIdentityStore
 import telefam.company.data.local.TelefamDatabase
 import telefam.company.data.network.NetworkQualityMonitor
 import telefam.company.data.network.TelefamApiService
 import telefam.company.data.repository.TelefamRepository
+import telefam.company.media.TelefamVideoCacheManager
 
-class TelefamApplication : Application() {
+class TelefamApplication : Application(), ImageLoaderFactory {
   lateinit var repository: TelefamRepository
     private set
 
@@ -25,5 +28,9 @@ class TelefamApplication : Application() {
       networkMonitor = networkMonitor,
       apiService = apiService,
     )
+  }
+
+  override fun newImageLoader(): ImageLoader {
+    return TelefamVideoCacheManager.buildImageLoader(this)
   }
 }

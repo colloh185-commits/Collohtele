@@ -11,6 +11,7 @@ struct TelefamIosSearchView: View {
     var onTapHashtag: (String, TelefamIosPostMode) -> Void
     var onTapAudio: (TelefamIosSongTrack, TelefamIosPostMode) -> Void
     var onCommentComingSoon: () -> Void
+    var onOpenAuthorProfile: (String) -> Void = { _ in }
 
     @State private var viewerIndex: Int? = nil
 
@@ -42,6 +43,11 @@ struct TelefamIosSearchView: View {
                         viewerIndex = nil
                         dismiss()
                         onTapAudio(song, mode)
+                    },
+                    onOpenAuthorProfile: { uid in
+                        viewerIndex = nil
+                        dismiss()
+                        onOpenAuthorProfile(uid)
                     }
                 )
             } else {
@@ -126,9 +132,17 @@ struct TelefamIosSearchView: View {
                     ScrollView {
                         LazyVGrid(columns: gridItems, spacing: 10) {
                             ForEach(Array(store.searchResults.enumerated()), id: \.element.postId) { idx, item in
-                                TelefamIosSearchVideoCard(store: store, item: item) {
-                                    viewerIndex = idx
-                                }
+                                TelefamIosSearchVideoCard(
+                                    store: store,
+                                    item: item,
+                                    onTap: { viewerIndex = idx },
+                                    onOpenAuthorProfile: {
+                                        if !item.authorUserId.isEmpty {
+                                            dismiss()
+                                            onOpenAuthorProfile(item.authorUserId)
+                                        }
+                                    }
+                                )
                             }
                         }
                         .padding(12)
@@ -157,6 +171,7 @@ private struct TelefamIosSearchVideoCard: View {
     @ObservedObject var store: TelefamIosFeedStore
     let item: TelefamIosFeedItem
     let onTap: () -> Void
+    var onOpenAuthorProfile: () -> Void = {}
     @State private var mutedPlayer: AVPlayer? = nil
 
     var body: some View {
@@ -195,6 +210,9 @@ private struct TelefamIosSearchVideoCard: View {
                             .font(.system(size: 11.5, weight: .bold))
                             .foregroundColor(.white)
                             .lineLimit(1)
+                            .padding(.vertical, 2)
+                            .contentShape(Rectangle())
+                            .onTapGesture { onOpenAuthorProfile() }
                         Spacer()
                         HStack(spacing: 3) {
                             Image(systemName: "heart")

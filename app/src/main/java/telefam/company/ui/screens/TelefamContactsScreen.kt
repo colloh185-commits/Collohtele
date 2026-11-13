@@ -258,6 +258,7 @@ fun TelefamContactsContent(
   onToggleFollow: (String) -> Unit,
   onLoadNextPage: () -> Unit,
   onScrollVisibilityChanged: (Boolean) -> Unit,
+  onOpenUserProfile: (String) -> Unit = {},
   modifier: Modifier = Modifier,
 ) {
   BoxWithConstraints(
@@ -286,6 +287,7 @@ fun TelefamContactsContent(
         onToggleFollow = onToggleFollow,
         onLoadNextPage = onLoadNextPage,
         onScrollVisibilityChanged = onScrollVisibilityChanged,
+        onOpenUserProfile = onOpenUserProfile,
       )
     } else {
       ContactsSingleColumnList(
@@ -293,6 +295,7 @@ fun TelefamContactsContent(
         onToggleFollow = onToggleFollow,
         onLoadNextPage = onLoadNextPage,
         onScrollVisibilityChanged = onScrollVisibilityChanged,
+        onOpenUserProfile = onOpenUserProfile,
       )
     }
   }
@@ -304,6 +307,7 @@ private fun ContactsSingleColumnList(
   onToggleFollow: (String) -> Unit,
   onLoadNextPage: () -> Unit,
   onScrollVisibilityChanged: (Boolean) -> Unit,
+  onOpenUserProfile: (String) -> Unit,
 ) {
   val listState = rememberLazyListState()
   var lastScrollMarker by remember { mutableIntStateOf(0) }
@@ -361,6 +365,7 @@ private fun ContactsSingleColumnList(
       ContactRowItem(
         contact = contact,
         onToggleFollow = { onToggleFollow(contact.userId) },
+        onOpenProfile = { onOpenUserProfile(contact.userId) },
         cardStyle = false,
       )
     }
@@ -391,6 +396,7 @@ private fun ContactsMultiColumnGrid(
   onToggleFollow: (String) -> Unit,
   onLoadNextPage: () -> Unit,
   onScrollVisibilityChanged: (Boolean) -> Unit,
+  onOpenUserProfile: (String) -> Unit,
 ) {
   val gridState = rememberLazyGridState()
   var lastScrollMarker by remember { mutableIntStateOf(0) }
@@ -459,6 +465,7 @@ private fun ContactsMultiColumnGrid(
         ContactRowItem(
           contact = contact,
           onToggleFollow = { onToggleFollow(contact.userId) },
+          onOpenProfile = { onOpenUserProfile(contact.userId) },
           cardStyle = true,
         )
       }
@@ -507,12 +514,14 @@ private fun ContactsSectionSubtitle(filter: ContactFilterTab) {
 private fun ContactRowItem(
   contact: ContactUiItem,
   onToggleFollow: () -> Unit,
+  onOpenProfile: () -> Unit,
   cardStyle: Boolean,
 ) {
   val content = @Composable {
     Row(
       modifier = Modifier
         .fillMaxWidth()
+        .clickable(onClick = onOpenProfile)
         .padding(
           horizontal = if (cardStyle) 14.dp else 16.dp,
           vertical = if (cardStyle) 12.dp else 10.dp,

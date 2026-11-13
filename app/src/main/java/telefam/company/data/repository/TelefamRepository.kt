@@ -7,6 +7,7 @@ import android.os.Build
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.Types
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
+import com.telefam.company.app.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -17,6 +18,7 @@ import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import telefam.company.core.AdaptiveStreamSelector
 import telefam.company.core.ContactFilterTab
 import telefam.company.core.FeedInteractionAction
 import telefam.company.core.FeedSearchShortcut
@@ -34,6 +36,8 @@ import telefam.company.data.local.AuditLogEntity
 import telefam.company.data.local.CachedContactEntity
 import telefam.company.data.local.CachedFeedPostEntity
 import telefam.company.data.local.CachedHashtagEntity
+import telefam.company.data.local.CachedUserConnectionEntity
+import telefam.company.data.local.CachedUserProfileEntity
 import telefam.company.data.local.ContactSyncActionEntity
 import telefam.company.data.local.DeviceIdentityStore
 import telefam.company.data.local.FamilyCircleEntity
@@ -50,6 +54,7 @@ import telefam.company.data.local.TelefamDao
 import telefam.company.data.local.UserProfileEntity
 import telefam.company.data.network.AuditEventDto
 import telefam.company.data.network.ContactActionDto
+import telefam.company.data.network.ContactItemDto
 import telefam.company.data.network.ContactSyncActionDto
 import telefam.company.data.network.ContactSyncBatchRequestDto
 import telefam.company.data.network.CreatePostRequestDto
@@ -68,6 +73,8 @@ import telefam.company.data.network.SyncBatchRequestDto
 import telefam.company.data.network.SyncOperationDto
 import telefam.company.data.network.TelefamApiService
 import telefam.company.data.network.UpdatePostRequestDto
+import telefam.company.data.network.UserProfileResponseDto
+import telefam.company.data.network.UserReportRequestDto
 import telefam.company.data.network.VerifyLinkDto
 import telefam.company.data.network.VerifyOtpDto
 import telefam.company.media.MediaUploadProcessor
@@ -160,6 +167,12 @@ data class FeedSearchFetchResult(
   val items: List<CachedFeedPostEntity>,
 )
 
+data class UserConnectionsPageResult(
+  val items: List<ContactItemDto>,
+  val page: Int,
+  val hasMore: Boolean,
+)
+
 class TelefamRepository(
   private val appContext: Context,
   private val dao: TelefamDao,
@@ -173,6 +186,9 @@ class TelefamRepository(
   )
   private val renditionsListAdapter = moshi.adapter<List<FeedVideoRenditionDto>>(
     Types.newParameterizedType(List::class.java, FeedVideoRenditionDto::class.java),
+  )
+  private val feedItemListAdapter = moshi.adapter<List<FeedItemDto>>(
+    Types.newParameterizedType(List::class.java, FeedItemDto::class.java),
   )
   private val songAdapter = moshi.adapter(SongTrackDto::class.java)
 
@@ -780,36 +796,46 @@ class TelefamRepository(
       zoomScale = zoomScale,
     )
 
-    dao.insertMediaUpload(
-      MediaUploadEntity(
-        mediaId = processed.mediaId,
-        ownerUserId = userId,
-        storageObjectKey = processed.storageObjectKey,
-        mimeType = processed.mimeType,
-        sha256Fingerprint = processed.sha256Fingerprint,
-        dHashFingerprint = processed.dHashFingerprint,
-        byteSize = processed.byteSize,
-        localFilePath = processed.localFilePath,
-        createdAtMs = System.currentTimeMillis(),
-      ),
-    )
-
+    var finalMediaId = processed.mediaId
     val api = apiService
     val accessToken = identityStore.sessionFlow.first().accessToken
     if (api != null && !accessToken.isNullOrBlank() && networkTier.value != NetworkTier.OFFLINE) {
       val bytes = File(processed.localFilePath).readBytes()
       val reqBody = bytes.toRequestBody("image/jpeg".toMediaType())
-      runCatching {
+      val uploadResp = runCatching {
         api.uploadAvatar("Bearer $accessToken", buildDeviceFingerprint(), centerX, centerY, zoomScale, reqBody)
+      }.getOrNull()
+      val serverMediaId = if (uploadResp != null && uploadResp.isSuccessful) {
+        uploadResp.body()?.mediaId?.trim()?.takeIf { it.isNotBlank() }
+      } else {
+        null
+      }
+      if (serverMediaId != null) {
+        finalMediaId = serverMediaId
       }
     }
+
+    val updated = processed.copy(mediaId = finalMediaId)
+    dao.insertMediaUpload(
+      MediaUploadEntity(
+        mediaId = updated.mediaId,
+        ownerUserId = userId,
+        storageObjectKey = updated.storageObjectKey,
+        mimeType = updated.mimeType,
+        sha256Fingerprint = updated.sha256Fingerprint,
+        dHashFingerprint = updated.dHashFingerprint,
+        byteSize = updated.byteSize,
+        localFilePath = updated.localFilePath,
+        createdAtMs = System.currentTimeMillis(),
+      ),
+    )
 
     logAudit(
       userId,
       "media_avatar_uploaded",
-      "{\"media_id\":\"${processed.mediaId}\",\"dhash\":\"${processed.dHashFingerprint}\"}",
+      "{\"media_id\":\"${updated.mediaId}\",\"dhash\":\"${updated.dHashFingerprint}\"}",
     )
-    return processed
+    return updated
   }
 
   suspend fun saveProfileSetup(
@@ -1550,6 +1576,7 @@ class TelefamRepository(
         FeedInteractionAction.SHARE -> existing.copy(sharesCount = existing.sharesCount + 1L)
         FeedInteractionAction.NOT_INTERESTED -> existing.copy(isHiddenByUser = true)
         FeedInteractionAction.BLOCK -> existing
+        FeedInteractionAction.VIEW -> existing.copy(viewsCount = existing.viewsCount + 1L)
         FeedInteractionAction.REPORT, FeedInteractionAction.WATCH, FeedInteractionAction.SKIP -> existing
       }
       if (action == FeedInteractionAction.BLOCK && existing.authorUserId.isNotBlank()) {
@@ -1885,9 +1912,57 @@ class TelefamRepository(
       tabKey = tabKey,
       sortOrder = sortOrder,
       isHiddenByUser = false,
+      viewsCount = viewsCount,
       createdAtMs = createdAtMs,
       cachedAtMs = nowMs,
     )
+  }
+
+  private fun CachedFeedPostEntity.toFeedItemDto(): FeedItemDto {
+    val parsedSong = songJson?.let { runCatching { songAdapter.fromJson(it) }.getOrNull() }
+    val parsedRenditions = runCatching { renditionsListAdapter.fromJson(renditionsJson).orEmpty() }.getOrDefault(emptyList())
+    return FeedItemDto(
+      postId = postId,
+      authorUserId = authorUserId,
+      authorUsername = authorUsername,
+      authorFullName = authorFullName,
+      authorAvatarUrl = authorAvatarUrl.orEmpty(),
+      isFollowingAuthor = isFollowingAuthor,
+      isOwner = isOwner,
+      mode = mode,
+      textContent = textContent,
+      caption = caption,
+      themeId = themeId,
+      fontId = fontId,
+      song = parsedSong,
+      hashtags = parseStringList(hashtagsJson),
+      photoUrls = parseStringList(photoUrlsJson),
+      videoUrl = videoUrl,
+      thumbnailUrl = thumbnailUrl,
+      renditions = parsedRenditions,
+      width = width,
+      height = height,
+      durationMs = durationMs,
+      muteOriginalAudio = muteOriginalAudio,
+      contentId = contentId,
+      likesCount = likesCount,
+      commentsCount = commentsCount,
+      sharesCount = sharesCount,
+      favouritesCount = favouritesCount,
+      repostsCount = repostsCount,
+      viewsCount = viewsCount,
+      isLiked = isLiked,
+      isFavourited = isFavourited,
+      isReposted = isReposted,
+      repostedByUsername = repostedByUsername,
+      recommendationLabel = recommendationLabel,
+      relevanceScore = relevanceScore,
+      createdAtMs = createdAtMs,
+    )
+  }
+
+  fun feedPostDtoToEntity(dto: FeedItemDto, tabKey: String = "profile", sortOrder: Int = 0): CachedFeedPostEntity {
+    return dto.toCachedEntity(tabKey = tabKey, sortOrder = sortOrder, nowMs = System.currentTimeMillis())
   }
 
   private suspend fun scheduleRetryForPendingPost(entity: PendingPostUploadEntity): PostPublishResult.QueuedOffline {
@@ -1970,6 +2045,7 @@ class TelefamRepository(
     val callerId = session.userId.orEmpty()
     val isCaller = cleanId == callerId
     val api = apiService
+    val nowMs = System.currentTimeMillis()
 
     if (api != null && token.isNotBlank() && networkTier.value != NetworkTier.OFFLINE) {
       val deviceFp = buildDeviceFingerprint()
@@ -1978,24 +2054,89 @@ class TelefamRepository(
       }
       val body = if (resp != null && resp.isSuccessful) resp.body() else null
       if (body != null && body.success) {
-        return body
+        val existingCached = dao.getCachedUserProfile(cleanId)
+        val localAvatarPath = cacheProfileAvatarIfNeeded(
+          api = api,
+          userId = cleanId,
+          avatarUrl = body.avatarUrl,
+          existingLocalPath = existingCached?.avatarLocalPath,
+        )
+        val serializedPosts = runCatching { feedItemListAdapter.toJson(body.posts) }.getOrDefault("[]")
+        dao.upsertCachedUserProfile(
+          CachedUserProfileEntity(
+            userId = body.userId.ifBlank { cleanId },
+            fullName = body.fullName,
+            username = body.username,
+            avatarUrl = body.avatarUrl.ifBlank { null },
+            avatarLocalPath = localAvatarPath,
+            bio = body.bio,
+            location = body.location,
+            countryIso = body.countryIso,
+            followingCount = body.followingCount,
+            followersCount = body.followersCount,
+            likesCount = body.likesCount,
+            isFollowing = body.isFollowing,
+            followsYou = body.followsYou,
+            isOwner = body.isOwner || isCaller,
+            isBlocked = body.isBlocked,
+            riskScore = body.riskScore,
+            relationshipState = body.relationshipState,
+            postsJson = serializedPosts,
+            cachedAtMs = nowMs,
+          ),
+        )
+        val effectiveAvatar = localAvatarPath?.takeIf { File(it).exists() } ?: body.avatarUrl
+        return body.copy(avatarUrl = effectiveAvatar)
       }
     }
 
-    // Local / Offline fallback from Room database
+    // Local / Offline fallback from dedicated Room profile cache + Room contacts/posts
+    val cachedProfile = dao.getCachedUserProfile(cleanId)
     val myProfile = if (isCaller) dao.getProfileByUserId(callerId) else null
     val cachedContact = dao.getCachedContact(cleanId)
+    val pendingSync = dao.getAllPendingContactSyncActions().firstOrNull { it.targetUserId == cleanId }
     val authorPosts = dao.getFeedPostsByAuthor(cleanId)
-    val videoDtos = authorPosts.filter { it.mode == "video" }.map { p ->
-      UserProfileVideoDto(
-        postId = p.postId,
-        thumbnailUrl = p.thumbnailUrl,
-        videoUrl = p.videoUrl,
-        viewsCount = p.sharesCount * 3 + p.likesCount * 2 + 120L,
-        durationMs = p.durationMs,
-        caption = p.caption,
-        createdAtMs = p.createdAtMs,
+    val localPostDtos = authorPosts.map { it.toFeedItemDto() }
+
+    if (cachedProfile != null) {
+      val cachedPosts = runCatching { feedItemListAdapter.fromJson(cachedProfile.postsJson).orEmpty() }
+        .getOrDefault(emptyList())
+      val mergedPosts = if (cachedPosts.isNotEmpty()) {
+        val byLocalId = localPostDtos.associateBy { it.postId }
+        cachedPosts.map { p -> byLocalId[p.postId] ?: p }
+      } else {
+        localPostDtos
+      }
+      val effFollowing = pendingSync?.wantFollow ?: cachedProfile.isFollowing
+      val effFollowsYou = cachedContact?.followsYou ?: cachedProfile.followsYou
+      val relState = computeRelationshipStateString(effFollowing, effFollowsYou)
+      val avatarResolved = cachedProfile.avatarLocalPath?.takeIf { File(it).exists() }
+        ?: myProfile?.avatarLocalPath?.takeIf { File(it).exists() }
+        ?: cachedProfile.avatarUrl.orEmpty()
+      return UserProfileResponseDto(
+        success = true,
+        userId = cachedProfile.userId,
+        fullName = myProfile?.fullName?.ifBlank { null } ?: cachedProfile.fullName,
+        username = myProfile?.username?.ifBlank { null } ?: cachedProfile.username,
+        avatarUrl = avatarResolved,
+        bio = myProfile?.bio?.ifBlank { null } ?: cachedProfile.bio,
+        location = myProfile?.location?.ifBlank { null } ?: cachedProfile.location,
+        countryIso = myProfile?.countryIso?.ifBlank { null } ?: cachedProfile.countryIso,
+        followingCount = cachedProfile.followingCount,
+        followersCount = cachedProfile.followersCount,
+        likesCount = maxOf(cachedProfile.likesCount, authorPosts.sumOf { it.likesCount }),
+        isFollowing = effFollowing,
+        followsYou = effFollowsYou,
+        isOwner = cachedProfile.isOwner || isCaller,
+        relationshipState = relState,
+        isBlocked = cachedProfile.isBlocked,
+        riskScore = cachedProfile.riskScore,
+        posts = mergedPosts,
       )
+    }
+
+    if (myProfile == null && cachedContact == null && localPostDtos.isEmpty()) {
+      return null
     }
 
     val fullName = myProfile?.fullName ?: cachedContact?.fullName ?: authorPosts.firstOrNull()?.authorFullName ?: "User"
@@ -2003,14 +2144,12 @@ class TelefamRepository(
     val avatarUrl = myProfile?.avatarLocalPath ?: cachedContact?.avatarLocalPath ?: cachedContact?.avatarUrl ?: authorPosts.firstOrNull()?.authorAvatarUrl.orEmpty()
     val location = myProfile?.location ?: cachedContact?.location ?: ""
     val bio = myProfile?.bio ?: ""
-    val isFollowing = cachedContact?.isFollowing ?: authorPosts.firstOrNull()?.isFollowingAuthor ?: false
+    val isFollowing = pendingSync?.wantFollow ?: cachedContact?.isFollowing ?: authorPosts.firstOrNull()?.isFollowingAuthor ?: false
     val followsYou = cachedContact?.followsYou ?: false
-    val relState = when {
-      isFollowing && followsYou -> "FRIENDS"
-      isFollowing -> "FOLLOWING"
-      followsYou -> "FOLLOW_BACK"
-      else -> "FOLLOW"
-    }
+    val relState = computeRelationshipStateString(isFollowing, followsYou)
+    val cachedContactsAll = dao.observeAllCachedContacts().first()
+    val offlineFollowingCount = if (isCaller) cachedContactsAll.count { it.isFollowing }.toLong() else dao.getCachedUserConnections(cleanId, "following").size.toLong()
+    val offlineFollowersCount = if (isCaller) cachedContactsAll.count { it.followsYou }.toLong() else dao.getCachedUserConnections(cleanId, "followers").size.toLong()
 
     return UserProfileResponseDto(
       success = true,
@@ -2021,57 +2160,265 @@ class TelefamRepository(
       bio = bio,
       location = location,
       countryIso = myProfile?.countryIso ?: cachedContact?.countryIso ?: "",
-      followingCount = if (isCaller) 126L else 142L,
-      followersCount = if (isCaller) 84L else 1250L,
+      followingCount = offlineFollowingCount,
+      followersCount = offlineFollowersCount,
       likesCount = authorPosts.sumOf { it.likesCount },
       isFollowing = isFollowing,
       followsYou = followsYou,
       isOwner = isCaller,
       relationshipState = relState,
-      videos = videoDtos,
+      isBlocked = false,
+      riskScore = cachedContact?.riskScore ?: 0.0,
+      posts = localPostDtos,
     )
   }
 
-  suspend fun fetchUserConnections(userId: String, isFollowers: Boolean): List<ContactItemDto> {
+  suspend fun fetchUserConnections(
+    userId: String,
+    isFollowers: Boolean,
+    page: Int = 1,
+    pageSize: Int = 30,
+  ): UserConnectionsPageResult {
     val cleanId = userId.trim()
-    if (cleanId.isBlank()) return emptyList()
+    if (cleanId.isBlank()) return UserConnectionsPageResult(items = emptyList(), page = 1, hasMore = false)
+    val cleanPage = page.coerceAtLeast(1)
+    val listType = if (isFollowers) "followers" else "following"
     val session = identityStore.sessionFlow.first()
     val token = session.accessToken.orEmpty()
+    val callerId = session.userId.orEmpty()
     val api = apiService
+    val nowMs = System.currentTimeMillis()
 
     if (api != null && token.isNotBlank() && networkTier.value != NetworkTier.OFFLINE) {
       val deviceFp = buildDeviceFingerprint()
       val resp = executeWithWeakNetworkRetry {
-        api.getUserConnections("Bearer $token", deviceFp, cleanId, if (isFollowers) "followers" else "following")
+        if (isFollowers) {
+          api.getUserFollowers("Bearer $token", deviceFp, cleanId, cleanPage, pageSize)
+        } else {
+          api.getUserFollowing("Bearer $token", deviceFp, cleanId, cleanPage, pageSize)
+        }
       }
       val body = if (resp != null && resp.isSuccessful) resp.body() else null
       if (body != null && body.success) {
-        return body.items
+        if (cleanPage == 1) {
+          dao.deleteCachedUserConnectionsFor(cleanId, listType)
+        }
+        val offset = (cleanPage - 1) * pageSize
+        val cachedEntities = body.items.mapIndexed { idx, item ->
+          CachedUserConnectionEntity(
+            compositeKey = "$cleanId|$listType|${item.userId}",
+            ownerUserId = cleanId,
+            listType = listType,
+            targetUserId = item.userId,
+            fullName = item.fullName,
+            username = item.username,
+            location = item.location,
+            countryIso = item.countryIso,
+            avatarUrl = item.avatarUrl,
+            avatarLocalPath = dao.getCachedContact(item.userId)?.avatarLocalPath,
+            isFollowing = item.isFollowing,
+            followsYou = item.followsYou,
+            relationshipState = item.relationshipState,
+            sortOrder = offset + idx,
+            cachedAtMs = nowMs,
+          )
+        }
+        if (cachedEntities.isNotEmpty()) {
+          dao.insertCachedUserConnections(cachedEntities)
+        }
+        return UserConnectionsPageResult(
+          items = body.items,
+          page = body.page.coerceAtLeast(cleanPage),
+          hasMore = body.hasMore,
+        )
       }
     }
 
-    val cached = dao.observeAllCachedContacts().first()
-    return cached.map { c ->
-      ContactItemDto(
-        userId = c.userId,
-        fullName = c.fullName,
-        username = c.username,
-        location = c.location,
-        countryIso = c.countryIso,
-        avatarUrl = c.avatarLocalPath ?: c.avatarUrl,
-        isFollowing = c.isFollowing,
-        followsYou = c.followsYou,
-        relationshipState = when {
-          c.isFollowing && c.followsYou -> "FRIENDS"
-          c.isFollowing -> "FOLLOWING"
-          c.followsYou -> "FOLLOW_BACK"
-          else -> "FOLLOW"
-        },
-        riskScore = c.riskScore,
-        updatedAtMs = c.updatedAtMs,
+    val cachedList = dao.getCachedUserConnections(cleanId, listType)
+    if (cachedList.isNotEmpty()) {
+      val mapped = cachedList.map { c ->
+        ContactItemDto(
+          userId = c.targetUserId,
+          fullName = c.fullName,
+          username = c.username,
+          location = c.location,
+          countryIso = c.countryIso,
+          avatarUrl = c.avatarLocalPath ?: c.avatarUrl,
+          isFollowing = c.isFollowing,
+          followsYou = c.followsYou,
+          relationshipState = c.relationshipState,
+        )
+      }
+      val offset = (cleanPage - 1) * pageSize
+      val slice = if (offset >= mapped.size) emptyList() else mapped.subList(offset, minOf(mapped.size, offset + pageSize))
+      return UserConnectionsPageResult(
+        items = slice,
+        page = cleanPage,
+        hasMore = offset + slice.size < mapped.size,
       )
     }
+
+    if (cleanId == callerId) {
+      val cachedContacts = dao.observeAllCachedContacts().first()
+      val filtered = cachedContacts.filter { if (isFollowers) it.followsYou else it.isFollowing }
+      return UserConnectionsPageResult(
+        items = filtered.map { c ->
+          ContactItemDto(
+            userId = c.userId,
+            fullName = c.fullName,
+            username = c.username,
+            location = c.location,
+            countryIso = c.countryIso,
+            avatarUrl = c.avatarLocalPath ?: c.avatarUrl,
+            isFollowing = c.isFollowing,
+            followsYou = c.followsYou,
+            relationshipState = computeRelationshipStateString(c.isFollowing, c.followsYou),
+            riskScore = c.riskScore,
+            updatedAtMs = c.updatedAtMs,
+          )
+        },
+        page = 1,
+        hasMore = false,
+      )
+    }
+
+    return UserConnectionsPageResult(items = emptyList(), page = 1, hasMore = false)
   }
+
+  suspend fun recordPostView(postId: String) {
+    if (postId.isBlank()) return
+    dao.incrementCachedFeedPostView(postId)
+    performFeedInteraction(postId = postId, action = FeedInteractionAction.VIEW)
+  }
+
+  suspend fun blockUserProfile(targetUserId: String): Boolean {
+    val cleanId = targetUserId.trim()
+    if (cleanId.isBlank()) return false
+    val session = identityStore.sessionFlow.first()
+    val callerId = session.userId.orEmpty()
+    if (cleanId == callerId) return false
+
+    dao.hideFeedPostsByAuthor(cleanId)
+    dao.updateCachedUserProfileBlocked(cleanId, isBlocked = true, isFollowing = false, relationshipState = "FOLLOW")
+    dao.getCachedContact(cleanId)?.let { existing ->
+      dao.updateCachedContactRelationship(
+        userId = cleanId,
+        isFollowing = false,
+        followsYou = existing.followsYou,
+        updatedAtMs = System.currentTimeMillis(),
+        cachedAtMs = System.currentTimeMillis(),
+      )
+    }
+    dao.updateCachedUserConnectionFollow(cleanId, isFollowing = false, relationshipState = "FOLLOW")
+
+    val api = apiService
+    val token = session.accessToken.orEmpty()
+    if (api != null && token.isNotBlank() && networkTier.value != NetworkTier.OFFLINE) {
+      val resp = executeWithWeakNetworkRetry {
+        api.blockUser("Bearer $token", buildDeviceFingerprint(), cleanId)
+      }
+      if (resp != null && resp.isSuccessful) {
+        if (callerId.isNotBlank()) {
+          logAudit(callerId, "user_blocked", "{\"target\":\"$cleanId\"}")
+        }
+        return true
+      }
+      return false
+    }
+    return true
+  }
+
+  suspend fun unblockUserProfile(targetUserId: String): Boolean {
+    val cleanId = targetUserId.trim()
+    if (cleanId.isBlank()) return false
+    val session = identityStore.sessionFlow.first()
+    val callerId = session.userId.orEmpty()
+    dao.updateCachedUserProfileBlocked(cleanId, isBlocked = false, isFollowing = false, relationshipState = "FOLLOW")
+
+    val api = apiService
+    val token = session.accessToken.orEmpty()
+    if (api != null && token.isNotBlank() && networkTier.value != NetworkTier.OFFLINE) {
+      val resp = executeWithWeakNetworkRetry {
+        api.unblockUser("Bearer $token", buildDeviceFingerprint(), cleanId)
+      }
+      if (resp != null && resp.isSuccessful) {
+        if (callerId.isNotBlank()) {
+          logAudit(callerId, "user_unblocked", "{\"target\":\"$cleanId\"}")
+        }
+        return true
+      }
+      return false
+    }
+    return true
+  }
+
+  suspend fun reportUserProfile(targetUserId: String, reason: String, details: String): Boolean {
+    val cleanId = targetUserId.trim()
+    if (cleanId.isBlank()) return false
+    val cleanReason = TelefamProfileSanitizer.sanitizePlainText(reason, 64, singleLine = true).ifBlank { "other" }
+    val cleanDetails = TelefamProfileSanitizer.sanitizePlainText(details, 300, singleLine = false)
+    val session = identityStore.sessionFlow.first()
+    val callerId = session.userId.orEmpty()
+
+    if (callerId.isNotBlank()) {
+      logAudit(callerId, "user_reported", "{\"target\":\"$cleanId\",\"reason\":\"$cleanReason\"}")
+    }
+
+    val api = apiService
+    val token = session.accessToken.orEmpty()
+    if (api != null && token.isNotBlank() && networkTier.value != NetworkTier.OFFLINE) {
+      val resp = executeWithWeakNetworkRetry {
+        api.reportUser(
+          bearer = "Bearer $token",
+          deviceFingerprint = buildDeviceFingerprint(),
+          userId = cleanId,
+          body = UserReportRequestDto(reason = cleanReason, details = cleanDetails),
+        )
+      }
+      return resp != null && resp.isSuccessful && (resp.body()?.success == true)
+    }
+    return false
+  }
+
+  private suspend fun cacheProfileAvatarIfNeeded(
+    api: TelefamApiService,
+    userId: String,
+    avatarUrl: String,
+    existingLocalPath: String?,
+  ): String? {
+    val cleanUrl = avatarUrl.trim()
+    if (cleanUrl.isBlank()) return existingLocalPath?.takeIf { File(it).exists() }
+    if (!existingLocalPath.isNullOrBlank() && File(existingLocalPath).exists()) return existingLocalPath
+    val cacheDir = File(appContext.filesDir, "telefam_media/profile_avatars").apply {
+      if (!exists()) mkdirs()
+    }
+    val safeId = userId.replace(Regex("[^A-Za-z0-9_-]"), "_")
+    val targetFile = File(cacheDir, "$safeId.jpg")
+    if (targetFile.exists() && targetFile.length() > 0L) {
+      return targetFile.absolutePath
+    }
+    val resolvedUrl = AdaptiveStreamSelector.resolveMediaUrl(BuildConfig.TELEFAM_API_BASE_URL, cleanUrl)
+    runCatching {
+      val response = api.downloadMedia(resolvedUrl)
+      if (response.isSuccessful) {
+        val bytes = response.body()?.bytes()
+        if (bytes != null && bytes.isNotEmpty() && MediaUploadProcessor.isSupportedImageMagicBytes(bytes)) {
+          targetFile.writeBytes(bytes)
+          return targetFile.absolutePath
+        }
+      }
+    }
+    return null
+  }
+
+  private fun computeRelationshipStateString(isFollowing: Boolean, followsYou: Boolean): String = when {
+    isFollowing && followsYou -> "FRIENDS"
+    isFollowing -> "FOLLOWING"
+    followsYou -> "FOLLOW_BACK"
+    else -> "FOLLOW"
+  }
+
+  fun applicationContext(): Context = appContext
 
   suspend fun signOut() {
     val session = identityStore.sessionFlow.first()

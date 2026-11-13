@@ -388,4 +388,128 @@ func TestFeedsDynamicRecommendationsRangeStreamingRepostAndOwnerEditDelete(t *te
 	}
 }
 
+func TestUserProfileViewsConnectionsBlockAndReport(t *testing.T) {
+	secret := []byte("0123456789abcdef0123456789abcdef")
+	fp := fingerprint.NewService(secret)
+	limiter := ratelimit.NewLimiter()
+	otpSvc := NewOtpService(secret, "https://telefam.company")
+	tokens := NewTokenService(secret)
+	aud := audit.NewLogger()
+	contactsSvc := contacts.NewService()
+	h := NewHandler(fp, limiter, otpSvc, tokens, aud, nil, contactsSvc)
+
+	deviceA := "android_device_prof_1"
+	deviceB := "android_device_prof_2"
+	fpA, _ := fp.ExtractDeviceFingerprint(&http.Request{Header: http.Header{"X-Telefam-Device-FP": []string{deviceA}}})
+	fpB, _ := fp.ExtractDeviceFingerprint(&http.Request{Header: http.Header{"X-Telefam-Device-FP": []string{deviceB}}})
+
+	contactsSvc.RegisterOrUpdateUser(contacts.DirectoryUser{UserID: "viewer_p", Username: "viewer_p", FullName: "Viewer User", Country: "Kenya", CountryISO: "KE"}, fpA)
+	contactsSvc.RegisterOrUpdateUser(contacts.DirectoryUser{UserID: "alex_p", Username: "alexmwangi", FullName: "Alex Mwangi", Country: "Nairobi, Kenya", CountryISO: "KE"}, fpB)
+	contactsSvc.RegisterOrUpdateUser(contacts.DirectoryUser{UserID: "friend_p", Username: "amara", FullName: "Amara", Country: "Nigeria", CountryISO: "NG"}, fpB)
+	contactsSvc.SetFollowing("alex_p", "viewer_p", fpB, true)
+	contactsSvc.SetFollowing("friend_p", "alex_p", fpB, true)
+
+	pairViewer, _, _ := tokens.IssueInitialPair("viewer_p", "viewerp@telefam.company", fpA)
+	pairAlex, _, _ := tokens.IssueInitialPair("alex_p", "alexp@telefam.company", fpB)
+
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	mp4 := []byte{0x00, 0x00, 0x00, 0x18, 'f', 't', 'y', 'p', 'm', 'p', '4', '2', 0, 0, 0, 0, 'm', 'd', 'a', 't', 1, 2, 3, 4}
+	upReq := httptest.NewRequest(http.MethodPost, "/v1/media/video?duration_ms=8000&width=1080&height=1920", bytes.NewReader(mp4))
+	upReq.Header.Set("Authorization", "Bearer "+pairAlex.AccessToken)
+	upReq.Header.Set("X-Telefam-Device-FP", deviceB)
+	upRec := httptest.NewRecorder()
+	mux.ServeHTTP(upRec, upReq)
+	var mediaResp MediaUploadResponse
+	_ = json.NewDecoder(upRec.Body).Decode(&mediaResp)
+
+	postReq := httptest.NewRequest(http.MethodPost, "/v1/posts", bytes.NewBufferString(`{"client_op_id":"op_alex_1","mode":"video","caption":"Coffee day","video_media_id":"`+mediaResp.MediaID+`"}`))
+	postReq.Header.Set("Authorization", "Bearer "+pairAlex.AccessToken)
+	postReq.Header.Set("X-Telefam-Device-FP", deviceB)
+	postRec := httptest.NewRecorder()
+	mux.ServeHTTP(postRec, postReq)
+	var createdOut struct {
+		Post struct {
+			PostID string `json:"post_id"`
+		} `json:"post"`
+	}
+	_ = json.NewDecoder(postRec.Body).Decode(&createdOut)
+
+	// Record view + like from viewer -> verifies real counts (not hardcoded)
+	for _, actionBody := range []string{
+		`{"post_id":"` + createdOut.Post.PostID + `","action":"view"}`,
+		`{"post_id":"` + createdOut.Post.PostID + `","action":"like"}`,
+	} {
+		iReq := httptest.NewRequest(http.MethodPost, "/v1/feeds/interact", bytes.NewBufferString(actionBody))
+		iReq.Header.Set("Authorization", "Bearer "+pairViewer.AccessToken)
+		iReq.Header.Set("X-Telefam-Device-FP", deviceA)
+		iRec := httptest.NewRecorder()
+		mux.ServeHTTP(iRec, iReq)
+		if iRec.Code != http.StatusOK {
+			t.Fatalf("interact failed: %d", iRec.Code)
+		}
+	}
+
+	profReq := httptest.NewRequest(http.MethodGet, "/v1/users/alex_p/profile", nil)
+	profReq.Header.Set("Authorization", "Bearer "+pairViewer.AccessToken)
+	profReq.Header.Set("X-Telefam-Device-FP", deviceA)
+	profRec := httptest.NewRecorder()
+	mux.ServeHTTP(profRec, profReq)
+	if profRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 getting profile, got %d", profRec.Code)
+	}
+	var profResp UserProfileResponse
+	_ = json.NewDecoder(profRec.Body).Decode(&profResp)
+	if !profResp.FollowsYou || profResp.RelationshipState != "FOLLOW_BACK" || profResp.LikesCount != 1 || len(profResp.Posts) != 1 || profResp.Posts[0].ViewsCount != 1 {
+		t.Fatalf("unexpected user profile response: %+v", profResp)
+	}
+
+	followersReq := httptest.NewRequest(http.MethodGet, "/v1/users/alex_p/followers?page=1&page_size=20", nil)
+	followersReq.Header.Set("Authorization", "Bearer "+pairViewer.AccessToken)
+	followersReq.Header.Set("X-Telefam-Device-FP", deviceA)
+	followersRec := httptest.NewRecorder()
+	mux.ServeHTTP(followersRec, followersReq)
+	if followersRec.Code != http.StatusOK || !strings.Contains(followersRec.Body.String(), "amara") {
+		t.Fatalf("expected followers list to include amara, got %d: %s", followersRec.Code, followersRec.Body.String())
+	}
+
+	repReq := httptest.NewRequest(http.MethodPost, "/v1/users/alex_p/report", bytes.NewBufferString(`{"reason":"Impersonation","details":"Fake clone"}`))
+	repReq.Header.Set("Authorization", "Bearer "+pairViewer.AccessToken)
+	repReq.Header.Set("X-Telefam-Device-FP", deviceA)
+	repRec := httptest.NewRecorder()
+	mux.ServeHTTP(repRec, repReq)
+	if repRec.Code != http.StatusOK || !strings.Contains(repRec.Body.String(), `"reported_user_id":"alex_p"`) {
+		t.Fatalf("expected report success, got %d: %s", repRec.Code, repRec.Body.String())
+	}
+
+	blkReq := httptest.NewRequest(http.MethodPost, "/v1/users/alex_p/block", nil)
+	blkReq.Header.Set("Authorization", "Bearer "+pairViewer.AccessToken)
+	blkReq.Header.Set("X-Telefam-Device-FP", deviceA)
+	blkRec := httptest.NewRecorder()
+	mux.ServeHTTP(blkRec, blkReq)
+	if blkRec.Code != http.StatusOK || !strings.Contains(blkRec.Body.String(), `"is_blocked":true`) {
+		t.Fatalf("expected block success, got %d: %s", blkRec.Code, blkRec.Body.String())
+	}
+
+	unblkReq := httptest.NewRequest(http.MethodPost, "/v1/users/alex_p/unblock", nil)
+	unblkReq.Header.Set("Authorization", "Bearer "+pairViewer.AccessToken)
+	unblkReq.Header.Set("X-Telefam-Device-FP", deviceA)
+	unblkRec := httptest.NewRecorder()
+	mux.ServeHTTP(unblkRec, unblkReq)
+	if unblkRec.Code != http.StatusOK || !strings.Contains(unblkRec.Body.String(), `"is_blocked":false`) {
+		t.Fatalf("expected unblock success, got %d: %s", unblkRec.Code, unblkRec.Body.String())
+	}
+
+	meReq := httptest.NewRequest(http.MethodGet, "/v1/users/me/profile", nil)
+	meReq.Header.Set("Authorization", "Bearer "+pairAlex.AccessToken)
+	meReq.Header.Set("X-Telefam-Device-FP", deviceB)
+	meRec := httptest.NewRecorder()
+	mux.ServeHTTP(meRec, meReq)
+	if meRec.Code != http.StatusOK || !strings.Contains(meRec.Body.String(), `"is_owner":true`) {
+		t.Fatalf("expected own profile via /me, got %d: %s", meRec.Code, meRec.Body.String())
+	}
+}
+
+
 

@@ -423,6 +423,7 @@ fun FeedCreatorAvatarWithFollow(
   isFollowing: Boolean,
   isOwner: Boolean,
   onClickFollow: () -> Unit,
+  onClickProfile: () -> Unit = {},
   modifier: Modifier = Modifier,
 ) {
   Box(
@@ -434,23 +435,24 @@ fun FeedCreatorAvatarWithFollow(
         .size(46.dp)
         .clip(CircleShape)
         .border(1.8.dp, Color.White, CircleShape)
-        .background(Color(0xFF242833)),
+        .background(Color(0xFF242833))
+        .clickable(onClick = onClickProfile)
+        .testTag("feed_author_avatar"),
       contentAlignment = Alignment.Center,
     ) {
+      val initial = authorFullName.trim().firstOrNull()?.uppercase() ?: "T"
+      Text(
+        text = initial,
+        color = Color.White,
+        fontWeight = FontWeight.Bold,
+        fontSize = 18.sp,
+      )
       if (!avatarUrl.isNullOrBlank()) {
         AsyncImage(
           model = avatarUrl,
           contentDescription = authorFullName,
           contentScale = ContentScale.Crop,
           modifier = Modifier.fillMaxSize(),
-        )
-      } else {
-        val initial = authorFullName.trim().firstOrNull()?.uppercase() ?: "T"
-        Text(
-          text = initial,
-          color = Color.White,
-          fontWeight = FontWeight.Bold,
-          fontSize = 18.sp,
         )
       }
     }

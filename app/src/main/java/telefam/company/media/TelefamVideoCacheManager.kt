@@ -3,6 +3,7 @@ package telefam.company.media
 import android.content.Context
 import android.net.Uri
 import androidx.annotation.OptIn
+import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
@@ -20,6 +21,10 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
+import coil.ImageLoader
+import coil.disk.DiskCache
+import coil.memory.MemoryCache
+import com.telefam.company.app.BuildConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -29,6 +34,7 @@ import okhttp3.OkHttpClient
 import telefam.company.core.AdaptiveStreamSelector
 import telefam.company.core.NetworkTier
 import java.io.File
+import java.net.URI
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
@@ -47,17 +53,77 @@ object TelefamVideoCacheManager {
   @Volatile
   private var sharedHttpClient: OkHttpClient? = null
 
+  @Volatile
+  private var sharedImageLoader: ImageLoader? = null
+
   private val preloadScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
   private val activePreloadJob = AtomicReference<Job?>(null)
+  private val liveCredentials = AtomicReference(Pair("", ""))
+
+  fun updateCredentials(bearerToken: String, deviceFingerprint: String) {
+    liveCredentials.set(bearerToken.trim() to deviceFingerprint.trim())
+  }
+
+  private fun isTelefamHost(host: String, encodedPath: String): Boolean {
+    if (encodedPath.startsWith("/v1/media/")) return true
+    val configuredHost = runCatching {
+      val base = BuildConfig.TELEFAM_API_BASE_URL.trim()
+      if (base.isBlank()) null else URI(base).host
+    }.getOrNull()
+    return !configuredHost.isNullOrBlank() && host.equals(configuredHost, ignoreCase = true)
+  }
 
   fun getHttpClient(): OkHttpClient {
     return sharedHttpClient ?: synchronized(this) {
       sharedHttpClient ?: OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
+        .connectTimeout(12, TimeUnit.SECONDS)
         .readTimeout(45, TimeUnit.SECONDS)
+        .followRedirects(true)
+        .followSslRedirects(true)
         .retryOnConnectionFailure(true)
+        .addInterceptor { chain ->
+          val original = chain.request()
+          val (token, fp) = liveCredentials.get()
+          val builder = original.newBuilder()
+          if (original.header("User-Agent").isNullOrBlank()) {
+            builder.header("User-Agent", "TelefamAndroid/1.0")
+          }
+          if (isTelefamHost(original.url.host, original.url.encodedPath)) {
+            if (token.isNotBlank() && original.header("Authorization").isNullOrBlank()) {
+              builder.header("Authorization", "Bearer $token")
+            }
+            if (fp.isNotBlank() && original.header("X-Telefam-Device-FP").isNullOrBlank()) {
+              builder.header("X-Telefam-Device-FP", fp)
+            }
+          }
+          chain.proceed(builder.build())
+        }
         .build()
         .also { sharedHttpClient = it }
+    }
+  }
+
+  fun buildImageLoader(context: Context): ImageLoader {
+    return sharedImageLoader ?: synchronized(this) {
+      sharedImageLoader ?: run {
+        val appCtx = context.applicationContext
+        ImageLoader.Builder(appCtx)
+          .okHttpClient { getHttpClient() }
+          .memoryCache {
+            MemoryCache.Builder(appCtx)
+              .maxSizePercent(0.20)
+              .build()
+          }
+          .diskCache {
+            DiskCache.Builder()
+              .directory(File(appCtx.cacheDir, "telefam_coil_cache"))
+              .maxSizeBytes(128L * 1024L * 1024L)
+              .build()
+          }
+          .respectCacheHeaders(false)
+          .crossfade(true)
+          .build()
+      }.also { sharedImageLoader = it }
     }
   }
 
@@ -80,6 +146,9 @@ object TelefamVideoCacheManager {
     deviceFingerprint: String = "",
   ): CacheDataSource.Factory {
     val appCtx = context.applicationContext
+    if (bearerToken.isNotBlank() || deviceFingerprint.isNotBlank()) {
+      updateCredentials(bearerToken, deviceFingerprint)
+    }
     val headers = buildMap {
       if (bearerToken.isNotBlank()) put("Authorization", "Bearer $bearerToken")
       if (deviceFingerprint.isNotBlank()) put("X-Telefam-Device-FP", deviceFingerprint)
@@ -115,7 +184,7 @@ object TelefamVideoCacheManager {
       )
     }
 
-    // Play-ahead load control: low min-buffer-to-start (750ms) with generous 30s play-ahead
+    // Play-ahead load control: low min-buffer-to-start (750ms) with generous 35s play-ahead
     val loadControl = DefaultLoadControl.Builder()
       .setBufferDurationsMs(
         15_000, // minBufferMs
@@ -135,9 +204,38 @@ object TelefamVideoCacheManager {
       .setMediaSourceFactory(DefaultMediaSourceFactory(cacheFactory))
       .build()
       .apply {
+        setAudioAttributes(
+          AudioAttributes.Builder()
+            .setUsage(C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+            .build(),
+          true,
+        )
         repeatMode = Player.REPEAT_MODE_ONE
         videoScalingMode = C.VIDEO_SCALING_MODE_SCALE_TO_FIT
         volume = if (startMuted) 0f else 1f
+      }
+  }
+
+  fun buildFeedAudioExoPlayer(
+    context: Context,
+    repeatOne: Boolean = true,
+  ): ExoPlayer {
+    val appCtx = context.applicationContext
+    val cacheFactory = buildCacheDataSourceFactory(appCtx)
+    return ExoPlayer.Builder(appCtx)
+      .setMediaSourceFactory(DefaultMediaSourceFactory(cacheFactory))
+      .build()
+      .apply {
+        setAudioAttributes(
+          AudioAttributes.Builder()
+            .setUsage(C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+            .build(),
+          true,
+        )
+        repeatMode = if (repeatOne) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
+        volume = 1f
       }
   }
 

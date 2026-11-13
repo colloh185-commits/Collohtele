@@ -63,6 +63,11 @@ import telefam.company.data.network.SyncBatchRequestDto
 import telefam.company.data.network.SyncBatchResponseDto
 import telefam.company.data.network.TelefamApiService
 import telefam.company.data.network.UpdatePostRequestDto
+import telefam.company.data.network.UserBlockResponseDto
+import telefam.company.data.network.UserConnectionsResponseDto
+import telefam.company.data.network.UserProfileResponseDto
+import telefam.company.data.network.UserReportRequestDto
+import telefam.company.data.network.UserReportResponseDto
 import telefam.company.data.network.UsernameCheckResponseDto
 import telefam.company.data.network.VerifyLinkDto
 import telefam.company.data.network.VerifyOtpDto
@@ -461,6 +466,27 @@ class TelefamPostRobolectricTest {
 
     override suspend fun interactFeedBatch(bearer: String, deviceFingerprint: String, body: FeedInteractionBatchRequestDto): Response<SyncBatchResponseDto> =
       Response.success(SyncBatchResponseDto(success = true, ackedOpIds = body.operations.map { it.clientOpId }))
+
+    override suspend fun getUserProfile(bearer: String, deviceFingerprint: String, userId: String): Response<UserProfileResponseDto> =
+      Response.success(UserProfileResponseDto(success = true, userId = userId))
+
+    override suspend fun getUserConnections(bearer: String, deviceFingerprint: String, userId: String, type: String, page: Int, pageSize: Int): Response<UserConnectionsResponseDto> =
+      Response.success(UserConnectionsResponseDto(success = true, page = page))
+
+    override suspend fun getUserFollowers(bearer: String, deviceFingerprint: String, userId: String, page: Int, pageSize: Int): Response<UserConnectionsResponseDto> =
+      Response.success(UserConnectionsResponseDto(success = true, page = page))
+
+    override suspend fun getUserFollowing(bearer: String, deviceFingerprint: String, userId: String, page: Int, pageSize: Int): Response<UserConnectionsResponseDto> =
+      Response.success(UserConnectionsResponseDto(success = true, page = page))
+
+    override suspend fun blockUser(bearer: String, deviceFingerprint: String, userId: String): Response<UserBlockResponseDto> =
+      Response.success(UserBlockResponseDto(success = true, targetUserId = userId, isBlocked = true))
+
+    override suspend fun unblockUser(bearer: String, deviceFingerprint: String, userId: String): Response<UserBlockResponseDto> =
+      Response.success(UserBlockResponseDto(success = true, targetUserId = userId, isBlocked = false))
+
+    override suspend fun reportUser(bearer: String, deviceFingerprint: String, userId: String, body: UserReportRequestDto): Response<UserReportResponseDto> =
+      Response.success(UserReportResponseDto(success = true, targetUserId = userId, reason = body.reason))
 
     override suspend fun downloadMedia(url: String): Response<ResponseBody> =
       Response.success(ByteArray(0).toResponseBody("application/octet-stream".toMediaType()))

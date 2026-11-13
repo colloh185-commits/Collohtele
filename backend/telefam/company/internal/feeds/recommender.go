@@ -54,6 +54,7 @@ type FeedItem struct {
 	DurationMs          int64                `json:"duration_ms"`
 	MuteOriginalAudio   bool                 `json:"mute_original_audio"`
 	ContentID           string               `json:"content_id,omitempty"`
+	ViewsCount          int64                `json:"views_count"`
 	LikesCount          int64                `json:"likes_count"`
 	CommentsCount       int64                `json:"comments_count"`
 	SharesCount         int64                `json:"shares_count"`
@@ -110,6 +111,7 @@ type InteractionResponse struct {
 	Success         bool   `json:"success"`
 	PostID          string `json:"post_id"`
 	Action          string `json:"action"`
+	ViewsCount      int64  `json:"views_count"`
 	LikesCount      int64  `json:"likes_count"`
 	FavouritesCount int64  `json:"favourites_count"`
 	RepostsCount    int64  `json:"reposts_count"`
@@ -128,9 +130,18 @@ type ReportRecord struct {
 	CreatedAtMs    int64
 }
 
+type UserReportRecord struct {
+	ReporterUserID string
+	TargetUserID   string
+	Reason         string
+	Details        string
+	CreatedAtMs    int64
+}
+
 // Engine dynamically ranks feeds and search results using real per-user affinity signals.
 type Engine struct {
 	mu            sync.RWMutex
+	viewsCount    map[string]int64              // postID -> view count
 	likes         map[string]map[string]bool    // postID -> userID -> liked
 	favourites    map[string]map[string]bool    // postID -> userID -> saved
 	reposts       map[string]map[string]int64   // postID -> userID -> timestampMs
@@ -141,10 +152,12 @@ type Engine struct {
 	affinity      map[string]map[string]float64 // userID -> dimensionKey -> dynamic weight
 	ackedOps      map[string]struct{}
 	reports       []ReportRecord
+	userReports   []UserReportRecord
 }
 
 func NewEngine() *Engine {
 	return &Engine{
+		viewsCount:    make(map[string]int64),
 		likes:         make(map[string]map[string]bool),
 		favourites:    make(map[string]map[string]bool),
 		reposts:       make(map[string]map[string]int64),
@@ -224,6 +237,9 @@ func (e *Engine) RecordInteraction(
 				e.updateAffinityLocked(viewerUserID, post, -3.5)
 			}
 		}
+	case "view":
+		e.viewsCount[postID] = e.viewsCount[postID] + 1
+		e.updateAffinityLocked(viewerUserID, post, 0.5)
 	case "share":
 		e.sharesCount[postID] = e.sharesCount[postID] + 1
 		e.updateAffinityLocked(viewerUserID, post, 3.5)
@@ -275,6 +291,69 @@ func (e *Engine) RecordInteraction(
 	}
 
 	return e.snapshotInteractionLocked(viewerUserID, postID, action, nowMs)
+}
+
+func (e *Engine) BlockUser(callerID, targetID string) {
+	if callerID == "" || targetID == "" || callerID == targetID {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	bm := e.ensurePostSet(e.blockedUsers, callerID)
+	bm[targetID] = true
+}
+
+func (e *Engine) UnblockUser(callerID, targetID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if bm := e.blockedUsers[callerID]; bm != nil {
+		delete(bm, targetID)
+	}
+}
+
+func (e *Engine) IsBlocked(callerID, targetID string) bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	bm := e.blockedUsers[callerID]
+	return bm != nil && bm[targetID]
+}
+
+func (e *Engine) RecordUserReport(reporterID, targetID, reason, details string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	cleanReason := security.SanitizeText(reason, 80, false)
+	if cleanReason == "" {
+		cleanReason = "Other"
+	}
+	cleanDetails := security.SanitizeText(details, 400, true)
+	e.userReports = append(e.userReports, UserReportRecord{
+		ReporterUserID: reporterID,
+		TargetUserID:   targetID,
+		Reason:         cleanReason,
+		Details:        cleanDetails,
+		CreatedAtMs:    time.Now().UnixMilli(),
+	})
+}
+
+func (e *Engine) BuildAuthorFeedItems(
+	viewerUserID string,
+	authorPosts []*posts.StoredPost,
+	author AuthorSummary,
+) ([]FeedItem, int64) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	out := make([]FeedItem, 0, len(authorPosts))
+	var totalLikes int64
+	for _, p := range authorPosts {
+		if p == nil {
+			continue
+		}
+		item := e.buildFeedItemLocked(viewerUserID, p, author, "", float64(p.CreatedAtMs))
+		totalLikes += item.LikesCount
+		out = append(out, item)
+	}
+	return out, totalLikes
 }
 
 func (e *Engine) GetFeed(
@@ -666,6 +745,7 @@ func (e *Engine) buildFeedItemLocked(
 		DurationMs:          p.DurationMs,
 		MuteOriginalAudio:   p.MuteOriginalAudio,
 		ContentID:           p.ContentID,
+		ViewsCount:          e.viewsCount[p.PostID],
 		LikesCount:          int64(len(e.likes[p.PostID])),
 		CommentsCount:       e.commentsCount[p.PostID],
 		SharesCount:         e.sharesCount[p.PostID],
@@ -715,6 +795,7 @@ func (e *Engine) snapshotInteractionLocked(viewerUserID, postID, action string, 
 		Success:         true,
 		PostID:          postID,
 		Action:          action,
+		ViewsCount:      e.viewsCount[postID],
 		LikesCount:      int64(len(e.likes[postID])),
 		FavouritesCount: int64(len(e.favourites[postID])),
 		RepostsCount:    int64(len(e.reposts[postID])),

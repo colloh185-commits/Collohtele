@@ -20,6 +20,7 @@ enum class SharedFeedAction(val apiValue: String) {
   BLOCK("block"),
   WATCH("watch"),
   SKIP("skip"),
+  VIEW("view"),
 }
 
 data class SharedFeedVideoRendition(

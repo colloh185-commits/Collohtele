@@ -202,6 +202,7 @@ enum TelefamIosCountryCatalog {
 
 struct TelefamIosAuthResponse: Codable {
     let success: Bool
+    let userId: String?
     let sessionToken: String
     let refreshToken: String
     let accessExpiresInSec: Int64
@@ -212,6 +213,7 @@ struct TelefamIosAuthResponse: Codable {
 
     enum CodingKeys: String, CodingKey {
         case success
+        case userId = "user_id"
         case sessionToken = "session_token"
         case refreshToken = "refresh_token"
         case accessExpiresInSec = "access_expires_in_seconds"
@@ -226,6 +228,7 @@ struct TelefamIosAuthResponse: Codable {
 final class TelefamIosSessionStore: ObservableObject {
     @Published var isAuthenticated: Bool = false
     @Published var profileCompleted: Bool = false
+    @Published var userId: String = ""
     @Published var sessionToken: String = ""
     @Published var refreshToken: String = ""
     @Published var email: String = ""
@@ -244,6 +247,7 @@ final class TelefamIosSessionStore: ObservableObject {
     private var cooldownTimer: Timer? = nil
 
     private enum Keys {
+        static let userId = "telefam_user_id"
         static let sessionToken = "telefam_session_token"
         static let refreshToken = "telefam_refresh_token"
         static let email = "telefam_email"
@@ -267,6 +271,7 @@ final class TelefamIosSessionStore: ObservableObject {
         } ?? ""
 
         baseUrlString = candidateURL
+        userId = TelefamIosKeychainVault.load(key: Keys.userId) ?? ""
         sessionToken = TelefamIosKeychainVault.load(key: Keys.sessionToken) ?? ""
         refreshToken = TelefamIosKeychainVault.load(key: Keys.refreshToken) ?? ""
         email = TelefamIosKeychainVault.load(key: Keys.email) ?? ""
@@ -565,13 +570,14 @@ final class TelefamIosSessionStore: ObservableObject {
 
     func signOut() {
         cooldownTimer?.invalidate()
+        userId = ""
         sessionToken = ""
         refreshToken = ""
         isAuthenticated = false
         profileCompleted = false
         otpSent = false
         authError = nil
-        for key in [Keys.sessionToken, Keys.refreshToken, Keys.profileCompleted, Keys.email, Keys.fullName, Keys.username, Keys.phoneDisplay, Keys.location, Keys.bio] {
+        for key in [Keys.userId, Keys.sessionToken, Keys.refreshToken, Keys.profileCompleted, Keys.email, Keys.fullName, Keys.username, Keys.phoneDisplay, Keys.location, Keys.bio] {
             TelefamIosKeychainVault.delete(key: key)
         }
     }
@@ -613,6 +619,10 @@ final class TelefamIosSessionStore: ObservableObject {
 
     private func applyAuthSession(_ auth: TelefamIosAuthResponse) {
         sessionToken = auth.sessionToken
+        if let uid = auth.userId, !uid.isEmpty {
+            userId = uid
+            TelefamIosKeychainVault.save(key: Keys.userId, value: uid)
+        }
         if !auth.refreshToken.isEmpty {
             refreshToken = auth.refreshToken
             TelefamIosKeychainVault.save(key: Keys.refreshToken, value: auth.refreshToken)

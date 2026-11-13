@@ -231,7 +231,56 @@ data class CachedFeedPostEntity(
   val tabKey: String,
   val sortOrder: Int,
   val isHiddenByUser: Boolean,
+  val viewsCount: Long = 0L,
   val createdAtMs: Long,
+  val cachedAtMs: Long,
+)
+
+@Entity(
+  tableName = "cached_user_profiles",
+  indices = [Index(value = ["username"])],
+)
+data class CachedUserProfileEntity(
+  @PrimaryKey val userId: String,
+  val fullName: String,
+  val username: String,
+  val avatarUrl: String?,
+  val avatarLocalPath: String?,
+  val bio: String,
+  val location: String,
+  val countryIso: String,
+  val followingCount: Long,
+  val followersCount: Long,
+  val likesCount: Long,
+  val isFollowing: Boolean,
+  val followsYou: Boolean,
+  val isOwner: Boolean,
+  val isBlocked: Boolean,
+  val riskScore: Double,
+  val relationshipState: String,
+  val postsJson: String,
+  val cachedAtMs: Long,
+)
+
+@Entity(
+  tableName = "cached_user_connections",
+  indices = [Index(value = ["ownerUserId", "listType", "sortOrder"])],
+)
+data class CachedUserConnectionEntity(
+  @PrimaryKey val compositeKey: String, // "$ownerUserId|$listType|$targetUserId"
+  val ownerUserId: String,
+  val listType: String, // "followers" or "following"
+  val targetUserId: String,
+  val fullName: String,
+  val username: String,
+  val location: String,
+  val countryIso: String,
+  val avatarUrl: String?,
+  val avatarLocalPath: String?,
+  val isFollowing: Boolean,
+  val followsYou: Boolean,
+  val relationshipState: String,
+  val sortOrder: Int,
   val cachedAtMs: Long,
 )
 

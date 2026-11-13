@@ -24,14 +24,18 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
+import android.widget.Toast
 import telefam.company.ui.components.TelefamAnimatedSplashOverlay
+import telefam.company.ui.screens.ReusableVideoFeedScreen
 import telefam.company.ui.screens.TelefamAuthScreen
 import telefam.company.ui.screens.TelefamHomeScreen
 import telefam.company.ui.screens.TelefamPostScreen
 import telefam.company.ui.screens.TelefamProfileSetupScreen
 import telefam.company.ui.screens.TelefamSearchScreen
+import telefam.company.ui.screens.TelefamUserProfileScreen
 import telefam.company.ui.theme.TelefamTheme
 import telefam.company.ui.theme.ThemeMode
 import telefam.company.ui.viewmodel.HomeTab
@@ -84,17 +88,28 @@ class TelefamMainActivity : ComponentActivity() {
         uiState.activeHomeTab,
         uiState.feedsState.isSearchOpen,
         uiState.feedsState.searchViewerItems != null,
+        uiState.activeUserProfile != null,
+        uiState.profileViewerItems != null,
         uiState.postComposer.isOpen,
       ) {
         val statusBarIsDark = when {
           uiState.postComposer.isOpen -> true
+          route == AppRootRoute.HOME && uiState.profileViewerItems != null -> true
+          route == AppRootRoute.HOME && uiState.activeUserProfile != null -> useDarkBars
           route == AppRootRoute.HOME && uiState.feedsState.isSearchOpen -> {
             if (uiState.feedsState.searchViewerItems != null) true else useDarkBars
           }
           route == AppRootRoute.HOME && uiState.activeHomeTab == HomeTab.FEEDS -> true
+          route == AppRootRoute.HOME && uiState.activeHomeTab == HomeTab.PROFILE -> useDarkBars
           route == AppRootRoute.AUTH -> useDarkBars
           else -> true
         }
+        val navBarIsDark = useDarkBars || (
+          route == AppRootRoute.HOME && (
+            uiState.profileViewerItems != null ||
+              (uiState.activeHomeTab == HomeTab.FEEDS && !uiState.feedsState.isSearchOpen && uiState.activeUserProfile == null)
+          )
+        )
         enableEdgeToEdge(
           statusBarStyle = if (statusBarIsDark) {
             SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
@@ -104,7 +119,7 @@ class TelefamMainActivity : ComponentActivity() {
               android.graphics.Color.TRANSPARENT,
             )
           },
-          navigationBarStyle = if (useDarkBars || (route == AppRootRoute.HOME && uiState.activeHomeTab == HomeTab.FEEDS && !uiState.feedsState.isSearchOpen)) {
+          navigationBarStyle = if (navBarIsDark) {
             SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
           } else {
             SystemBarStyle.light(
@@ -201,6 +216,21 @@ class TelefamMainActivity : ComponentActivity() {
                   onRecordFeedWatchProgress = viewModel::onRecordFeedWatchProgress,
                   onShowFeedToast = viewModel::showFeedToast,
                   onDismissFeedToast = viewModel::dismissFeedToast,
+                  onOpenUserProfile = viewModel::openUserProfile,
+                  onToggleProfileFollow = viewModel::toggleFollowOnProfile,
+                  onOpenProfileConnections = viewModel::openProfileConnections,
+                  onDismissProfileConnections = viewModel::dismissProfileConnections,
+                  onLoadMoreProfileConnections = viewModel::loadMoreProfileConnections,
+                  onToggleProfileConnectionFollow = viewModel::toggleFollowInConnections,
+                  onSelectProfileFilter = viewModel::selectProfilePostFilter,
+                  onSelectProfileSort = viewModel::selectProfileSortOrder,
+                  onOpenProfilePostViewer = viewModel::openProfilePostViewer,
+                  onBlockProfileUser = viewModel::blockUserFromProfile,
+                  onUnblockProfileUser = viewModel::unblockUserFromProfile,
+                  onReportProfileUser = viewModel::reportUserFromProfile,
+                  onShowProfileToast = viewModel::showProfileToast,
+                  onDismissProfileToast = viewModel::dismissProfileToast,
+                  onSignOut = viewModel::signOut,
                 )
               }
             }
@@ -235,8 +265,112 @@ class TelefamMainActivity : ComponentActivity() {
               onTapHashtag = viewModel::openPostWithHashtag,
               onTapAudio = viewModel::openPostWithSong,
               onRecordWatchProgress = viewModel::onRecordFeedWatchProgress,
+              onOpenAuthorProfile = { uid ->
+                viewModel.closeSearchResultViewer()
+                viewModel.openUserProfile(uid)
+              },
               onShowToast = viewModel::showFeedToast,
             )
+          }
+
+          AnimatedVisibility(
+            visible = route == AppRootRoute.HOME && uiState.activeUserProfile != null,
+            enter = slideInVertically(initialOffsetY = { it / 8 }) + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { it / 8 }) + fadeOut(),
+          ) {
+            val activeProfile = uiState.activeUserProfile
+            if (activeProfile != null) {
+              LaunchedEffect(uiState.profileToastMessage) {
+                val toastMsg = uiState.profileToastMessage
+                if (!toastMsg.isNullOrBlank()) {
+                  Toast.makeText(this@TelefamMainActivity, toastMsg, Toast.LENGTH_SHORT).show()
+                  viewModel.dismissProfileToast()
+                }
+              }
+              TelefamUserProfileScreen(
+                profile = activeProfile,
+                isEmbeddedOwnProfileTab = false,
+                bottomChromePadding = 0.dp,
+                onBack = viewModel::closeTopUserProfile,
+                onToggleFollow = { viewModel.toggleFollowOnProfile(activeProfile.userId) },
+                onMessageClick = { viewModel.showProfileToast("Message — Coming soon") },
+                onSubscribeClick = { viewModel.showProfileToast("Subscribe — Coming soon") },
+                onOpenConnections = { isFollowers -> viewModel.openProfileConnections(activeProfile.userId, isFollowers) },
+                onDismissConnections = { viewModel.dismissProfileConnections(activeProfile.userId) },
+                onLoadMoreConnections = { viewModel.loadMoreProfileConnections(activeProfile.userId) },
+                onToggleConnectionFollow = { targetId -> viewModel.toggleFollowInConnections(activeProfile.userId, targetId) },
+                onOpenUserProfile = viewModel::openUserProfile,
+                onSelectFilter = { filter -> viewModel.selectProfilePostFilter(activeProfile.userId, filter) },
+                onSelectSort = { sort -> viewModel.selectProfileSortOrder(activeProfile.userId, sort) },
+                onOpenPostAtIndex = viewModel::openProfilePostViewer,
+                onBlockUser = { viewModel.blockUserFromProfile(activeProfile.userId) },
+                onUnblockUser = { viewModel.unblockUserFromProfile(activeProfile.userId) },
+                onReportUser = { reason, details -> viewModel.reportUserFromProfile(activeProfile.userId, reason, details) },
+                onShowToast = viewModel::showProfileToast,
+                onToggleTheme = viewModel::cycleThemeMode,
+                onSignOut = viewModel::signOut,
+              )
+            }
+          }
+
+          AnimatedVisibility(
+            visible = route == AppRootRoute.HOME && uiState.profileViewerItems != null,
+            enter = fadeIn(),
+            exit = fadeOut(),
+          ) {
+            val viewerList = uiState.profileViewerItems
+            if (!viewerList.isNullOrEmpty()) {
+              androidx.activity.compose.BackHandler(enabled = true) {
+                viewModel.closeProfilePostViewer()
+              }
+              ReusableVideoFeedScreen(
+                items = viewerList,
+                initialIndex = uiState.profileViewerInitialIndex,
+                isStandaloneViewer = true,
+                networkTier = uiState.networkTier,
+                streamAccessToken = uiState.feedsState.streamAccessToken,
+                streamDeviceFp = uiState.feedsState.streamDeviceFp,
+                bottomChromePadding = 0.dp,
+                onSearchClick = {
+                  viewModel.closeProfilePostViewer()
+                  viewModel.openFeedSearch("")
+                },
+                onBackClick = viewModel::closeProfilePostViewer,
+                onToggleFollowAuthor = viewModel::onToggleFeedAuthorFollow,
+                onToggleLike = viewModel::onToggleFeedLike,
+                onDoubleTapLike = viewModel::onDoubleTapFeedLike,
+                onCommentClick = { viewModel.triggerComingSoon("Comments", "feed_comments_tapped") },
+                onToggleFavourite = viewModel::onToggleFeedFavourite,
+                onShareRecorded = viewModel::onShareFeedPost,
+                onToggleRepost = viewModel::onToggleFeedRepost,
+                onDownloadVideo = { item -> viewModel.onDownloadFeedVideo(this@TelefamMainActivity, item) },
+                onNotInterested = viewModel::onNotInterestedFeedPost,
+                onReportPost = { postId, reason -> viewModel.onReportFeedPost(postId, reason) },
+                onBlockAuthor = viewModel::onBlockFeedAuthor,
+                onEditOwnerPost = { item ->
+                  viewModel.closeProfilePostViewer()
+                  viewModel.openPostForEdit(item)
+                },
+                onDeleteOwnerPost = { postId ->
+                  viewModel.onDeleteOwnerFeedPost(postId)
+                  viewModel.closeProfilePostViewer()
+                },
+                onTapHashtag = { tag, mode ->
+                  viewModel.closeProfilePostViewer()
+                  viewModel.openPostWithHashtag(tag, mode)
+                },
+                onTapAudio = { song, mode ->
+                  viewModel.closeProfilePostViewer()
+                  viewModel.openPostWithSong(song, mode)
+                },
+                onRecordWatchProgress = viewModel::onRecordFeedWatchProgress,
+                onOpenAuthorProfile = { uid ->
+                  viewModel.closeProfilePostViewer()
+                  viewModel.openUserProfile(uid)
+                },
+                onShowToast = viewModel::showFeedToast,
+              )
+            }
           }
 
           AnimatedVisibility(

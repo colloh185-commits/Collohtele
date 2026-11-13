@@ -492,6 +492,7 @@ struct TelefamIosContactsView: View {
     @ObservedObject var store: TelefamContactsStore
     let isCompactWidth: Bool
     let onBottomBarVisibilityChange: (Bool) -> Void
+    var onOpenProfile: (String) -> Void = { _ in }
 
     @State private var lastScrollY: CGFloat = 0
     @State private var scrollStopWorkItem: DispatchWorkItem?
@@ -556,7 +557,8 @@ struct TelefamIosContactsView: View {
                                             avatarResolvedUrl: store.resolvedURLString(contact.avatarUrl),
                                             bearerToken: store.currentToken,
                                             deviceFingerprint: store.currentDeviceFingerprint,
-                                            cardStyle: true
+                                            cardStyle: true,
+                                            onOpenProfile: { onOpenProfile(contact.userId) }
                                         ) {
                                             store.toggleFollow(for: contact.userId)
                                         }
@@ -573,7 +575,8 @@ struct TelefamIosContactsView: View {
                                             avatarResolvedUrl: store.resolvedURLString(contact.avatarUrl),
                                             bearerToken: store.currentToken,
                                             deviceFingerprint: store.currentDeviceFingerprint,
-                                            cardStyle: false
+                                            cardStyle: false,
+                                            onOpenProfile: { onOpenProfile(contact.userId) }
                                         ) {
                                             store.toggleFollow(for: contact.userId)
                                         }
@@ -629,22 +632,27 @@ private struct ContactRowCard: View {
     let bearerToken: String
     let deviceFingerprint: String
     let cardStyle: Bool
+    var onOpenProfile: () -> Void = {}
     let onToggleFollow: () -> Void
 
     var body: some View {
         let content = HStack(spacing: 12) {
-            avatarView
-            VStack(alignment: .leading, spacing: 2) {
-                Text(contact.fullName)
-                    .font(.system(size: 15.5, weight: .bold))
-                    .foregroundColor(TelefamPalette.textPrimary(colorScheme))
-                    .lineLimit(1)
-                let sub = contact.countryDisplay.isEmpty ? "@\(contact.username)" : "@\(contact.username) · \(contact.countryDisplay)"
-                Text(sub)
-                    .font(.system(size: 13.5))
-                    .foregroundColor(TelefamPalette.textMuted(colorScheme))
-                    .lineLimit(1)
+            HStack(spacing: 12) {
+                avatarView
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(contact.fullName)
+                        .font(.system(size: 15.5, weight: .bold))
+                        .foregroundColor(TelefamPalette.textPrimary(colorScheme))
+                        .lineLimit(1)
+                    let sub = contact.countryDisplay.isEmpty ? "@\(contact.username)" : "@\(contact.username) · \(contact.countryDisplay)"
+                    Text(sub)
+                        .font(.system(size: 13.5))
+                        .foregroundColor(TelefamPalette.textMuted(colorScheme))
+                        .lineLimit(1)
+                }
             }
+            .contentShape(Rectangle())
+            .onTapGesture { onOpenProfile() }
             Spacer(minLength: 8)
             relationshipButton
         }

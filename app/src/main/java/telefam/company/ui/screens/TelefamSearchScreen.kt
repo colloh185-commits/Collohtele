@@ -109,6 +109,7 @@ fun TelefamSearchScreen(
   onTapHashtag: (String, PostMode) -> Unit,
   onTapAudio: (PostSongTrack, PostMode) -> Unit,
   onRecordWatchProgress: (String, Long, Long) -> Unit,
+  onOpenAuthorProfile: (String) -> Unit = {},
   onShowToast: (String) -> Unit,
 ) {
   val viewerItems = feedsState.searchViewerItems
@@ -147,6 +148,7 @@ fun TelefamSearchScreen(
       onTapHashtag = onTapHashtag,
       onTapAudio = onTapAudio,
       onRecordWatchProgress = onRecordWatchProgress,
+      onOpenAuthorProfile = onOpenAuthorProfile,
       onShowToast = onShowToast,
     )
     return
@@ -324,6 +326,7 @@ fun TelefamSearchScreen(
                 networkTier = networkTier,
                 streamAccessToken = feedsState.streamAccessToken,
                 streamDeviceFp = feedsState.streamDeviceFp,
+                onClickAuthor = { onOpenAuthorProfile(item.authorUserId) },
                 onClick = { onOpenCardAtIndex(index) },
               )
             }
@@ -364,6 +367,7 @@ private fun SearchMutedAutoplayCard(
   networkTier: NetworkTier,
   streamAccessToken: String,
   streamDeviceFp: String,
+  onClickAuthor: () -> Unit,
   onClick: () -> Unit,
 ) {
   val context = LocalContext.current
@@ -396,7 +400,8 @@ private fun SearchMutedAutoplayCard(
           }
 
           if (enableLivePreviewPlayer && item.primaryStreamUrl.isNotBlank() && networkTier != NetworkTier.OFFLINE) {
-            val previewPlayer = remember(item.postId) {
+            var previewFailed by remember(item.postId) { mutableStateOf(false) }
+            val previewPlayer = remember(item.postId, streamAccessToken) {
               TelefamVideoCacheManager.buildFeedExoPlayer(
                 context = context,
                 networkTier = NetworkTier.WEAK, // Low-bandwidth muted preview stream
@@ -404,8 +409,15 @@ private fun SearchMutedAutoplayCard(
                 deviceFingerprint = streamDeviceFp,
                 startMuted = true,
               ).apply {
+                addListener(
+                  object : androidx.media3.common.Player.Listener {
+                    override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                      previewFailed = true
+                    }
+                  },
+                )
                 val url = AdaptiveStreamSelector.selectRenditionUrl(
-                  baseUrl = "",
+                  baseUrl = com.telefam.company.app.BuildConfig.TELEFAM_API_BASE_URL,
                   primaryVideoUrl = item.primaryStreamUrl,
                   renditions = item.renditions,
                   networkTier = NetworkTier.WEAK,
@@ -418,16 +430,18 @@ private fun SearchMutedAutoplayCard(
             DisposableEffect(previewPlayer) {
               onDispose { previewPlayer.release() }
             }
-            AndroidView(
-              factory = { ctx ->
-                (LayoutInflater.from(ctx).inflate(R.layout.view_feed_player, null) as PlayerView).apply {
-                  resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                  useController = false
-                  player = previewPlayer
-                }
-              },
-              modifier = Modifier.fillMaxSize(),
-            )
+            if (!previewFailed) {
+              AndroidView(
+                factory = { ctx ->
+                  (LayoutInflater.from(ctx).inflate(R.layout.view_feed_player, null) as PlayerView).apply {
+                    resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                    useController = false
+                    player = previewPlayer
+                  }
+                },
+                modifier = Modifier.fillMaxSize(),
+              )
+            }
           }
         }
 
@@ -488,7 +502,11 @@ private fun SearchMutedAutoplayCard(
           fontWeight = FontWeight.SemiBold,
           maxLines = 1,
           overflow = TextOverflow.Ellipsis,
-          modifier = Modifier.weight(1f),
+          modifier = Modifier
+            .weight(1f)
+            .clip(RoundedCornerShape(6.dp))
+            .clickable(onClick = onClickAuthor)
+            .padding(vertical = 2.dp),
         )
         Icon(
           imageVector = Icons.Outlined.FavoriteBorder,

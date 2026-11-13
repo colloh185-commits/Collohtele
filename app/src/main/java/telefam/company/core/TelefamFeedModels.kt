@@ -1,5 +1,6 @@
 package telefam.company.core
 
+import java.io.File
 import java.util.Locale
 import kotlin.math.abs
 
@@ -21,6 +22,37 @@ enum class FeedInteractionAction(val apiValue: String) {
   BLOCK("block"),
   WATCH("watch"),
   SKIP("skip"),
+  VIEW("view"),
+}
+
+enum class ProfilePostFilter(val apiParam: String, val label: String) {
+  ALL("all", "All posts"),
+  VIDEOS("video", "Videos"),
+  PHOTOS("photos", "Photos"),
+  TEXT("text", "Text"),
+}
+
+enum class ProfilePostSort(val label: String) {
+  LATEST("Latest"),
+  MOST_VIEWED("Most viewed"),
+  MOST_LIKED("Most liked"),
+}
+
+data class ProfileReportCategory(
+  val code: String,
+  val label: String,
+)
+
+object ProfileReportOptions {
+  val categories: List<ProfileReportCategory> = listOf(
+    ProfileReportCategory("spam", "Spam or misleading"),
+    ProfileReportCategory("harassment", "Harassment or bullying"),
+    ProfileReportCategory("impersonation", "Impersonation"),
+    ProfileReportCategory("hate_abuse", "Hate or abusive content"),
+    ProfileReportCategory("scam", "Scam or fraud"),
+    ProfileReportCategory("inappropriate", "Inappropriate content"),
+    ProfileReportCategory("other", "Other"),
+  )
 }
 
 data class FeedVideoRendition(
@@ -87,6 +119,14 @@ object AdaptiveStreamSelector {
       return clean
     }
     if (clean.startsWith("/")) {
+      val isLocalFilesystemPath = clean.startsWith("/data/") ||
+        clean.startsWith("/storage/") ||
+        clean.startsWith("/cache/") ||
+        clean.startsWith("/sdcard/") ||
+        (!clean.startsWith("/v1/") && !clean.startsWith("/media/") && runCatching { File(clean).exists() }.getOrDefault(false))
+      if (isLocalFilesystemPath) {
+        return runCatching { File(clean).toURI().toString() }.getOrDefault("file://$clean")
+      }
       val cleanBase = baseUrl.trim().trimEnd('/')
       return if (cleanBase.isNotBlank()) "$cleanBase$clean" else clean
     }
@@ -146,4 +186,21 @@ fun formatCompactCount(count: Long): String {
     return if (rem == 0L) "${whole}K" else String.format(Locale.US, "%d.%dK", whole, rem)
   }
   return String.format(Locale.US, "%,d", count)
+}
+
+fun formatProfileMetricCount(count: Long): String {
+  if (count <= 0L) return "0"
+  if (count >= 1_000_000L) {
+    val tenths = count / 100_000L
+    val whole = tenths / 10L
+    val rem = tenths % 10L
+    return if (rem == 0L) "${whole}M" else String.format(Locale.US, "%d.%dM", whole, rem)
+  }
+  if (count >= 1_000L) {
+    val tenths = count / 100L
+    val whole = tenths / 10L
+    val rem = tenths % 10L
+    return if (rem == 0L) "${whole}K" else String.format(Locale.US, "%d.%dK", whole, rem)
+  }
+  return count.toString()
 }

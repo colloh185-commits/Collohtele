@@ -213,5 +213,48 @@ interface TelefamDao {
 
   @Query("UPDATE pending_feed_interactions SET retryCount = :retryCount, nextRetryAtMs = :nextRetryAtMs WHERE clientOpId = :clientOpId")
   suspend fun scheduleFeedInteractionRetry(clientOpId: String, retryCount: Int, nextRetryAtMs: Long)
+
+  @Query("UPDATE cached_feed_posts SET viewsCount = viewsCount + 1 WHERE postId = :postId")
+  suspend fun incrementCachedFeedPostView(postId: String)
+
+  // Cached Full User Profiles & Followers/Following Lists (offline-first fallback)
+  @Query("SELECT * FROM cached_user_profiles WHERE userId = :userId LIMIT 1")
+  suspend fun getCachedUserProfile(userId: String): CachedUserProfileEntity?
+
+  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  suspend fun upsertCachedUserProfile(profile: CachedUserProfileEntity)
+
+  @Query("UPDATE cached_user_profiles SET avatarLocalPath = :localPath WHERE userId = :userId")
+  suspend fun updateCachedUserProfileAvatarPath(userId: String, localPath: String)
+
+  @Query(
+    "UPDATE cached_user_profiles SET isFollowing = :isFollowing, followersCount = :followersCount, relationshipState = :relationshipState WHERE userId = :userId",
+  )
+  suspend fun updateCachedUserProfileFollow(
+    userId: String,
+    isFollowing: Boolean,
+    followersCount: Long,
+    relationshipState: String,
+  )
+
+  @Query("UPDATE cached_user_profiles SET isBlocked = :isBlocked, isFollowing = :isFollowing, relationshipState = :relationshipState WHERE userId = :userId")
+  suspend fun updateCachedUserProfileBlocked(
+    userId: String,
+    isBlocked: Boolean,
+    isFollowing: Boolean,
+    relationshipState: String,
+  )
+
+  @Query("SELECT * FROM cached_user_connections WHERE ownerUserId = :ownerUserId AND listType = :listType ORDER BY sortOrder ASC")
+  suspend fun getCachedUserConnections(ownerUserId: String, listType: String): List<CachedUserConnectionEntity>
+
+  @Query("DELETE FROM cached_user_connections WHERE ownerUserId = :ownerUserId AND listType = :listType")
+  suspend fun deleteCachedUserConnectionsFor(ownerUserId: String, listType: String)
+
+  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  suspend fun insertCachedUserConnections(items: List<CachedUserConnectionEntity>)
+
+  @Query("UPDATE cached_user_connections SET isFollowing = :isFollowing, relationshipState = :relationshipState WHERE targetUserId = :targetUserId")
+  suspend fun updateCachedUserConnectionFollow(targetUserId: String, isFollowing: Boolean, relationshipState: String)
 }
 

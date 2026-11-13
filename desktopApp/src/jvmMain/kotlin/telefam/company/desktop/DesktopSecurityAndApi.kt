@@ -182,6 +182,7 @@ object DesktopCountryCatalog {
 data class DesktopStoredSession(
   val installId: String,
   val serverBaseUrl: String,
+  val userId: String = "",
   val accessToken: String = "",
   val refreshToken: String = "",
   val email: String = "",
@@ -258,6 +259,7 @@ class DesktopEncryptedSessionVault {
       DesktopStoredSession(
         installId = DesktopJson.str(map, "install_id").ifBlank { UUID.randomUUID().toString() },
         serverBaseUrl = if (envUrl.isNotBlank()) envUrl else savedUrl,
+        userId = DesktopJson.str(map, "user_id"),
         accessToken = DesktopJson.str(map, "access_token"),
         refreshToken = DesktopJson.str(map, "refresh_token"),
         email = DesktopJson.str(map, "email"),
@@ -284,6 +286,7 @@ class DesktopEncryptedSessionVault {
         append('{')
         append("\"install_id\":\"").append(DesktopJson.escape(session.installId)).append("\",")
         append("\"server_base_url\":\"").append(DesktopJson.escape(session.serverBaseUrl)).append("\",")
+        append("\"user_id\":\"").append(DesktopJson.escape(session.userId)).append("\",")
         append("\"access_token\":\"").append(DesktopJson.escape(session.accessToken)).append("\",")
         append("\"refresh_token\":\"").append(DesktopJson.escape(session.refreshToken)).append("\",")
         append("\"email\":\"").append(DesktopJson.escape(session.email)).append("\",")
@@ -349,6 +352,34 @@ data class DesktopFeedSearchPage(
   val hasMore: Boolean,
 )
 
+data class DesktopUserProfile(
+  val userId: String,
+  val fullName: String,
+  val username: String,
+  val avatarUrl: String,
+  val bio: String,
+  val location: String,
+  val countryIso: String,
+  val followingCount: Long,
+  val followersCount: Long,
+  val likesCount: Long,
+  val isFollowing: Boolean,
+  val followsYou: Boolean,
+  val isOwner: Boolean,
+  val isBlocked: Boolean,
+  val riskScore: Double,
+  val posts: List<DesktopFeedPost>,
+) {
+  val relationship: telefam.company.shared.ContactRelationshipState
+    get() = telefam.company.shared.ContactRelationshipState.compute(isFollowing, followsYou)
+}
+
+data class DesktopUserConnectionsPage(
+  val items: List<DesktopContactItem>,
+  val page: Int,
+  val hasMore: Boolean,
+)
+
 class DesktopApiClient(
   private val vault: DesktopEncryptedSessionVault,
   initialSession: DesktopStoredSession,
@@ -376,12 +407,72 @@ class DesktopApiClient(
   val ipHint: String
     get() = DesktopSecurityGuard.sha256Hex("desktop_client|${session.installId}")
 
+  private val cacheDir = File(System.getProperty("user.home", "."), ".telefam/cache").apply { mkdirs() }
+
+  private fun cacheKeyFile(key: String): File {
+    val safe = key.replace(Regex("[^A-Za-z0-9._-]"), "_")
+    return File(cacheDir, safe)
+  }
+
+  private fun saveCachedText(key: String, raw: String) {
+    runCatching {
+      val f = cacheKeyFile(key)
+      f.writeText(raw, StandardCharsets.UTF_8)
+      Files.setPosixFilePermissions(f.toPath(), PosixFilePermissions.fromString("rw-------"))
+    }
+  }
+
+  private fun loadCachedText(key: String): String? {
+    val f = cacheKeyFile(key)
+    return if (f.exists()) runCatching { f.readText(StandardCharsets.UTF_8) }.getOrNull() else null
+  }
+
+  fun resolveMediaUrl(pathOrUrl: String): String {
+    val clean = pathOrUrl.trim()
+    if (clean.isBlank()) return ""
+    if (clean.startsWith("http://") || clean.startsWith("https://")) return clean
+    val base = baseUrl() ?: return clean
+    return if (clean.startsWith("/")) "$base$clean" else "$base/$clean"
+  }
+
+  fun fetchCachedMediaBytes(pathOrUrl: String): ByteArray? {
+    val resolved = resolveMediaUrl(pathOrUrl)
+    if (resolved.isBlank()) return null
+    val key = "media_${DesktopSecurityGuard.sha256Hex(resolved)}.bin"
+    val cachedFile = cacheKeyFile(key)
+    val uri = runCatching { URI(resolved) }.getOrNull() ?: return cachedFile.takeIf { it.exists() }?.readBytes()
+    val fetched = runCatching {
+      val req = HttpRequest.newBuilder(uri)
+        .header("Authorization", "Bearer ${session.accessToken}")
+        .header("X-Telefam-Device-FP", deviceFingerprint)
+        .GET()
+        .timeout(Duration.ofSeconds(15))
+        .build()
+      val res = httpClient.send(req, HttpResponse.BodyHandlers.ofByteArray())
+      if (res.statusCode() in 200..299 && res.body().isNotEmpty()) {
+        cachedFile.writeBytes(res.body())
+        res.body()
+      } else null
+    }.getOrNull()
+    return fetched ?: cachedFile.takeIf { it.exists() }?.readBytes()
+  }
+
   fun shareUrlForPost(postId: String): String {
     val clean = session.serverBaseUrl.trim().trimEnd('/')
     return if (DesktopSecurityGuard.isAllowedServerUrl(clean)) {
       "$clean/post/$postId"
     } else {
       "telefam://post/$postId"
+    }
+  }
+
+  fun shareUrlForProfile(usernameOrId: String): String {
+    val clean = session.serverBaseUrl.trim().trimEnd('/')
+    val handle = usernameOrId.ifBlank { "member" }
+    return if (DesktopSecurityGuard.isAllowedServerUrl(clean)) {
+      "$clean/u/$handle"
+    } else {
+      "telefam://u/$handle"
     }
   }
 
@@ -401,6 +492,7 @@ class DesktopApiClient(
 
   fun signOut() {
     val updated = session.copy(
+      userId = "",
       accessToken = "",
       refreshToken = "",
       profileCompleted = false,
@@ -420,6 +512,7 @@ class DesktopApiClient(
   private fun applyAuthSessionResponse(map: Map<String, Any?>, fallbackEmail: String) {
     val email = DesktopJson.str(map, "email").ifBlank { fallbackEmail }
     val updated = session.copy(
+      userId = DesktopJson.str(map, "user_id").ifBlank { session.userId },
       accessToken = DesktopJson.str(map, "session_token"),
       refreshToken = DesktopJson.str(map, "refresh_token"),
       email = email,
@@ -905,6 +998,160 @@ class DesktopApiClient(
     executeRaw("POST", "/v1/audit/event", body.toByteArray(StandardCharsets.UTF_8), auth = true)
   }
 
+  fun getUserProfile(userId: String): DesktopApiOutcome<DesktopUserProfile> {
+    val cleanId = userId.trim().ifBlank { "me" }
+    val encId = URLEncoder.encode(cleanId, StandardCharsets.UTF_8)
+    val resp = executeRaw("GET", "/v1/users/$encId/profile", null, auth = true)
+    if (resp != null && resp.first in 200..299) {
+      val map = DesktopJson.parseObject(resp.second)
+      if (DesktopJson.bool(map, "success")) {
+        val parsed = parseUserProfile(map, cleanId)
+        saveCachedText("profile_$cleanId.json", resp.second)
+        if (parsed.userId.isNotBlank()) {
+          saveCachedText("profile_${parsed.userId}.json", resp.second)
+        }
+        return DesktopApiOutcome.Ok(parsed)
+      }
+    }
+    val cachedRaw = loadCachedText("profile_$cleanId.json")
+    if (cachedRaw != null) {
+      val map = DesktopJson.parseObject(cachedRaw)
+      if (map.isNotEmpty()) {
+        return DesktopApiOutcome.Ok(parseUserProfile(map, cleanId))
+      }
+    }
+    if (cleanId == "me" || (session.userId.isNotBlank() && cleanId == session.userId)) {
+      return DesktopApiOutcome.Ok(
+        DesktopUserProfile(
+          userId = session.userId.ifBlank { "me" },
+          fullName = session.fullName.ifBlank { session.email },
+          username = session.username,
+          avatarUrl = "",
+          bio = session.bio,
+          location = session.location,
+          countryIso = "",
+          followingCount = 0L,
+          followersCount = 0L,
+          likesCount = 0L,
+          isFollowing = false,
+          followsYou = false,
+          isOwner = true,
+          isBlocked = false,
+          riskScore = 0.0,
+          posts = emptyList(),
+        ),
+      )
+    }
+    return if (resp == null) {
+      DesktopApiOutcome.Fail(0, "Offline")
+    } else {
+      DesktopApiOutcome.Fail(resp.first, parseError(resp.first, resp.second))
+    }
+  }
+
+  fun getUserConnections(
+    userId: String,
+    isFollowers: Boolean,
+    page: Int = 1,
+    pageSize: Int = 30,
+  ): DesktopApiOutcome<DesktopUserConnectionsPage> {
+    val cleanId = userId.trim().ifBlank { "me" }
+    val encId = URLEncoder.encode(cleanId, StandardCharsets.UTF_8)
+    val endpoint = if (isFollowers) "followers" else "following"
+    val cacheKey = "conn_${cleanId}_$endpoint.json"
+    val resp = executeRaw("GET", "/v1/users/$encId/$endpoint?page=$page&page_size=$pageSize", null, auth = true)
+    if (resp != null && resp.first in 200..299) {
+      if (page == 1) saveCachedText(cacheKey, resp.second)
+      return DesktopApiOutcome.Ok(parseConnectionsPage(DesktopJson.parseObject(resp.second), page))
+    }
+    if (page == 1) {
+      loadCachedText(cacheKey)?.let { raw ->
+        val parsedMap = DesktopJson.parseObject(raw)
+        if (parsedMap.isNotEmpty()) {
+          return DesktopApiOutcome.Ok(parseConnectionsPage(parsedMap, 1))
+        }
+      }
+    }
+    return if (resp == null) {
+      DesktopApiOutcome.Fail(0, "Offline")
+    } else {
+      DesktopApiOutcome.Fail(resp.first, parseError(resp.first, resp.second))
+    }
+  }
+
+  fun blockUser(userId: String): DesktopApiOutcome<Boolean> {
+    val encId = URLEncoder.encode(userId.trim(), StandardCharsets.UTF_8)
+    val resp = executeRaw("POST", "/v1/users/$encId/block", null, auth = true)
+      ?: return DesktopApiOutcome.Fail(0, "Offline")
+    if (resp.first !in 200..299) {
+      return DesktopApiOutcome.Fail(resp.first, parseError(resp.first, resp.second))
+    }
+    return DesktopApiOutcome.Ok(true)
+  }
+
+  fun unblockUser(userId: String): DesktopApiOutcome<Boolean> {
+    val encId = URLEncoder.encode(userId.trim(), StandardCharsets.UTF_8)
+    val resp = executeRaw("POST", "/v1/users/$encId/unblock", null, auth = true)
+      ?: return DesktopApiOutcome.Fail(0, "Offline")
+    if (resp.first !in 200..299) {
+      return DesktopApiOutcome.Fail(resp.first, parseError(resp.first, resp.second))
+    }
+    return DesktopApiOutcome.Ok(false)
+  }
+
+  fun reportUser(userId: String, reason: String, details: String): DesktopApiOutcome<Boolean> {
+    val encId = URLEncoder.encode(userId.trim(), StandardCharsets.UTF_8)
+    val body = "{\"reason\":\"${DesktopJson.escape(reason)}\",\"details\":\"${DesktopJson.escape(details)}\"}"
+    val resp = executeRaw("POST", "/v1/users/$encId/report", body.toByteArray(StandardCharsets.UTF_8), auth = true)
+      ?: return DesktopApiOutcome.Fail(0, "Offline")
+    if (resp.first !in 200..299) {
+      return DesktopApiOutcome.Fail(resp.first, parseError(resp.first, resp.second))
+    }
+    return DesktopApiOutcome.Ok(true)
+  }
+
+  private fun parseConnectionsPage(map: Map<String, Any?>, fallbackPage: Int): DesktopUserConnectionsPage {
+    val items = DesktopJson.objList(map, "items").mapNotNull { item ->
+      val uid = DesktopJson.str(item, "user_id")
+      if (uid.isBlank()) return@mapNotNull null
+      DesktopContactItem(
+        userId = uid,
+        fullName = DesktopJson.str(item, "full_name"),
+        username = DesktopJson.str(item, "username"),
+        countryDisplay = DesktopJson.str(item, "location").ifBlank { DesktopJson.str(item, "country_iso") },
+        isFollowing = DesktopJson.bool(item, "is_following"),
+        followsYou = DesktopJson.bool(item, "follows_you"),
+        riskScore = DesktopJson.double(item, "risk_score"),
+      )
+    }
+    return DesktopUserConnectionsPage(
+      items = items,
+      page = DesktopJson.long(map, "page", fallbackPage.toLong()).toInt(),
+      hasMore = DesktopJson.bool(map, "has_more"),
+    )
+  }
+
+  private fun parseUserProfile(map: Map<String, Any?>, fallbackId: String): DesktopUserProfile {
+    return DesktopUserProfile(
+      userId = DesktopJson.str(map, "user_id").ifBlank { fallbackId },
+      fullName = DesktopJson.str(map, "full_name"),
+      username = DesktopJson.str(map, "username"),
+      avatarUrl = DesktopJson.str(map, "avatar_url"),
+      bio = DesktopJson.str(map, "bio"),
+      location = DesktopJson.str(map, "location"),
+      countryIso = DesktopJson.str(map, "country_iso"),
+      followingCount = DesktopJson.long(map, "following_count", 0L),
+      followersCount = DesktopJson.long(map, "followers_count", 0L),
+      likesCount = DesktopJson.long(map, "likes_count", 0L),
+      isFollowing = DesktopJson.bool(map, "is_following"),
+      followsYou = DesktopJson.bool(map, "follows_you"),
+      isOwner = DesktopJson.bool(map, "is_owner"),
+      isBlocked = DesktopJson.bool(map, "is_blocked"),
+      riskScore = DesktopJson.double(map, "risk_score", 0.0),
+      posts = DesktopJson.objList(map, "posts").map(::parseFeedPost),
+    )
+  }
+
   private fun parseFeedPost(map: Map<String, Any?>): DesktopFeedPost {
     val modeStr = DesktopJson.str(map, "mode").lowercase()
     val mode = SharedPostMode.entries.firstOrNull { it.apiValue == modeStr } ?: SharedPostMode.VIDEO
@@ -939,6 +1186,7 @@ class DesktopApiClient(
       fontOption = font,
       song = song,
       hashtags = DesktopJson.stringList(map, "hashtags"),
+      thumbnailUrl = DesktopJson.str(map, "thumbnail_url"),
       mediaWidth = DesktopJson.long(map, "width", 1080L).toInt().coerceAtLeast(1),
       mediaHeight = DesktopJson.long(map, "height", 1920L).toInt().coerceAtLeast(1),
       likesCount = DesktopJson.long(map, "likes_count", 0L),
@@ -946,12 +1194,14 @@ class DesktopApiClient(
       sharesCount = DesktopJson.long(map, "shares_count", 0L),
       favouritesCount = DesktopJson.long(map, "favourites_count", 0L),
       repostsCount = DesktopJson.long(map, "reposts_count", 0L),
+      viewsCount = DesktopJson.long(map, "views_count", 0L),
       isLiked = DesktopJson.bool(map, "is_liked"),
       isFavourited = DesktopJson.bool(map, "is_favourited"),
       isReposted = DesktopJson.bool(map, "is_reposted"),
       repostedByUsername = DesktopJson.str(map, "reposted_by_username"),
       recommendationLabel = rawLabel,
       muteOriginalAudio = DesktopJson.bool(map, "mute_original_audio"),
+      createdAtMs = DesktopJson.long(map, "created_at_ms", 0L),
     )
   }
 

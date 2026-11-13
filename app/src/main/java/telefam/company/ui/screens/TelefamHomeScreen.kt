@@ -78,6 +78,8 @@ import telefam.company.core.ContactFilterTab
 import telefam.company.core.FeedTab
 import telefam.company.core.PostMode
 import telefam.company.core.PostSongTrack
+import telefam.company.core.ProfilePostFilter
+import telefam.company.core.ProfilePostSort
 import telefam.company.ui.components.CompactThemeToggleChip
 import telefam.company.ui.theme.LocalTelefamDarkTheme
 import telefam.company.ui.theme.TelefamBlushWave
@@ -87,6 +89,7 @@ import telefam.company.ui.theme.TelefamPureWhite
 import telefam.company.ui.viewmodel.FeedUiItem
 import telefam.company.ui.viewmodel.HomeTab
 import telefam.company.ui.viewmodel.TelefamUiState
+import telefam.company.ui.viewmodel.UserProfileScreenState
 import java.io.File
 
 @Composable
@@ -123,6 +126,21 @@ fun TelefamHomeScreen(
   onRecordFeedWatchProgress: (String, Long, Long) -> Unit = { _, _, _ -> },
   onShowFeedToast: (String) -> Unit = {},
   onDismissFeedToast: () -> Unit = {},
+  onOpenUserProfile: (String) -> Unit = {},
+  onToggleProfileFollow: (String) -> Unit = {},
+  onOpenProfileConnections: (String, Boolean) -> Unit = { _, _ -> },
+  onDismissProfileConnections: (String) -> Unit = {},
+  onLoadMoreProfileConnections: (String) -> Unit = {},
+  onToggleProfileConnectionFollow: (String, String) -> Unit = { _, _ -> },
+  onSelectProfileFilter: (String, ProfilePostFilter) -> Unit = { _, _ -> },
+  onSelectProfileSort: (String, ProfilePostSort) -> Unit = { _, _ -> },
+  onOpenProfilePostViewer: (List<FeedUiItem>, Int) -> Unit = { _, _ -> },
+  onBlockProfileUser: (String) -> Unit = {},
+  onUnblockProfileUser: (String) -> Unit = {},
+  onReportProfileUser: (String, String, String) -> Unit = { _, _, _ -> },
+  onShowProfileToast: (String) -> Unit = {},
+  onDismissProfileToast: () -> Unit = {},
+  onSignOut: () -> Unit = {},
 ) {
   val context = LocalContext.current
   val snackbarHostState = remember { SnackbarHostState() }
@@ -151,15 +169,30 @@ fun TelefamHomeScreen(
     }
   }
 
+  LaunchedEffect(uiState.profileToastMessage) {
+    val profToast = uiState.profileToastMessage
+    if (!profToast.isNullOrBlank()) {
+      Toast.makeText(context, profToast, Toast.LENGTH_SHORT).show()
+      onDismissProfileToast()
+    }
+  }
+
   val isDark = LocalTelefamDarkTheme.current
   val blushBg = if (isDark) TelefamDarkBlush else TelefamBlushWave
   val isContactsTab = uiState.activeHomeTab == HomeTab.CONTACTS
   val isFeedsTab = uiState.activeHomeTab == HomeTab.FEEDS
+  val isProfileTab = uiState.activeHomeTab == HomeTab.PROFILE
 
   Box(
     modifier = Modifier
       .fillMaxSize()
-      .background(if (isFeedsTab) Color(0xFF07080B) else TelefamCrimson),
+      .background(
+        when {
+          isFeedsTab -> Color(0xFF07080B)
+          isProfileTab -> MaterialTheme.colorScheme.background
+          else -> TelefamCrimson
+        },
+      ),
   ) {
     Column(modifier = Modifier.fillMaxSize()) {
       if (isContactsTab) {
@@ -171,7 +204,7 @@ fun TelefamHomeScreen(
           onFilterSelected = onContactsFilterSelected,
           onToggleTheme = onToggleTheme,
         )
-      } else if (!isFeedsTab) {
+      } else if (!isFeedsTab && !isProfileTab) {
         // Red Top Bar matching Image 2 (pill Search Bar + 3-dots menu)
         Row(
           modifier = Modifier
@@ -238,7 +271,7 @@ fun TelefamHomeScreen(
         modifier = Modifier
           .weight(1f)
           .fillMaxWidth(),
-        shape = if (isContactsTab || isFeedsTab) {
+        shape = if (isContactsTab || isFeedsTab || isProfileTab) {
           RoundedCornerShape(0.dp)
         } else {
           RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
@@ -299,6 +332,21 @@ fun TelefamHomeScreen(
                   onTapFeedAudio = onTapFeedAudio,
                   onRecordFeedWatchProgress = onRecordFeedWatchProgress,
                   onShowFeedToast = onShowFeedToast,
+                  onOpenUserProfile = onOpenUserProfile,
+                  onToggleProfileFollow = onToggleProfileFollow,
+                  onOpenProfileConnections = onOpenProfileConnections,
+                  onDismissProfileConnections = onDismissProfileConnections,
+                  onLoadMoreProfileConnections = onLoadMoreProfileConnections,
+                  onToggleProfileConnectionFollow = onToggleProfileConnectionFollow,
+                  onSelectProfileFilter = onSelectProfileFilter,
+                  onSelectProfileSort = onSelectProfileSort,
+                  onOpenProfilePostViewer = onOpenProfilePostViewer,
+                  onBlockProfileUser = onBlockProfileUser,
+                  onUnblockProfileUser = onUnblockProfileUser,
+                  onReportProfileUser = onReportProfileUser,
+                  onShowProfileToast = onShowProfileToast,
+                  onToggleTheme = onToggleTheme,
+                  onSignOut = onSignOut,
                 )
               }
             }
@@ -339,6 +387,21 @@ fun TelefamHomeScreen(
                   onTapFeedAudio = onTapFeedAudio,
                   onRecordFeedWatchProgress = onRecordFeedWatchProgress,
                   onShowFeedToast = onShowFeedToast,
+                  onOpenUserProfile = onOpenUserProfile,
+                  onToggleProfileFollow = onToggleProfileFollow,
+                  onOpenProfileConnections = onOpenProfileConnections,
+                  onDismissProfileConnections = onDismissProfileConnections,
+                  onLoadMoreProfileConnections = onLoadMoreProfileConnections,
+                  onToggleProfileConnectionFollow = onToggleProfileConnectionFollow,
+                  onSelectProfileFilter = onSelectProfileFilter,
+                  onSelectProfileSort = onSelectProfileSort,
+                  onOpenProfilePostViewer = onOpenProfilePostViewer,
+                  onBlockProfileUser = onBlockProfileUser,
+                  onUnblockProfileUser = onUnblockProfileUser,
+                  onReportProfileUser = onReportProfileUser,
+                  onShowProfileToast = onShowProfileToast,
+                  onToggleTheme = onToggleTheme,
+                  onSignOut = onSignOut,
                 )
               }
 
@@ -402,6 +465,21 @@ private fun HomeTabContent(
   onTapFeedAudio: (PostSongTrack, PostMode) -> Unit,
   onRecordFeedWatchProgress: (String, Long, Long) -> Unit,
   onShowFeedToast: (String) -> Unit,
+  onOpenUserProfile: (String) -> Unit,
+  onToggleProfileFollow: (String) -> Unit,
+  onOpenProfileConnections: (String, Boolean) -> Unit,
+  onDismissProfileConnections: (String) -> Unit,
+  onLoadMoreProfileConnections: (String) -> Unit,
+  onToggleProfileConnectionFollow: (String, String) -> Unit,
+  onSelectProfileFilter: (String, ProfilePostFilter) -> Unit,
+  onSelectProfileSort: (String, ProfilePostSort) -> Unit,
+  onOpenProfilePostViewer: (List<FeedUiItem>, Int) -> Unit,
+  onBlockProfileUser: (String) -> Unit,
+  onUnblockProfileUser: (String) -> Unit,
+  onReportProfileUser: (String, String, String) -> Unit,
+  onShowProfileToast: (String) -> Unit,
+  onToggleTheme: () -> Unit,
+  onSignOut: () -> Unit,
 ) {
   val activeTab = uiState.activeHomeTab
 
@@ -488,6 +566,7 @@ private fun HomeTabContent(
       onToggleFollow = onToggleContactFollow,
       onLoadNextPage = onLoadNextContactsPage,
       onScrollVisibilityChanged = onContactsScrollVisibilityChanged,
+      onOpenUserProfile = onOpenUserProfile,
     )
   }
 
@@ -539,13 +618,54 @@ private fun HomeTabContent(
         onTapHashtag = onTapFeedHashtag,
         onTapAudio = onTapFeedAudio,
         onRecordWatchProgress = onRecordFeedWatchProgress,
+        onOpenAuthorProfile = onOpenUserProfile,
         onShowToast = onShowFeedToast,
       )
     }
   }
 
   AnimatedVisibility(
-    visible = activeTab != HomeTab.CHATS && activeTab != HomeTab.CONTACTS && activeTab != HomeTab.FEEDS,
+    visible = activeTab == HomeTab.PROFILE,
+    enter = fadeIn(),
+    exit = fadeOut(),
+  ) {
+    val ownProfile = uiState.ownProfileState ?: UserProfileScreenState(
+      userId = uiState.userId,
+      fullName = uiState.profileForm.fullName,
+      username = uiState.profileForm.username,
+      avatarUrl = uiState.savedAvatarLocalPath,
+      bio = uiState.profileForm.bio,
+      location = uiState.profileForm.location,
+      isOwner = true,
+      isLoading = true,
+    )
+    TelefamUserProfileScreen(
+      profile = ownProfile,
+      isEmbeddedOwnProfileTab = true,
+      bottomChromePadding = if (feedBottomPadding > 0.dp) feedBottomPadding + 6.dp else 0.dp,
+      onBack = onReturnToChats,
+      onToggleFollow = { onToggleProfileFollow(ownProfile.userId) },
+      onMessageClick = { onShowProfileToast("Message — Coming soon") },
+      onSubscribeClick = { onShowProfileToast("Subscribe — Coming soon") },
+      onOpenConnections = { isFollowers -> onOpenProfileConnections(ownProfile.userId, isFollowers) },
+      onDismissConnections = { onDismissProfileConnections(ownProfile.userId) },
+      onLoadMoreConnections = { onLoadMoreProfileConnections(ownProfile.userId) },
+      onToggleConnectionFollow = { targetId -> onToggleProfileConnectionFollow(ownProfile.userId, targetId) },
+      onOpenUserProfile = onOpenUserProfile,
+      onSelectFilter = { filter -> onSelectProfileFilter(ownProfile.userId, filter) },
+      onSelectSort = { sort -> onSelectProfileSort(ownProfile.userId, sort) },
+      onOpenPostAtIndex = onOpenProfilePostViewer,
+      onBlockUser = { onBlockProfileUser(ownProfile.userId) },
+      onUnblockUser = { onUnblockProfileUser(ownProfile.userId) },
+      onReportUser = { reason, details -> onReportProfileUser(ownProfile.userId, reason, details) },
+      onShowToast = onShowProfileToast,
+      onToggleTheme = onToggleTheme,
+      onSignOut = onSignOut,
+    )
+  }
+
+  AnimatedVisibility(
+    visible = activeTab != HomeTab.CHATS && activeTab != HomeTab.CONTACTS && activeTab != HomeTab.FEEDS && activeTab != HomeTab.PROFILE,
     enter = fadeIn(),
     exit = fadeOut(),
   ) {

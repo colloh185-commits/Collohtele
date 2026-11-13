@@ -2,13 +2,15 @@ package telefam.company.ui.viewmodel
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.media.AudioAttributes
-import android.media.MediaPlayer
 import android.net.Uri
 import android.util.Patterns
+import androidx.annotation.OptIn
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.ExoPlayer
 import com.telefam.company.app.BuildConfig
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
@@ -38,6 +40,8 @@ import telefam.company.core.PostFontOption
 import telefam.company.core.PostMode
 import telefam.company.core.PostSongTrack
 import telefam.company.core.PostUploadStatus
+import telefam.company.core.ProfilePostFilter
+import telefam.company.core.ProfilePostSort
 import telefam.company.core.TelefamContactsRules
 import telefam.company.core.TelefamCoreEngine
 import telefam.company.core.TelefamPostRules
@@ -45,6 +49,9 @@ import telefam.company.core.TelefamProfileSanitizer
 import telefam.company.data.local.CachedFeedPostEntity
 import telefam.company.data.model.CountryCatalog
 import telefam.company.data.model.CountryDialOption
+import telefam.company.data.network.ContactItemDto
+import telefam.company.data.network.FeedItemDto
+import telefam.company.data.network.UserProfileResponseDto
 import telefam.company.data.repository.AuthActionResult
 import telefam.company.data.repository.ContactToggleResult
 import telefam.company.data.repository.PostPublishResult
@@ -54,10 +61,12 @@ import telefam.company.data.repository.TelefamRepository
 import telefam.company.media.PreparedPostVideo
 import telefam.company.media.ProcessedAvatarMedia
 import telefam.company.media.ProcessedPostPhoto
+import telefam.company.media.TelefamVideoCacheManager
 import telefam.company.media.TelefamVideoDownloader
 import telefam.company.media.VideoDownloadResult
 import telefam.company.media.VideoPrepareResult
 import telefam.company.ui.theme.ThemeMode
+import java.io.File
 
 enum class AuthStep {
   EMAIL_INPUT,
@@ -144,6 +153,7 @@ data class FeedUiItem(
   val sharesCount: Long,
   val favouritesCount: Long,
   val repostsCount: Long,
+  val viewsCount: Long = 0L,
   val isLiked: Boolean,
   val isFavourited: Boolean,
   val isReposted: Boolean,
@@ -151,6 +161,47 @@ data class FeedUiItem(
   val recommendationLabel: String,
   val createdAtMs: Long,
 )
+
+data class UserProfileScreenState(
+  val userId: String,
+  val fullName: String = "",
+  val username: String = "",
+  val avatarUrl: String? = null,
+  val bio: String = "",
+  val location: String = "",
+  val followingCount: Long = 0L,
+  val followersCount: Long = 0L,
+  val likesCount: Long = 0L,
+  val isFollowing: Boolean = false,
+  val followsYou: Boolean = false,
+  val isOwner: Boolean = false,
+  val isBlocked: Boolean = false,
+  val relationshipState: ContactRelationshipState = ContactRelationshipState.FOLLOW,
+  val posts: List<FeedUiItem> = emptyList(),
+  val selectedFilter: ProfilePostFilter = ProfilePostFilter.ALL,
+  val selectedSort: ProfilePostSort = ProfilePostSort.LATEST,
+  val isLoading: Boolean = true,
+  val activeConnectionsType: String? = null,
+  val connections: List<ContactUiItem> = emptyList(),
+  val isLoadingConnections: Boolean = false,
+  val connectionsPage: Int = 1,
+  val connectionsHasMore: Boolean = false,
+) {
+  val filteredAndSortedPosts: List<FeedUiItem>
+    get() {
+      val filtered = when (selectedFilter) {
+        ProfilePostFilter.ALL -> posts
+        ProfilePostFilter.VIDEOS -> posts.filter { it.mode == PostMode.VIDEO }
+        ProfilePostFilter.PHOTOS -> posts.filter { it.mode == PostMode.PHOTOS }
+        ProfilePostFilter.TEXT -> posts.filter { it.mode == PostMode.TEXT }
+      }
+      return when (selectedSort) {
+        ProfilePostSort.LATEST -> filtered.sortedByDescending { it.createdAtMs }
+        ProfilePostSort.MOST_VIEWED -> filtered.sortedByDescending { it.viewsCount }
+        ProfilePostSort.MOST_LIKED -> filtered.sortedByDescending { it.likesCount }
+      }
+    }
+}
 
 data class FeedsUiState(
   val activeTab: FeedTab = FeedTab.FOR_YOU,
@@ -248,8 +299,16 @@ data class TelefamUiState(
   val contactsState: ContactsUiState = ContactsUiState(),
   val feedsState: FeedsUiState = FeedsUiState(),
   val postComposer: PostComposerUiState = PostComposerUiState(),
+  val profileBackStack: List<UserProfileScreenState> = emptyList(),
+  val ownProfileState: UserProfileScreenState? = null,
+  val profileViewerItems: List<FeedUiItem>? = null,
+  val profileViewerInitialIndex: Int = 0,
+  val profileToastMessage: String? = null,
   val comingSoonMessage: String? = null,
-)
+) {
+  val activeUserProfile: UserProfileScreenState?
+    get() = profileBackStack.lastOrNull()
+}
 
 @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
 class TelefamViewModel(
@@ -265,7 +324,7 @@ class TelefamViewModel(
   private var feedSearchJob: Job? = null
   private var songSearchJob: Job? = null
   private var hashtagSearchJob: Job? = null
-  private var previewPlayer: MediaPlayer? = null
+  private var previewPlayer: ExoPlayer? = null
 
   init {
     viewModelScope.launch {
@@ -284,6 +343,15 @@ class TelefamViewModel(
           repository.observeProfile(userId).first()
         } else {
           null
+        }
+
+        val streamCreds = if (isAuthenticated) {
+          repository.getStreamCredentials().also { (tok, fp) ->
+            TelefamVideoCacheManager.updateCredentials(tok, fp)
+          }
+        } else {
+          TelefamVideoCacheManager.updateCredentials("", "")
+          "" to ""
         }
 
         _uiState.update { current ->
@@ -310,6 +378,10 @@ class TelefamViewModel(
             networkTier = tier,
             profileForm = updatedForm,
             savedAvatarLocalPath = savedProfile?.avatarLocalPath ?: current.savedAvatarLocalPath,
+            feedsState = current.feedsState.copy(
+              streamAccessToken = streamCreds.first,
+              streamDeviceFp = streamCreds.second,
+            ),
           )
         }
 
@@ -356,15 +428,20 @@ class TelefamViewModel(
         }
         .collect { cached ->
           val countryByIso = CountryCatalog.allCountries.associateBy { it.iso.uppercase() }
+          val baseUrl = BuildConfig.TELEFAM_API_BASE_URL
           val uiItems = cached.map { entity ->
             val countryName = countryByIso[entity.countryIso.uppercase()]?.name
               ?: entity.location.ifBlank { entity.countryIso }
+            val resolvedAvatar = entity.avatarLocalPath?.takeIf { File(it).exists() }
+              ?: entity.avatarUrl?.trim()?.takeIf { it.isNotBlank() }?.let {
+                AdaptiveStreamSelector.resolveMediaUrl(baseUrl, it)
+              }
             ContactUiItem(
               userId = entity.userId,
               fullName = entity.fullName,
               username = entity.username,
               countryDisplay = countryName,
-              avatarLocalPath = entity.avatarLocalPath,
+              avatarLocalPath = resolvedAvatar,
               isFollowing = entity.isFollowing,
               followsYou = entity.followsYou,
               relationshipState = ContactRelationshipState.compute(entity.isFollowing, entity.followsYou),
@@ -391,15 +468,20 @@ class TelefamViewModel(
         }
         .collect { cachedAll ->
           val countryByIso = CountryCatalog.allCountries.associateBy { it.iso.uppercase() }
+          val baseUrl = BuildConfig.TELEFAM_API_BASE_URL
           val items = cachedAll.map { entity ->
             val countryName = countryByIso[entity.countryIso.uppercase()]?.name
               ?: entity.location.ifBlank { entity.countryIso }
+            val resolvedAvatar = entity.avatarLocalPath?.takeIf { File(it).exists() }
+              ?: entity.avatarUrl?.trim()?.takeIf { it.isNotBlank() }?.let {
+                AdaptiveStreamSelector.resolveMediaUrl(baseUrl, it)
+              }
             ContactUiItem(
               userId = entity.userId,
               fullName = entity.fullName,
               username = entity.username,
               countryDisplay = countryName,
-              avatarLocalPath = entity.avatarLocalPath,
+              avatarLocalPath = resolvedAvatar,
               isFollowing = entity.isFollowing,
               followsYou = entity.followsYou,
               relationshipState = ContactRelationshipState.compute(entity.isFollowing, entity.followsYou),
@@ -765,7 +847,7 @@ class TelefamViewModel(
     }
   }
 
-  // Home screen & Contacts / Feeds interactions + audit logging
+  // Home screen & Contacts / Feeds / Profile interactions + audit logging
   fun selectHomeTab(tab: HomeTab) {
     if (tab == HomeTab.POST) {
       openPostComposer()
@@ -775,11 +857,7 @@ class TelefamViewModel(
       it.copy(
         activeHomeTab = tab,
         isBottomBarVisible = true,
-        comingSoonMessage = if (tab == HomeTab.PROFILE) {
-          "Profile — Coming soon"
-        } else {
-          null
-        },
+        comingSoonMessage = null,
       )
     }
     when (tab) {
@@ -792,6 +870,15 @@ class TelefamViewModel(
           }
         }
         refreshFeeds()
+      }
+      HomeTab.PROFILE -> {
+        viewModelScope.launch {
+          val (tok, fp) = repository.getStreamCredentials()
+          _uiState.update { s ->
+            s.copy(feedsState = s.feedsState.copy(streamAccessToken = tok, streamDeviceFp = fp))
+          }
+        }
+        loadOwnProfile()
       }
       else -> Unit
     }
@@ -1171,6 +1258,13 @@ class TelefamViewModel(
           searchResults = s.feedsState.searchResults.map { if (it.postId == postId) transform(it) else it },
           searchViewerItems = s.feedsState.searchViewerItems?.map { if (it.postId == postId) transform(it) else it },
         ),
+        profileViewerItems = s.profileViewerItems?.map { if (it.postId == postId) transform(it) else it },
+        profileBackStack = s.profileBackStack.map { p ->
+          p.copy(posts = p.posts.map { if (it.postId == postId) transform(it) else it })
+        },
+        ownProfileState = s.ownProfileState?.let { p ->
+          p.copy(posts = p.posts.map { if (it.postId == postId) transform(it) else it })
+        },
       )
     }
   }
@@ -1187,8 +1281,9 @@ class TelefamViewModel(
   }
 
   private fun mapFeedEntityToUi(entity: CachedFeedPostEntity, tier: NetworkTier): FeedUiItem {
-    val renditions = repository.parseRenditions(entity.renditionsJson)
     val baseUrl = BuildConfig.TELEFAM_API_BASE_URL
+    val renditions = repository.parseRenditions(entity.renditionsJson)
+      .map { it.copy(url = AdaptiveStreamSelector.resolveMediaUrl(baseUrl, it.url)) }
     val streamUrl = AdaptiveStreamSelector.selectRenditionUrl(
       baseUrl = baseUrl,
       primaryVideoUrl = entity.videoUrl,
@@ -1205,7 +1300,9 @@ class TelefamViewModel(
       authorUserId = entity.authorUserId,
       authorUsername = entity.authorUsername,
       authorFullName = entity.authorFullName,
-      authorAvatarUrl = entity.authorAvatarUrl?.let { AdaptiveStreamSelector.resolveMediaUrl(baseUrl, it) },
+      authorAvatarUrl = entity.authorAvatarUrl?.trim()?.takeIf { it.isNotBlank() }?.let {
+        AdaptiveStreamSelector.resolveMediaUrl(baseUrl, it)
+      },
       isFollowingAuthor = entity.isFollowingAuthor,
       isOwner = entity.isOwner,
       mode = PostMode.entries.firstOrNull { it.apiValue == entity.mode } ?: PostMode.VIDEO,
@@ -1231,12 +1328,95 @@ class TelefamViewModel(
       sharesCount = entity.sharesCount,
       favouritesCount = entity.favouritesCount,
       repostsCount = entity.repostsCount,
+      viewsCount = entity.viewsCount,
       isLiked = entity.isLiked,
       isFavourited = entity.isFavourited,
       isReposted = entity.isReposted,
       repostedByUsername = entity.repostedByUsername,
       recommendationLabel = entity.recommendationLabel,
       createdAtMs = entity.createdAtMs,
+    )
+  }
+
+  private fun mapProfileDtoToState(
+    dto: UserProfileResponseDto,
+    existing: UserProfileScreenState?,
+    tier: NetworkTier,
+  ): UserProfileScreenState {
+    val baseUrl = BuildConfig.TELEFAM_API_BASE_URL
+    val posts = if (dto.posts.isNotEmpty()) {
+      dto.posts.map { postDto ->
+        mapFeedEntityToUi(repository.feedPostDtoToEntity(postDto), tier)
+      }
+    } else {
+      dto.videos.map { v ->
+        FeedUiItem(
+          postId = v.postId,
+          authorUserId = dto.userId,
+          authorUsername = dto.username,
+          authorFullName = dto.fullName,
+          authorAvatarUrl = dto.avatarUrl.ifBlank { null }?.let { AdaptiveStreamSelector.resolveMediaUrl(baseUrl, it) },
+          isFollowingAuthor = dto.isFollowing,
+          isOwner = dto.isOwner,
+          mode = PostMode.VIDEO,
+          textContent = "",
+          caption = v.caption,
+          themeId = "crimson",
+          fontOption = PostFontOption.CLASSIC,
+          song = null,
+          hashtags = emptyList(),
+          photoUrls = emptyList(),
+          primaryStreamUrl = AdaptiveStreamSelector.resolveMediaUrl(baseUrl, v.videoUrl),
+          rawDownloadUrl = AdaptiveStreamSelector.resolveMediaUrl(baseUrl, v.videoUrl),
+          thumbnailUrl = AdaptiveStreamSelector.resolveMediaUrl(baseUrl, v.thumbnailUrl),
+          renditions = emptyList(),
+          width = 720,
+          height = 1280,
+          durationMs = v.durationMs,
+          muteOriginalAudio = false,
+          contentId = "",
+          likesCount = 0L,
+          commentsCount = 0L,
+          sharesCount = 0L,
+          favouritesCount = 0L,
+          repostsCount = 0L,
+          viewsCount = v.viewsCount,
+          isLiked = false,
+          isFavourited = false,
+          isReposted = false,
+          repostedByUsername = "",
+          recommendationLabel = "",
+          createdAtMs = v.createdAtMs,
+        )
+      }
+    }
+    val avatarResolved = dto.avatarUrl.trim().takeIf { it.isNotBlank() }?.let {
+      AdaptiveStreamSelector.resolveMediaUrl(baseUrl, it)
+    }
+    return UserProfileScreenState(
+      userId = dto.userId,
+      fullName = dto.fullName.ifBlank { existing?.fullName ?: "User" },
+      username = dto.username.ifBlank { existing?.username ?: dto.userId },
+      avatarUrl = avatarResolved ?: existing?.avatarUrl,
+      bio = dto.bio,
+      location = dto.location,
+      followingCount = dto.followingCount,
+      followersCount = dto.followersCount,
+      likesCount = dto.likesCount,
+      isFollowing = dto.isFollowing,
+      followsYou = dto.followsYou,
+      isOwner = dto.isOwner || dto.userId == _uiState.value.userId,
+      isBlocked = dto.isBlocked,
+      relationshipState = ContactRelationshipState.compute(dto.isFollowing, dto.followsYou),
+      posts = posts,
+      selectedFilter = existing?.selectedFilter ?: ProfilePostFilter.ALL,
+      selectedSort = existing?.selectedSort ?: ProfilePostSort.LATEST,
+      isLoading = false,
+      activeConnectionsType = existing?.activeConnectionsType,
+      connections = existing?.connections.orEmpty(),
+      isLoadingConnections = existing?.isLoadingConnections ?: false,
+      connectionsPage = existing?.connectionsPage ?: 1,
+      connectionsHasMore = existing?.connectionsHasMore ?: false,
     )
   }
 
@@ -1557,6 +1737,7 @@ class TelefamViewModel(
     }
   }
 
+  @OptIn(UnstableApi::class)
   fun toggleSongPreview(track: PostSongTrack) {
     if (track.previewUrl.isBlank()) return
     val currentPlaying = _uiState.value.postComposer.playingPreviewTrackId
@@ -1569,24 +1750,26 @@ class TelefamViewModel(
       state.copy(postComposer = state.postComposer.copy(playingPreviewTrackId = track.trackId))
     }
     runCatching {
-      val player = MediaPlayer().apply {
-        setAudioAttributes(
-          AudioAttributes.Builder()
-            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-            .setUsage(AudioAttributes.USAGE_MEDIA)
-            .build(),
-        )
-        setDataSource(track.previewUrl)
-        setOnPreparedListener { it.start() }
-        setOnCompletionListener {
-          _uiState.update { s -> s.copy(postComposer = s.postComposer.copy(playingPreviewTrackId = null)) }
-        }
-        setOnErrorListener { _, _, _ ->
-          _uiState.update { s -> s.copy(postComposer = s.postComposer.copy(playingPreviewTrackId = null)) }
-          true
-        }
-        prepareAsync()
-      }
+      val player = TelefamVideoCacheManager.buildFeedAudioExoPlayer(
+        context = repository.applicationContext(),
+        repeatOne = false,
+      )
+      player.addListener(
+        object : Player.Listener {
+          override fun onPlaybackStateChanged(playbackState: Int) {
+            if (playbackState == Player.STATE_ENDED) {
+              _uiState.update { s -> s.copy(postComposer = s.postComposer.copy(playingPreviewTrackId = null)) }
+            }
+          }
+
+          override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+            _uiState.update { s -> s.copy(postComposer = s.postComposer.copy(playingPreviewTrackId = null)) }
+          }
+        },
+      )
+      player.setMediaItem(TelefamVideoCacheManager.createMediaItem(track.previewUrl))
+      player.prepare()
+      player.playWhenReady = true
       previewPlayer = player
     }.onFailure {
       _uiState.update { s -> s.copy(postComposer = s.postComposer.copy(playingPreviewTrackId = null)) }
@@ -1925,6 +2108,359 @@ class TelefamViewModel(
 
   fun dismissContactsToast() {
     _uiState.update { it.copy(contactsState = it.contactsState.copy(toastMessage = null)) }
+  }
+
+  // User Profile Navigation, Actions, Followers/Following, Block, Report & Offline Cache
+  fun loadOwnProfile() {
+    val uid = _uiState.value.userId.trim()
+    if (uid.isBlank() || !_uiState.value.isAuthenticated) return
+    val existing = _uiState.value.ownProfileState ?: UserProfileScreenState(
+      userId = uid,
+      fullName = _uiState.value.profileForm.fullName,
+      username = _uiState.value.profileForm.username,
+      avatarUrl = _uiState.value.savedAvatarLocalPath,
+      bio = _uiState.value.profileForm.bio,
+      location = _uiState.value.profileForm.location,
+      isOwner = true,
+      isLoading = true,
+    )
+    _uiState.update { it.copy(ownProfileState = existing) }
+    refreshUserProfile(uid)
+  }
+
+  fun openUserProfile(userId: String) {
+    val cleanId = userId.trim()
+    if (cleanId.isBlank() || !_uiState.value.isAuthenticated) return
+    val currentTop = _uiState.value.profileBackStack.lastOrNull()
+    if (currentTop?.userId == cleanId) return
+
+    // Seed initial preview immediately from contacts or feed items while loading fresh server/cached data
+    val contactSeed = _uiState.value.contactsState.items.firstOrNull { it.userId == cleanId }
+    val feedSeed = (_uiState.value.feedsState.activeItems + _uiState.value.feedsState.searchResults)
+      .firstOrNull { it.authorUserId == cleanId }
+    val seedProfile = UserProfileScreenState(
+      userId = cleanId,
+      fullName = contactSeed?.fullName ?: feedSeed?.authorFullName ?: "",
+      username = contactSeed?.username ?: feedSeed?.authorUsername ?: "",
+      avatarUrl = contactSeed?.avatarLocalPath ?: feedSeed?.authorAvatarUrl,
+      location = contactSeed?.countryDisplay.orEmpty(),
+      isFollowing = contactSeed?.isFollowing ?: feedSeed?.isFollowingAuthor ?: false,
+      followsYou = contactSeed?.followsYou ?: false,
+      isOwner = cleanId == _uiState.value.userId,
+      relationshipState = contactSeed?.relationshipState ?: if (feedSeed?.isFollowingAuthor == true) {
+        ContactRelationshipState.FOLLOWING
+      } else {
+        ContactRelationshipState.FOLLOW
+      },
+      isLoading = true,
+    )
+
+    _uiState.update { s ->
+      s.copy(
+        profileBackStack = s.profileBackStack + seedProfile,
+        profileViewerItems = null,
+      )
+    }
+    logClientAction("profile_opened_$cleanId")
+    refreshUserProfile(cleanId)
+  }
+
+  fun closeTopUserProfile() {
+    _uiState.update { s ->
+      if (s.profileViewerItems != null) {
+        s.copy(profileViewerItems = null)
+      } else if (s.profileBackStack.isNotEmpty()) {
+        s.copy(profileBackStack = s.profileBackStack.dropLast(1))
+      } else {
+        s
+      }
+    }
+  }
+
+  fun refreshUserProfile(userId: String) {
+    val cleanId = userId.trim()
+    if (cleanId.isBlank()) return
+    viewModelScope.launch {
+      val (tok, fp) = repository.getStreamCredentials()
+      val fetched = repository.fetchUserProfile(cleanId)
+      val tier = _uiState.value.networkTier
+      _uiState.update { s ->
+        val updatedStack = s.profileBackStack.map { entry ->
+          if (entry.userId == cleanId) {
+            if (fetched != null) mapProfileDtoToState(fetched, entry, tier)
+            else entry.copy(isLoading = false)
+          } else entry
+        }
+        val updatedOwn = if (s.ownProfileState?.userId == cleanId) {
+          if (fetched != null) mapProfileDtoToState(fetched, s.ownProfileState, tier)
+          else s.ownProfileState.copy(isLoading = false)
+        } else {
+          s.ownProfileState
+        }
+        s.copy(
+          profileBackStack = updatedStack,
+          ownProfileState = updatedOwn,
+          feedsState = s.feedsState.copy(streamAccessToken = tok, streamDeviceFp = fp),
+        )
+      }
+    }
+  }
+
+  fun toggleFollowOnProfile(userId: String) {
+    val profile = (_uiState.value.profileBackStack.lastOrNull { it.userId == userId }
+      ?: _uiState.value.ownProfileState?.takeIf { it.userId == userId }) ?: return
+    if (profile.isOwner || profile.isBlocked) return
+    val currentlyFollowing = profile.isFollowing
+    val nextFollowing = !currentlyFollowing
+    val delta = if (nextFollowing) 1L else -1L
+    val nextRel = ContactRelationshipState.compute(nextFollowing, profile.followsYou)
+
+    updateProfileInState(userId) { p ->
+      p.copy(
+        isFollowing = nextFollowing,
+        followersCount = (p.followersCount + delta).coerceAtLeast(0L),
+        relationshipState = nextRel,
+      )
+    }
+
+    viewModelScope.launch {
+      when (val res = repository.toggleFollowAuthorFromFeed(userId, currentlyFollowing)) {
+        is ContactToggleResult.RateLimited -> {
+          updateProfileInState(userId) { p ->
+            p.copy(
+              isFollowing = currentlyFollowing,
+              followersCount = (p.followersCount - delta).coerceAtLeast(0L),
+              relationshipState = ContactRelationshipState.compute(currentlyFollowing, p.followsYou),
+            )
+          }
+          _uiState.update { it.copy(profileToastMessage = res.message) }
+        }
+        else -> {
+          refreshUserProfile(userId)
+        }
+      }
+    }
+  }
+
+  fun openProfileConnections(userId: String, isFollowers: Boolean) {
+    val cleanId = userId.trim()
+    if (cleanId.isBlank()) return
+    val listType = if (isFollowers) "followers" else "following"
+    updateProfileInState(cleanId) { p ->
+      p.copy(
+        activeConnectionsType = listType,
+        connections = emptyList(),
+        isLoadingConnections = true,
+        connectionsPage = 1,
+        connectionsHasMore = false,
+      )
+    }
+    viewModelScope.launch {
+      val res = repository.fetchUserConnections(cleanId, isFollowers = isFollowers, page = 1, pageSize = 30)
+      val mapped = mapConnectionDtosToUi(res.items)
+      updateProfileInState(cleanId) { p ->
+        p.copy(
+          connections = mapped,
+          isLoadingConnections = false,
+          connectionsPage = res.page,
+          connectionsHasMore = res.hasMore,
+        )
+      }
+    }
+  }
+
+  fun loadMoreProfileConnections(userId: String) {
+    val profile = (_uiState.value.profileBackStack.lastOrNull { it.userId == userId }
+      ?: _uiState.value.ownProfileState?.takeIf { it.userId == userId }) ?: return
+    val listType = profile.activeConnectionsType ?: return
+    if (profile.isLoadingConnections || !profile.connectionsHasMore) return
+    val nextPage = profile.connectionsPage + 1
+    updateProfileInState(userId) { it.copy(isLoadingConnections = true) }
+    viewModelScope.launch {
+      val res = repository.fetchUserConnections(
+        userId = userId,
+        isFollowers = listType == "followers",
+        page = nextPage,
+        pageSize = 30,
+      )
+      val mapped = mapConnectionDtosToUi(res.items)
+      updateProfileInState(userId) { p ->
+        val existingIds = p.connections.map { it.userId }.toSet()
+        p.copy(
+          connections = p.connections + mapped.filterNot { it.userId in existingIds },
+          isLoadingConnections = false,
+          connectionsPage = res.page,
+          connectionsHasMore = res.hasMore,
+        )
+      }
+    }
+  }
+
+  fun dismissProfileConnections(userId: String) {
+    updateProfileInState(userId) { p ->
+      p.copy(activeConnectionsType = null, connections = emptyList(), isLoadingConnections = false)
+    }
+  }
+
+  fun toggleFollowInConnections(ownerUserId: String, targetUserId: String) {
+    val profile = (_uiState.value.profileBackStack.lastOrNull { it.userId == ownerUserId }
+      ?: _uiState.value.ownProfileState?.takeIf { it.userId == ownerUserId }) ?: return
+    val row = profile.connections.firstOrNull { it.userId == targetUserId } ?: return
+    if (targetUserId == _uiState.value.userId) return
+    val nextFollowing = !row.isFollowing
+    val nextRel = ContactRelationshipState.compute(nextFollowing, row.followsYou)
+
+    updateProfileInState(ownerUserId) { p ->
+      p.copy(
+        connections = p.connections.map { c ->
+          if (c.userId == targetUserId) c.copy(isFollowing = nextFollowing, relationshipState = nextRel) else c
+        },
+      )
+    }
+
+    viewModelScope.launch {
+      when (val res = repository.toggleFollowAuthorFromFeed(targetUserId, row.isFollowing)) {
+        is ContactToggleResult.RateLimited -> {
+          updateProfileInState(ownerUserId) { p ->
+            p.copy(
+              connections = p.connections.map { c ->
+                if (c.userId == targetUserId) c.copy(isFollowing = row.isFollowing, relationshipState = row.relationshipState) else c
+              },
+            )
+          }
+          _uiState.update { it.copy(profileToastMessage = res.message) }
+        }
+        else -> Unit
+      }
+    }
+  }
+
+  fun selectProfilePostFilter(userId: String, filter: ProfilePostFilter) {
+    updateProfileInState(userId) { it.copy(selectedFilter = filter) }
+  }
+
+  fun selectProfileSortOrder(userId: String, sort: ProfilePostSort) {
+    updateProfileInState(userId) { it.copy(selectedSort = sort) }
+  }
+
+  fun openProfilePostViewer(posts: List<FeedUiItem>, index: Int) {
+    if (posts.isEmpty()) return
+    val safeIndex = index.coerceIn(0, posts.lastIndex)
+    val clicked = posts[safeIndex]
+    val updatedList = posts.mapIndexed { idx, item ->
+      if (idx == safeIndex) item.copy(viewsCount = item.viewsCount + 1L) else item
+    }
+    _uiState.update { s ->
+      s.copy(
+        profileViewerItems = updatedList,
+        profileViewerInitialIndex = safeIndex,
+        profileBackStack = s.profileBackStack.map { p ->
+          p.copy(posts = p.posts.map { if (it.postId == clicked.postId) it.copy(viewsCount = it.viewsCount + 1L) else it })
+        },
+        ownProfileState = s.ownProfileState?.let { p ->
+          p.copy(posts = p.posts.map { if (it.postId == clicked.postId) it.copy(viewsCount = it.viewsCount + 1L) else it })
+        },
+      )
+    }
+    viewModelScope.launch {
+      repository.recordPostView(clicked.postId)
+    }
+  }
+
+  fun closeProfilePostViewer() {
+    _uiState.update { it.copy(profileViewerItems = null) }
+  }
+
+  fun blockUserFromProfile(userId: String) {
+    val cleanId = userId.trim()
+    if (cleanId.isBlank() || cleanId == _uiState.value.userId) return
+    updateProfileInState(cleanId) { p ->
+      p.copy(
+        isBlocked = true,
+        isFollowing = false,
+        relationshipState = ContactRelationshipState.FOLLOW,
+        posts = emptyList(),
+      )
+    }
+    _uiState.update { s ->
+      s.copy(
+        feedsState = s.feedsState.copy(
+          searchResults = s.feedsState.searchResults.filterNot { it.authorUserId == cleanId },
+          searchViewerItems = s.feedsState.searchViewerItems?.filterNot { it.authorUserId == cleanId },
+        ),
+        profileToastMessage = "User blocked",
+      )
+    }
+    viewModelScope.launch {
+      repository.blockUserProfile(cleanId)
+      refreshFeeds()
+    }
+  }
+
+  fun unblockUserFromProfile(userId: String) {
+    val cleanId = userId.trim()
+    if (cleanId.isBlank()) return
+    updateProfileInState(cleanId) { p -> p.copy(isBlocked = false, isLoading = true) }
+    viewModelScope.launch {
+      repository.unblockUserProfile(cleanId)
+      _uiState.update { it.copy(profileToastMessage = "User unblocked") }
+      refreshUserProfile(cleanId)
+      refreshFeeds()
+    }
+  }
+
+  fun reportUserFromProfile(userId: String, reason: String, details: String) {
+    val cleanId = userId.trim()
+    if (cleanId.isBlank()) return
+    viewModelScope.launch {
+      val ok = repository.reportUserProfile(cleanId, reason, details)
+      _uiState.update {
+        it.copy(profileToastMessage = if (ok) "Report submitted" else "Unable to submit report right now")
+      }
+    }
+  }
+
+  fun showProfileToast(message: String) {
+    _uiState.update { it.copy(profileToastMessage = message) }
+  }
+
+  fun dismissProfileToast() {
+    _uiState.update { it.copy(profileToastMessage = null) }
+  }
+
+  private fun updateProfileInState(
+    userId: String,
+    transform: (UserProfileScreenState) -> UserProfileScreenState,
+  ) {
+    _uiState.update { s ->
+      s.copy(
+        profileBackStack = s.profileBackStack.map { p -> if (p.userId == userId) transform(p) else p },
+        ownProfileState = s.ownProfileState?.let { p -> if (p.userId == userId) transform(p) else p },
+      )
+    }
+  }
+
+  private fun mapConnectionDtosToUi(items: List<ContactItemDto>): List<ContactUiItem> {
+    val countryByIso = CountryCatalog.allCountries.associateBy { it.iso.uppercase() }
+    val baseUrl = BuildConfig.TELEFAM_API_BASE_URL
+    return items.map { dto ->
+      val countryName = countryByIso[dto.countryIso.uppercase()]?.name
+        ?: dto.location.ifBlank { dto.countryIso }
+      val avatar = dto.avatarUrl?.takeIf { it.isNotBlank() }?.let {
+        AdaptiveStreamSelector.resolveMediaUrl(baseUrl, it)
+      }
+      ContactUiItem(
+        userId = dto.userId,
+        fullName = dto.fullName,
+        username = dto.username,
+        countryDisplay = countryName,
+        avatarLocalPath = avatar,
+        isFollowing = dto.isFollowing,
+        followsYou = dto.followsYou,
+        relationshipState = ContactRelationshipState.compute(dto.isFollowing, dto.followsYou),
+        initials = TelefamContactsRules.initialsFor(dto.fullName, dto.username),
+      )
+    }
   }
 
   fun triggerComingSoon(featureLabel: String, actionKey: String) {

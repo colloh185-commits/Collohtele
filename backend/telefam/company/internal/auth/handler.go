@@ -56,6 +56,7 @@ type OAuthPayload struct {
 
 type AuthSessionResponse struct {
 	Success             bool   `json:"success"`
+	UserID              string `json:"user_id"`
 	SessionToken        string `json:"session_token"`
 	RefreshToken        string `json:"refresh_token"`
 	AccessExpiresInSec  int64  `json:"access_expires_in_seconds"`
@@ -221,6 +222,11 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/profile/setup", h.handleProfileSetup)
 	mux.HandleFunc("GET /v1/users/{id}/profile", h.handleGetUserProfile)
 	mux.HandleFunc("GET /v1/users/{id}/connections", h.handleGetUserConnections)
+	mux.HandleFunc("GET /v1/users/{id}/followers", h.handleGetUserFollowers)
+	mux.HandleFunc("GET /v1/users/{id}/following", h.handleGetUserFollowing)
+	mux.HandleFunc("POST /v1/users/{id}/block", h.handleBlockUser)
+	mux.HandleFunc("POST /v1/users/{id}/unblock", h.handleUnblockUser)
+	mux.HandleFunc("POST /v1/users/{id}/report", h.handleReportUser)
 	mux.HandleFunc("GET /v1/contacts", h.handleListContacts)
 	mux.HandleFunc("POST /v1/contacts/follow", h.handleFollowContact)
 	mux.HandleFunc("POST /v1/contacts/unfollow", h.handleUnfollowContact)
@@ -581,24 +587,34 @@ type UserProfileResponse struct {
 	IsFollowing       bool                   `json:"is_following"`
 	FollowsYou        bool                   `json:"follows_you"`
 	IsOwner           bool                   `json:"is_owner"`
+	IsBlocked         bool                   `json:"is_blocked"`
+	RiskScore         float64                `json:"risk_score"`
 	RelationshipState string                 `json:"relationship_state"`
 	Videos            []UserProfileVideoItem `json:"videos"`
+	Posts             []feeds.FeedItem       `json:"posts"`
+}
+
+type UserReportPayload struct {
+	Reason  string `json:"reason"`
+	Details string `json:"details,omitempty"`
 }
 
 func (h *Handler) handleGetUserProfile(w http.ResponseWriter, r *http.Request) {
-	claims, _, _, ok := h.requireAuth(w, r)
+	claims, deviceFP, ipFP, ok := h.requireAuth(w, r)
 	if !ok {
 		return
 	}
 	targetID := security.SanitizeText(r.PathValue("id"), 128, false)
+	if strings.EqualFold(targetID, "me") {
+		targetID = claims.UserID
+	}
 	if targetID == "" {
 		sanitizer.WriteSanitizedError(w, http.StatusBadRequest, "invalid_user_id", nil, sanitizer.GenericErrorMessage)
 		return
 	}
 
-	u, exists, isFollowing := h.contacts.GetUserForViewer(claims.UserID, targetID)
+	u, exists, isFollowing, followsYou := h.contacts.GetUserRelationshipForViewer(claims.UserID, targetID)
 	if !exists {
-		// Check stored internal profiles if not yet in contacts service directory
 		h.mu.Lock()
 		sp, spOk := h.profiles[targetID]
 		h.mu.Unlock()
@@ -622,8 +638,8 @@ func (h *Handler) handleGetUserProfile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	followingCount, followersCount := h.contacts.GetUserCounts(targetID)
-	likesCount := h.posts.CalculateAuthorLikes(targetID)
 	isOwner := (claims.UserID == targetID)
+	isBlocked := !isOwner && h.feeds.IsBlocked(claims.UserID, targetID)
 
 	avatarURL := ""
 	if u.AvatarMediaID != "" {
@@ -638,32 +654,34 @@ func (h *Handler) handleGetUserProfile(w http.ResponseWriter, r *http.Request) {
 	h.mu.Unlock()
 
 	authorPosts := h.posts.ListAuthorPosts(targetID)
-	videoItems := make([]UserProfileVideoItem, 0, len(authorPosts))
-	for _, p := range authorPosts {
-		if p == nil {
-			continue
+	authorSummary := feeds.AuthorSummary{
+		UserID:      u.UserID,
+		Username:    u.Username,
+		FullName:    u.FullName,
+		AvatarURL:   avatarURL,
+		IsFollowing: isFollowing,
+	}
+	feedItems, likesCount := h.feeds.BuildAuthorFeedItems(claims.UserID, authorPosts, authorSummary)
+
+	videoItems := make([]UserProfileVideoItem, 0, len(feedItems))
+	for _, fi := range feedItems {
+		if fi.Mode == posts.ModeVideo {
+			videoItems = append(videoItems, UserProfileVideoItem{
+				PostID:       fi.PostID,
+				ThumbnailURL: fi.ThumbnailURL,
+				VideoURL:     fi.VideoURL,
+				ViewsCount:   fi.ViewsCount,
+				DurationMs:   fi.DurationMs,
+				Caption:      fi.Caption,
+				CreatedAtMs:  fi.CreatedAtMs,
+			})
 		}
-		thumb := ""
-		if p.ThumbnailMediaID != "" {
-			thumb = "/v1/media/asset/" + p.ThumbnailMediaID
-		}
-		vidURL := ""
-		if p.VideoMediaID != "" {
-			vidURL = "/v1/media/asset/" + p.VideoMediaID
-		}
-		views := int64(1200 + (len(p.PostID) * 173) % 2800)
-		videoItems = append(videoItems, UserProfileVideoItem{
-			PostID:       p.PostID,
-			ThumbnailURL: thumb,
-			VideoURL:     vidURL,
-			ViewsCount:   views,
-			DurationMs:   p.DurationMs,
-			Caption:      p.Caption,
-			CreatedAtMs:  p.CreatedAtMs,
-		})
 	}
 
-	followsYou := false
+	h.audit.Record(claims.UserID, "user_profile_viewed", deviceFP, ipFP, map[string]string{
+		"target_user_id": targetID,
+	})
+
 	resp := UserProfileResponse{
 		Success:           true,
 		UserID:            u.UserID,
@@ -679,30 +697,125 @@ func (h *Handler) handleGetUserProfile(w http.ResponseWriter, r *http.Request) {
 		IsFollowing:       isFollowing,
 		FollowsYou:        followsYou,
 		IsOwner:           isOwner,
+		IsBlocked:         isBlocked,
+		RiskScore:         h.contacts.GetRiskScore(targetID),
 		RelationshipState: string(contacts.ComputeRelationship(isFollowing, followsYou)),
 		Videos:            videoItems,
+		Posts:             feedItems,
 	}
 
 	writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *Handler) handleGetUserConnections(w http.ResponseWriter, r *http.Request) {
+	tab := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("type")))
+	h.writeUserConnectionsResponse(w, r, tab == "followers")
+}
+
+func (h *Handler) handleGetUserFollowers(w http.ResponseWriter, r *http.Request) {
+	h.writeUserConnectionsResponse(w, r, true)
+}
+
+func (h *Handler) handleGetUserFollowing(w http.ResponseWriter, r *http.Request) {
+	h.writeUserConnectionsResponse(w, r, false)
+}
+
+func (h *Handler) writeUserConnectionsResponse(w http.ResponseWriter, r *http.Request, isFollowers bool) {
 	claims, _, _, ok := h.requireAuth(w, r)
 	if !ok {
 		return
 	}
 	targetID := security.SanitizeText(r.PathValue("id"), 128, false)
+	if strings.EqualFold(targetID, "me") {
+		targetID = claims.UserID
+	}
 	if targetID == "" {
 		sanitizer.WriteSanitizedError(w, http.StatusBadRequest, "invalid_user_id", nil, sanitizer.GenericErrorMessage)
 		return
 	}
-	tab := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("type")))
-	isFollowers := (tab == "followers")
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	pageSize, _ := strconv.Atoi(r.URL.Query().Get("page_size"))
+	resp := h.contacts.ListUserConnectionsPage(targetID, isFollowers, claims.UserID, page, pageSize, func(uid string) bool {
+		return h.feeds.IsBlocked(claims.UserID, uid)
+	})
+	writeJSON(w, http.StatusOK, resp)
+}
 
-	items := h.contacts.ListUserConnections(targetID, isFollowers, claims.UserID)
+func (h *Handler) handleBlockUser(w http.ResponseWriter, r *http.Request) {
+	claims, deviceFP, ipFP, ok := h.requireAuth(w, r)
+	if !ok {
+		return
+	}
+	targetID := security.SanitizeText(r.PathValue("id"), 128, false)
+	if targetID == "" || targetID == claims.UserID {
+		sanitizer.WriteSanitizedError(w, http.StatusBadRequest, "invalid_block_target", nil, sanitizer.GenericErrorMessage)
+		return
+	}
+	h.feeds.BlockUser(claims.UserID, targetID)
+	h.contacts.SetFollowing(claims.UserID, targetID, deviceFP, false)
+	h.contacts.AddRiskScore(targetID, 5.0)
+	h.audit.Record(claims.UserID, "user_blocked", deviceFP, ipFP, map[string]string{
+		"target_user_id": targetID,
+	})
 	writeJSON(w, http.StatusOK, map[string]any{
-		"success": true,
-		"items":   items,
+		"success":    true,
+		"user_id":    targetID,
+		"is_blocked": true,
+	})
+}
+
+func (h *Handler) handleUnblockUser(w http.ResponseWriter, r *http.Request) {
+	claims, deviceFP, ipFP, ok := h.requireAuth(w, r)
+	if !ok {
+		return
+	}
+	targetID := security.SanitizeText(r.PathValue("id"), 128, false)
+	if targetID == "" || targetID == claims.UserID {
+		sanitizer.WriteSanitizedError(w, http.StatusBadRequest, "invalid_unblock_target", nil, sanitizer.GenericErrorMessage)
+		return
+	}
+	h.feeds.UnblockUser(claims.UserID, targetID)
+	h.audit.Record(claims.UserID, "user_unblocked", deviceFP, ipFP, map[string]string{
+		"target_user_id": targetID,
+	})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":    true,
+		"user_id":    targetID,
+		"is_blocked": false,
+	})
+}
+
+func (h *Handler) handleReportUser(w http.ResponseWriter, r *http.Request) {
+	claims, deviceFP, ipFP, ok := h.requireAuth(w, r)
+	if !ok {
+		return
+	}
+	targetID := security.SanitizeText(r.PathValue("id"), 128, false)
+	if targetID == "" || targetID == claims.UserID {
+		sanitizer.WriteSanitizedError(w, http.StatusBadRequest, "invalid_report_target", nil, sanitizer.GenericErrorMessage)
+		return
+	}
+	var payload UserReportPayload
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&payload); err != nil {
+		sanitizer.WriteSanitizedError(w, http.StatusBadRequest, "decode_user_report", err, sanitizer.GenericErrorMessage)
+		return
+	}
+	reason := security.SanitizeText(payload.Reason, 80, false)
+	if reason == "" {
+		reason = "Other"
+	}
+	details := security.SanitizeText(payload.Details, 400, true)
+	h.feeds.RecordUserReport(claims.UserID, targetID, reason, details)
+	risk := h.contacts.AddRiskScore(targetID, 15.0)
+	h.audit.Record(claims.UserID, "user_reported", deviceFP, ipFP, map[string]string{
+		"target_user_id": targetID,
+		"reason":         reason,
+	})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":          true,
+		"reported_user_id": targetID,
+		"reason":           reason,
+		"risk_score":       risk,
 	})
 }
 
@@ -1322,6 +1435,7 @@ func (h *Handler) issueAuthResponse(w http.ResponseWriter, userID, email, device
 
 	writeJSON(w, http.StatusOK, AuthSessionResponse{
 		Success:             true,
+		UserID:              userID,
 		SessionToken:        pair.AccessToken,
 		RefreshToken:        pair.RefreshToken,
 		AccessExpiresInSec:  pair.AccessExpiresInSec,

@@ -119,18 +119,27 @@ func (s *Service) RegisterOrUpdateUser(u DirectoryUser, deviceFP string) {
 }
 
 func (s *Service) GetUserForViewer(callerID, targetID string) (DirectoryUser, bool, bool) {
+	u, ok, isFollowing, _ := s.GetUserRelationshipForViewer(callerID, targetID)
+	return u, ok, isFollowing
+}
+
+func (s *Service) GetUserRelationshipForViewer(callerID, targetID string) (DirectoryUser, bool, bool, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	u, ok := s.users[targetID]
 	if !ok {
-		return DirectoryUser{}, false, false
+		return DirectoryUser{}, false, false, false
 	}
 	isFollowing := false
 	if set := s.following[callerID]; set != nil {
 		_, isFollowing = set[targetID]
 	}
-	return u, true, isFollowing
+	followsYou := false
+	if set := s.followers[callerID]; set != nil {
+		_, followsYou = set[targetID]
+	}
+	return u, true, isFollowing, followsYou
 }
 
 func (s *Service) GetUserCounts(targetID string) (followingCount int64, followersCount int64) {
@@ -146,8 +155,27 @@ func (s *Service) GetUserCounts(targetID string) (followingCount int64, follower
 }
 
 func (s *Service) ListUserConnections(targetID string, isFollowersList bool, callerID string) []ContactItem {
+	resp := s.ListUserConnectionsPage(targetID, isFollowersList, callerID, 1, 200, nil)
+	return resp.Items
+}
+
+func (s *Service) ListUserConnectionsPage(
+	targetID string,
+	isFollowersList bool,
+	callerID string,
+	page int,
+	pageSize int,
+	isBlocked func(userID string) bool,
+) ContactsPageResponse {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if page < 1 {
+		page = 1
+	}
+	if pageSize <= 0 || pageSize > 200 {
+		pageSize = 30
+	}
 
 	var idSet map[string]struct{}
 	if isFollowersList {
@@ -161,6 +189,9 @@ func (s *Service) ListUserConnections(targetID string, isFollowersList bool, cal
 	callerFollowers := s.followers[callerID]
 
 	for uid := range idSet {
+		if isBlocked != nil && uid != callerID && isBlocked(uid) {
+			continue
+		}
 		u, ok := s.users[uid]
 		if !ok {
 			continue
@@ -196,7 +227,48 @@ func (s *Service) ListUserConnections(targetID string, isFollowersList bool, cal
 	sort.Slice(out, func(i, j int) bool {
 		return strings.ToLower(out[i].FullName) < strings.ToLower(out[j].FullName)
 	})
-	return out
+
+	total := len(out)
+	start := (page - 1) * pageSize
+	if start >= total {
+		return ContactsPageResponse{
+			Success:       true,
+			Items:         []ContactItem{},
+			Page:          page,
+			PageSize:      pageSize,
+			TotalCount:    total,
+			HasMore:       false,
+			ServerEpochMs: s.nowFunc().UnixMilli(),
+		}
+	}
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+	return ContactsPageResponse{
+		Success:       true,
+		Items:         out[start:end],
+		Page:          page,
+		PageSize:      pageSize,
+		TotalCount:    total,
+		HasMore:       end < total,
+		ServerEpochMs: s.nowFunc().UnixMilli(),
+	}
+}
+
+func (s *Service) AddRiskScore(userID string, delta float64) float64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rp := s.ensureRiskLocked(userID)
+	rp.Score += delta
+	if rp.Score < 0.0 {
+		rp.Score = 0.0
+	}
+	if rp.Score > 100.0 {
+		rp.Score = 100.0
+	}
+	rp.LastEvaluated = s.nowFunc()
+	return rp.Score
 }
 
 func ComputeRelationship(isFollowing, followsYou bool) RelationshipState {

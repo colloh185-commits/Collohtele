@@ -54,6 +54,7 @@ data class OAuthDto(
 @JsonClass(generateAdapter = true)
 data class AuthSessionResponseDto(
   val success: Boolean,
+  @Json(name = "user_id") val userId: String = "",
   @Json(name = "session_token") val sessionToken: String = "",
   @Json(name = "refresh_token") val refreshToken: String = "",
   @Json(name = "access_expires_in_seconds") val accessExpiresInSec: Long = 900L,
@@ -275,13 +276,39 @@ data class UserProfileResponseDto(
   @Json(name = "follows_you") val followsYou: Boolean = false,
   @Json(name = "is_owner") val isOwner: Boolean = false,
   @Json(name = "relationship_state") val relationshipState: String = "FOLLOW",
+  @Json(name = "is_blocked") val isBlocked: Boolean = false,
+  @Json(name = "risk_score") val riskScore: Double = 0.0,
   val videos: List<UserProfileVideoDto> = emptyList(),
+  val posts: List<FeedItemDto> = emptyList(),
 )
 
 @JsonClass(generateAdapter = true)
 data class UserConnectionsResponseDto(
   val success: Boolean = false,
   val items: List<ContactItemDto> = emptyList(),
+  val page: Int = 1,
+  @Json(name = "has_more") val hasMore: Boolean = false,
+)
+
+@JsonClass(generateAdapter = true)
+data class UserBlockResponseDto(
+  val success: Boolean = false,
+  @Json(name = "target_user_id") val targetUserId: String = "",
+  @Json(name = "is_blocked") val isBlocked: Boolean = false,
+  @Json(name = "is_following") val isFollowing: Boolean = false,
+)
+
+@JsonClass(generateAdapter = true)
+data class UserReportRequestDto(
+  val reason: String,
+  val details: String = "",
+)
+
+@JsonClass(generateAdapter = true)
+data class UserReportResponseDto(
+  val success: Boolean = false,
+  @Json(name = "target_user_id") val targetUserId: String = "",
+  val reason: String = "",
 )
 
 @JsonClass(generateAdapter = true)
@@ -341,6 +368,7 @@ data class FeedItemDto(
   @Json(name = "shares_count") val sharesCount: Long = 0L,
   @Json(name = "favourites_count") val favouritesCount: Long = 0L,
   @Json(name = "reposts_count") val repostsCount: Long = 0L,
+  @Json(name = "views_count") val viewsCount: Long = 0L,
   @Json(name = "is_liked") val isLiked: Boolean = false,
   @Json(name = "is_favourited") val isFavourited: Boolean = false,
   @Json(name = "is_reposted") val isReposted: Boolean = false,
@@ -618,7 +646,49 @@ interface TelefamApiService {
     @Header("X-Telefam-Device-FP") deviceFingerprint: String,
     @Path("id") userId: String,
     @Query("type") type: String, // "followers" or "following"
+    @Query("page") page: Int = 1,
+    @Query("page_size") pageSize: Int = 30,
   ): Response<UserConnectionsResponseDto>
+
+  @GET("v1/users/{id}/followers")
+  suspend fun getUserFollowers(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Path("id") userId: String,
+    @Query("page") page: Int = 1,
+    @Query("page_size") pageSize: Int = 30,
+  ): Response<UserConnectionsResponseDto>
+
+  @GET("v1/users/{id}/following")
+  suspend fun getUserFollowing(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Path("id") userId: String,
+    @Query("page") page: Int = 1,
+    @Query("page_size") pageSize: Int = 30,
+  ): Response<UserConnectionsResponseDto>
+
+  @POST("v1/users/{id}/block")
+  suspend fun blockUser(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Path("id") userId: String,
+  ): Response<UserBlockResponseDto>
+
+  @POST("v1/users/{id}/unblock")
+  suspend fun unblockUser(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Path("id") userId: String,
+  ): Response<UserBlockResponseDto>
+
+  @POST("v1/users/{id}/report")
+  suspend fun reportUser(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Path("id") userId: String,
+    @Body body: UserReportRequestDto,
+  ): Response<UserReportResponseDto>
 
   @GET
   suspend fun downloadMedia(@Url url: String): Response<ResponseBody>

@@ -36,6 +36,7 @@ struct TelefamIosHomeView: View {
     @State private var isBottomBarVisible: Bool = true
     @State private var postLaunchTarget: TelefamIosPostLaunchTarget? = nil
     @State private var showFeedSearch: Bool = false
+    @State private var profileBackStack: [String] = []
     @State private var comingSoonBanner: String? = nil
     @State private var chatFilterQuery: String = ""
 
@@ -67,7 +68,7 @@ struct TelefamIosHomeView: View {
                 VStack(spacing: 0) {
                     if activeTab == .contacts {
                         TelefamContactsTopHeaderView(store: contactsStore, themeMode: $themeMode)
-                    } else if activeTab != .feeds {
+                    } else if activeTab != .feeds && activeTab != .profile {
                         chatsTopHeader
                     }
 
@@ -91,10 +92,10 @@ struct TelefamIosHomeView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(activeTab == .feeds ? Color(red: 0.027, green: 0.031, blue: 0.043) : TelefamPalette.background(colorScheme))
                     .clipShape(
-                        RoundedCornerShapeShim(radius: (activeTab == .contacts || activeTab == .feeds) ? 0 : 24)
+                        RoundedCornerShapeShim(radius: (activeTab == .contacts || activeTab == .feeds || activeTab == .profile) ? 0 : 24)
                     )
                 }
-                .background((activeTab == .feeds ? Color(red: 0.027, green: 0.031, blue: 0.043) : TelefamPalette.crimson).ignoresSafeArea(edges: .top))
+                .background((activeTab == .feeds ? Color(red: 0.027, green: 0.031, blue: 0.043) : (activeTab == .profile ? TelefamPalette.background(colorScheme) : TelefamPalette.crimson)).ignoresSafeArea(edges: .top))
 
                 if let toast = feedStore.toastMessage ?? contactsStore.toastMessage ?? comingSoonBanner {
                     Text(toast)
@@ -131,9 +132,46 @@ struct TelefamIosHomeView: View {
                 },
                 onCommentComingSoon: {
                     showComingSoon("Comments — Coming soon")
+                },
+                onOpenAuthorProfile: { uid in
+                    pushProfile(uid)
                 }
             )
             .preferredColorScheme(themeMode.preferredColorScheme)
+        }
+        .fullScreenCover(isPresented: Binding(get: { !profileBackStack.isEmpty }, set: { if !$0 { profileBackStack.removeAll() } })) {
+            if let topUserId = profileBackStack.last {
+                TelefamIosProfileView(
+                    targetUserId: topUserId,
+                    isEmbeddedOwnProfileTab: false,
+                    bottomChromePadding: 0,
+                    baseURL: serverURL,
+                    sessionStore: sessionStore,
+                    contactsStore: contactsStore,
+                    feedStore: feedStore,
+                    themeMode: $themeMode,
+                    onBack: {
+                        if !profileBackStack.isEmpty {
+                            profileBackStack.removeLast()
+                        }
+                    },
+                    onOpenUserProfile: { uid in pushProfile(uid) },
+                    onEditOwnerPost: { item in
+                        profileBackStack.removeAll()
+                        postLaunchTarget = .edit(item: item)
+                    },
+                    onTapHashtag: { tag, mode in
+                        profileBackStack.removeAll()
+                        postLaunchTarget = .prefillHashtag(tag: tag, mode: mode)
+                    },
+                    onTapAudio: { song, mode in
+                        profileBackStack.removeAll()
+                        postLaunchTarget = .prefillSong(song: song, mode: mode)
+                    }
+                )
+                .id(topUserId)
+                .preferredColorScheme(themeMode.preferredColorScheme)
+            }
         }
         .fullScreenCover(item: $postLaunchTarget) { target in
             buildPostView(for: target)
@@ -143,6 +181,14 @@ struct TelefamIosHomeView: View {
                 }
         }
         .preferredColorScheme(themeMode.preferredColorScheme)
+    }
+
+    private func pushProfile(_ userId: String) {
+        let trimmed = userId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if profileBackStack.last != trimmed {
+            profileBackStack.append(trimmed)
+        }
     }
 
     @ViewBuilder
@@ -272,7 +318,8 @@ struct TelefamIosHomeView: View {
                 isCompactWidth: isCompactWidth,
                 onBottomBarVisibilityChange: { visible in
                     isBottomBarVisible = visible
-                }
+                },
+                onOpenProfile: { uid in pushProfile(uid) }
             )
             .onAppear {
                 Task { await contactsStore.refresh() }
@@ -291,7 +338,8 @@ struct TelefamIosHomeView: View {
                 onCommentClick: { showComingSoon("Comments — Coming soon") },
                 onEditOwnerPost: { item in postLaunchTarget = .edit(item: item) },
                 onTapHashtag: { tag, mode in postLaunchTarget = .prefillHashtag(tag: tag, mode: mode) },
-                onTapAudio: { song, mode in postLaunchTarget = .prefillSong(song: song, mode: mode) }
+                onTapAudio: { song, mode in postLaunchTarget = .prefillSong(song: song, mode: mode) },
+                onOpenAuthorProfile: { uid in pushProfile(uid) }
             )
             .onAppear {
                 Task { await feedStore.refresh() }
@@ -299,103 +347,22 @@ struct TelefamIosHomeView: View {
         case .post:
             EmptyView()
         case .profile:
-            profileTabView(isCompactWidth: isCompactWidth)
+            TelefamIosProfileView(
+                targetUserId: sessionStore.userId.isEmpty ? "me" : sessionStore.userId,
+                isEmbeddedOwnProfileTab: true,
+                bottomChromePadding: isCompactWidth ? (68 + safeBottomInset) : 0,
+                baseURL: serverURL,
+                sessionStore: sessionStore,
+                contactsStore: contactsStore,
+                feedStore: feedStore,
+                themeMode: $themeMode,
+                onBack: {},
+                onOpenUserProfile: { uid in pushProfile(uid) },
+                onEditOwnerPost: { item in postLaunchTarget = .edit(item: item) },
+                onTapHashtag: { tag, mode in postLaunchTarget = .prefillHashtag(tag: tag, mode: mode) },
+                onTapAudio: { song, mode in postLaunchTarget = .prefillSong(song: song, mode: mode) }
+            )
         }
-    }
-
-    private func profileTabView(isCompactWidth: Bool) -> some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                Circle()
-                    .fill(TelefamPalette.blush(colorScheme))
-                    .frame(width: 82, height: 82)
-                    .overlay(
-                        Text(String((sessionStore.fullName.isEmpty ? sessionStore.username : sessionStore.fullName).prefix(2)).uppercased())
-                            .font(.system(size: 26, weight: .bold))
-                            .foregroundColor(TelefamPalette.crimson)
-                    )
-
-                Text(sessionStore.fullName.isEmpty ? "Telefam Member" : sessionStore.fullName)
-                    .font(.system(size: 20, weight: .bold))
-                    .foregroundColor(TelefamPalette.textPrimary(colorScheme))
-
-                if !sessionStore.username.isEmpty {
-                    Text("@\(sessionStore.username)")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(TelefamPalette.crimson)
-                }
-
-                VStack(spacing: 0) {
-                    profileInfoRow(icon: "envelope", label: "Email", value: sessionStore.email)
-                    if !sessionStore.phoneDisplay.isEmpty {
-                        Divider()
-                        profileInfoRow(icon: "phone", label: "Phone", value: sessionStore.phoneDisplay)
-                    }
-                    if !sessionStore.location.isEmpty {
-                        Divider()
-                        profileInfoRow(icon: "mappin.and.ellipse", label: "Location", value: sessionStore.location)
-                    }
-                    if !sessionStore.bio.isEmpty {
-                        Divider()
-                        profileInfoRow(icon: "text.bubble", label: "Bio", value: sessionStore.bio)
-                    }
-                    Divider()
-                    HStack {
-                        Image(systemName: "paintbrush")
-                            .foregroundColor(TelefamPalette.crimson)
-                            .frame(width: 24)
-                        Text("Theme")
-                            .font(.system(size: 14, weight: .medium))
-                        Spacer()
-                        Picker("Theme", selection: $themeMode) {
-                            ForEach(TelefamThemeMode.allCases) { m in
-                                Text(m.label).tag(m)
-                            }
-                        }
-                        .pickerStyle(.menu)
-                        .tint(TelefamPalette.crimson)
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                }
-                .background(TelefamPalette.surface(colorScheme))
-                .clipShape(RoundedRectangle(cornerRadius: 16))
-                .overlay(RoundedRectangle(cornerRadius: 16).stroke(TelefamPalette.border(colorScheme)))
-
-                Button {
-                    sessionStore.signOut()
-                } label: {
-                    Label("Sign out", systemImage: "rectangle.portrait.and.arrow.right")
-                        .font(.system(size: 15, weight: .bold))
-                        .foregroundColor(.white)
-                        .frame(maxWidth: .infinity, minHeight: 48)
-                        .background(TelefamPalette.crimson)
-                        .clipShape(Capsule())
-                }
-            }
-            .padding(20)
-            .padding(.bottom, isCompactWidth ? 90 : 24)
-            .frame(maxWidth: 520)
-            .frame(maxWidth: .infinity)
-        }
-    }
-
-    private func profileInfoRow(icon: String, label: String, value: String) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: icon)
-                .foregroundColor(TelefamPalette.crimson)
-                .frame(width: 24)
-            Text(label)
-                .font(.system(size: 14, weight: .medium))
-                .foregroundColor(TelefamPalette.textPrimary(colorScheme))
-            Spacer()
-            Text(value)
-                .font(.system(size: 13.5))
-                .foregroundColor(TelefamPalette.textMuted(colorScheme))
-                .multilineTextAlignment(.trailing)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
     }
 
     private var bottomBar: some View {

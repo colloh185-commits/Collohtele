@@ -60,6 +60,7 @@ struct TelefamIosFeedItem: Identifiable, Codable {
     var sharesCount: Int64
     var favouritesCount: Int64
     var repostsCount: Int64
+    var viewsCount: Int64
     var isLiked: Bool
     var isFavourited: Bool
     var isReposted: Bool
@@ -95,12 +96,126 @@ struct TelefamIosFeedItem: Identifiable, Codable {
         case sharesCount = "shares_count"
         case favouritesCount = "favourites_count"
         case repostsCount = "reposts_count"
+        case viewsCount = "views_count"
         case isLiked = "is_liked"
         case isFavourited = "is_favourited"
         case isReposted = "is_reposted"
         case repostedByUsername = "reposted_by_username"
         case recommendationLabel = "recommendation_label"
         case createdAtMs = "created_at_ms"
+    }
+
+    init(
+        postId: String,
+        authorUserId: String = "",
+        authorUsername: String = "",
+        authorFullName: String = "",
+        authorAvatarUrl: String = "",
+        isFollowingAuthor: Bool = false,
+        isOwner: Bool = false,
+        mode: String = "video",
+        textContent: String = "",
+        caption: String = "",
+        themeId: String = "crimson",
+        fontId: String = "classic",
+        song: TelefamIosSongTrack? = nil,
+        hashtags: [String] = [],
+        photoUrls: [String] = [],
+        videoUrl: String = "",
+        thumbnailUrl: String = "",
+        renditions: [TelefamIosVideoRendition] = [],
+        width: Int = 0,
+        height: Int = 0,
+        durationMs: Int64 = 0,
+        muteOriginalAudio: Bool = false,
+        contentId: String = "",
+        likesCount: Int64 = 0,
+        commentsCount: Int64 = 0,
+        sharesCount: Int64 = 0,
+        favouritesCount: Int64 = 0,
+        repostsCount: Int64 = 0,
+        viewsCount: Int64 = 0,
+        isLiked: Bool = false,
+        isFavourited: Bool = false,
+        isReposted: Bool = false,
+        repostedByUsername: String = "",
+        recommendationLabel: String = "",
+        createdAtMs: Int64 = 0
+    ) {
+        self.postId = postId
+        self.authorUserId = authorUserId
+        self.authorUsername = authorUsername
+        self.authorFullName = authorFullName
+        self.authorAvatarUrl = authorAvatarUrl
+        self.isFollowingAuthor = isFollowingAuthor
+        self.isOwner = isOwner
+        self.mode = mode
+        self.textContent = textContent
+        self.caption = caption
+        self.themeId = themeId
+        self.fontId = fontId
+        self.song = song
+        self.hashtags = hashtags
+        self.photoUrls = photoUrls
+        self.videoUrl = videoUrl
+        self.thumbnailUrl = thumbnailUrl
+        self.renditions = renditions
+        self.width = width
+        self.height = height
+        self.durationMs = durationMs
+        self.muteOriginalAudio = muteOriginalAudio
+        self.contentId = contentId
+        self.likesCount = likesCount
+        self.commentsCount = commentsCount
+        self.sharesCount = sharesCount
+        self.favouritesCount = favouritesCount
+        self.repostsCount = repostsCount
+        self.viewsCount = viewsCount
+        self.isLiked = isLiked
+        self.isFavourited = isFavourited
+        self.isReposted = isReposted
+        self.repostedByUsername = repostedByUsername
+        self.recommendationLabel = recommendationLabel
+        self.createdAtMs = createdAtMs
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        postId = try c.decodeIfPresent(String.self, forKey: .postId) ?? ""
+        authorUserId = try c.decodeIfPresent(String.self, forKey: .authorUserId) ?? ""
+        authorUsername = try c.decodeIfPresent(String.self, forKey: .authorUsername) ?? ""
+        authorFullName = try c.decodeIfPresent(String.self, forKey: .authorFullName) ?? ""
+        authorAvatarUrl = try c.decodeIfPresent(String.self, forKey: .authorAvatarUrl) ?? ""
+        isFollowingAuthor = try c.decodeIfPresent(Bool.self, forKey: .isFollowingAuthor) ?? false
+        isOwner = try c.decodeIfPresent(Bool.self, forKey: .isOwner) ?? false
+        mode = try c.decodeIfPresent(String.self, forKey: .mode) ?? "video"
+        textContent = try c.decodeIfPresent(String.self, forKey: .textContent) ?? ""
+        caption = try c.decodeIfPresent(String.self, forKey: .caption) ?? ""
+        themeId = try c.decodeIfPresent(String.self, forKey: .themeId) ?? "crimson"
+        fontId = try c.decodeIfPresent(String.self, forKey: .fontId) ?? "classic"
+        song = try c.decodeIfPresent(TelefamIosSongTrack.self, forKey: .song)
+        hashtags = try c.decodeIfPresent([String].self, forKey: .hashtags) ?? []
+        photoUrls = try c.decodeIfPresent([String].self, forKey: .photoUrls) ?? []
+        videoUrl = try c.decodeIfPresent(String.self, forKey: .videoUrl) ?? ""
+        thumbnailUrl = try c.decodeIfPresent(String.self, forKey: .thumbnailUrl) ?? ""
+        renditions = try c.decodeIfPresent([TelefamIosVideoRendition].self, forKey: .renditions) ?? []
+        width = try c.decodeIfPresent(Int.self, forKey: .width) ?? 0
+        height = try c.decodeIfPresent(Int.self, forKey: .height) ?? 0
+        durationMs = try c.decodeIfPresent(Int64.self, forKey: .durationMs) ?? 0
+        muteOriginalAudio = try c.decodeIfPresent(Bool.self, forKey: .muteOriginalAudio) ?? false
+        contentId = try c.decodeIfPresent(String.self, forKey: .contentId) ?? ""
+        likesCount = try c.decodeIfPresent(Int64.self, forKey: .likesCount) ?? 0
+        commentsCount = try c.decodeIfPresent(Int64.self, forKey: .commentsCount) ?? 0
+        sharesCount = try c.decodeIfPresent(Int64.self, forKey: .sharesCount) ?? 0
+        favouritesCount = try c.decodeIfPresent(Int64.self, forKey: .favouritesCount) ?? 0
+        repostsCount = try c.decodeIfPresent(Int64.self, forKey: .repostsCount) ?? 0
+        viewsCount = try c.decodeIfPresent(Int64.self, forKey: .viewsCount) ?? 0
+        isLiked = try c.decodeIfPresent(Bool.self, forKey: .isLiked) ?? false
+        isFavourited = try c.decodeIfPresent(Bool.self, forKey: .isFavourited) ?? false
+        isReposted = try c.decodeIfPresent(Bool.self, forKey: .isReposted) ?? false
+        repostedByUsername = try c.decodeIfPresent(String.self, forKey: .repostedByUsername) ?? ""
+        recommendationLabel = try c.decodeIfPresent(String.self, forKey: .recommendationLabel) ?? ""
+        createdAtMs = try c.decodeIfPresent(Int64.self, forKey: .createdAtMs) ?? 0
     }
 }
 
@@ -469,6 +584,13 @@ final class TelefamIosFeedStore: ObservableObject {
         Task { await sendInteraction(postId: postId, action: act, watchMs: watchMs, durationMs: durationMs) }
     }
 
+    func recordView(postId: String) {
+        mutateItem(postId: postId) { item in
+            item.viewsCount += 1
+        }
+        Task { await sendInteraction(postId: postId, action: "view") }
+    }
+
     func downloadVideoToFiles(item: TelefamIosFeedItem) async {
         guard let url = URL(string: authorizedURLString(item.videoUrl)) else {
             showToast("Download unavailable")
@@ -779,6 +901,7 @@ struct TelefamIosFeedView: View {
     var onEditOwnerPost: (TelefamIosFeedItem) -> Void
     var onTapHashtag: (String, TelefamIosPostMode) -> Void
     var onTapAudio: (TelefamIosSongTrack, TelefamIosPostMode) -> Void
+    var onOpenAuthorProfile: (String) -> Void = { _ in }
 
     @State private var currentIndex: Int = 0
     @State private var sharedPlayer = AVPlayer()
@@ -1073,23 +1196,30 @@ struct TelefamIosFeedView: View {
     private func rightActionRail(item: TelefamIosFeedItem) -> some View {
         VStack(spacing: 15) {
             ZStack(alignment: .bottom) {
-                if !item.authorAvatarUrl.isEmpty {
-                    TelefamIosRemoteImage(
-                        urlString: store.authorizedURLString(item.authorAvatarUrl),
-                        bearerToken: store.bearerToken,
-                        deviceFingerprint: store.deviceFingerprint,
-                        fallbackInitials: String(item.authorFullName.prefix(1)).uppercased()
-                    )
-                    .frame(width: 48, height: 48)
-                    .clipShape(Circle())
-                    .overlay(Circle().stroke(Color.white, lineWidth: 2))
-                } else {
-                    Circle()
-                        .fill(Color(white: 0.22))
+                Button {
+                    if !item.authorUserId.isEmpty {
+                        onOpenAuthorProfile(item.authorUserId)
+                    }
+                } label: {
+                    if !item.authorAvatarUrl.isEmpty {
+                        TelefamIosRemoteImage(
+                            urlString: store.authorizedURLString(item.authorAvatarUrl),
+                            bearerToken: store.bearerToken,
+                            deviceFingerprint: store.deviceFingerprint,
+                            fallbackInitials: String(item.authorFullName.prefix(1)).uppercased()
+                        )
                         .frame(width: 48, height: 48)
-                        .overlay(Text(String(item.authorFullName.prefix(1)).uppercased()).foregroundColor(.white).font(.system(size: 18, weight: .bold)))
+                        .clipShape(Circle())
                         .overlay(Circle().stroke(Color.white, lineWidth: 2))
+                    } else {
+                        Circle()
+                            .fill(Color(white: 0.22))
+                            .frame(width: 48, height: 48)
+                            .overlay(Text(String(item.authorFullName.prefix(1)).uppercased()).foregroundColor(.white).font(.system(size: 18, weight: .bold)))
+                            .overlay(Circle().stroke(Color.white, lineWidth: 2))
+                    }
                 }
+                .buttonStyle(.plain)
 
                 if !item.isFollowingAuthor && !item.isOwner {
                     Button {
@@ -1181,9 +1311,16 @@ struct TelefamIosFeedView: View {
                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.14), lineWidth: 1))
             }
 
-            Text(item.authorUsername.isEmpty ? item.authorFullName : item.authorUsername)
-                .font(.system(size: 16.5, weight: .bold))
-                .foregroundColor(.white)
+            Button {
+                if !item.authorUserId.isEmpty {
+                    onOpenAuthorProfile(item.authorUserId)
+                }
+            } label: {
+                Text(item.authorUsername.isEmpty ? item.authorFullName : item.authorUsername)
+                    .font(.system(size: 16.5, weight: .bold))
+                    .foregroundColor(.white)
+            }
+            .buttonStyle(.plain)
 
             if !item.caption.isEmpty || (item.mode != "text" && !item.textContent.isEmpty) {
                 Text(item.caption.isEmpty ? item.textContent : item.caption)

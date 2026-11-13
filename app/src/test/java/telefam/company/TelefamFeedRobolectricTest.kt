@@ -3,6 +3,9 @@ package telefam.company
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.ViewModelStore
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.flow.first
@@ -67,6 +70,11 @@ import telefam.company.data.network.SyncBatchRequestDto
 import telefam.company.data.network.SyncBatchResponseDto
 import telefam.company.data.network.TelefamApiService
 import telefam.company.data.network.UpdatePostRequestDto
+import telefam.company.data.network.UserBlockResponseDto
+import telefam.company.data.network.UserConnectionsResponseDto
+import telefam.company.data.network.UserProfileResponseDto
+import telefam.company.data.network.UserReportRequestDto
+import telefam.company.data.network.UserReportResponseDto
 import telefam.company.data.network.UsernameCheckResponseDto
 import telefam.company.data.network.VerifyLinkDto
 import telefam.company.data.network.VerifyOtpDto
@@ -225,59 +233,70 @@ class TelefamFeedRobolectricTest {
     assertEquals("Updated night lights!", db.telefamDao().getFeedPost("post_owner")?.caption)
 
     // ViewModel autofill state transitions
-    val vm = TelefamViewModel(repository)
-    vm.openPostWithHashtag("#Explore!", PostMode.VIDEO)
-    assertTrue(vm.uiState.value.postComposer.isOpen)
-    assertNull(vm.uiState.value.postComposer.editingPostId)
-    assertEquals(listOf("explore"), vm.uiState.value.postComposer.selectedHashtags)
+    val vmStore = ViewModelStore()
+    val vm = ViewModelProvider(
+      vmStore,
+      object : ViewModelProvider.Factory {
+        @Suppress("UNCHECKED_CAST")
+        override fun <T : ViewModel> create(modelClass: Class<T>): T = TelefamViewModel(repository) as T
+      },
+    )[TelefamViewModel::class.java]
+    try {
+      vm.openPostWithHashtag("#Explore!", PostMode.VIDEO)
+      assertTrue(vm.uiState.value.postComposer.isOpen)
+      assertNull(vm.uiState.value.postComposer.editingPostId)
+      assertEquals(listOf("explore"), vm.uiState.value.postComposer.selectedHashtags)
 
-    val song = PostSongTrack("trk_9", "Midnight", "Rohan")
-    vm.openPostWithSong(song, PostMode.VIDEO)
-    assertTrue(vm.uiState.value.postComposer.isOpen)
-    assertEquals(song, vm.uiState.value.postComposer.selectedSong)
+      val song = PostSongTrack("trk_9", "Midnight", "Rohan")
+      vm.openPostWithSong(song, PostMode.VIDEO)
+      assertTrue(vm.uiState.value.postComposer.isOpen)
+      assertEquals(song, vm.uiState.value.postComposer.selectedSong)
 
-    vm.openPostForEdit(
-      FeedUiItem(
-        postId = "post_owner",
-        authorUserId = "caller_1",
-        authorUsername = "caller",
-        authorFullName = "Caller",
-        authorAvatarUrl = null,
-        isFollowingAuthor = false,
-        isOwner = true,
-        mode = PostMode.VIDEO,
-        textContent = "",
-        caption = "Updated night lights!",
-        themeId = "crimson",
-        fontOption = telefam.company.core.PostFontOption.CLASSIC,
-        song = song,
-        hashtags = listOf("citylights"),
-        photoUrls = emptyList(),
-        primaryStreamUrl = "/v1/media/f/vid.mp4",
-        rawDownloadUrl = "/v1/feeds/post_owner/download",
-        thumbnailUrl = "/v1/media/f/thumb.jpg",
-        renditions = emptyList(),
-        width = 1080,
-        height = 1920,
-        durationMs = 15_000L,
-        muteOriginalAudio = true,
-        contentId = "vid_123",
-        likesCount = 10L,
-        commentsCount = 0L,
-        sharesCount = 0L,
-        favouritesCount = 0L,
-        repostsCount = 0L,
-        isLiked = false,
-        isFavourited = false,
-        isReposted = false,
-        repostedByUsername = "",
-        recommendationLabel = "You might like this",
-        createdAtMs = 1_000L,
-      ),
-    )
-    assertTrue(vm.uiState.value.postComposer.isOpen)
-    assertEquals("post_owner", vm.uiState.value.postComposer.editingPostId)
-    assertTrue(vm.uiState.value.postComposer.canShare)
+      vm.openPostForEdit(
+        FeedUiItem(
+          postId = "post_owner",
+          authorUserId = "caller_1",
+          authorUsername = "caller",
+          authorFullName = "Caller",
+          authorAvatarUrl = null,
+          isFollowingAuthor = false,
+          isOwner = true,
+          mode = PostMode.VIDEO,
+          textContent = "",
+          caption = "Updated night lights!",
+          themeId = "crimson",
+          fontOption = telefam.company.core.PostFontOption.CLASSIC,
+          song = song,
+          hashtags = listOf("citylights"),
+          photoUrls = emptyList(),
+          primaryStreamUrl = "/v1/media/f/vid.mp4",
+          rawDownloadUrl = "/v1/feeds/post_owner/download",
+          thumbnailUrl = "/v1/media/f/thumb.jpg",
+          renditions = emptyList(),
+          width = 1080,
+          height = 1920,
+          durationMs = 15_000L,
+          muteOriginalAudio = true,
+          contentId = "vid_123",
+          likesCount = 10L,
+          commentsCount = 0L,
+          sharesCount = 0L,
+          favouritesCount = 0L,
+          repostsCount = 0L,
+          isLiked = false,
+          isFavourited = false,
+          isReposted = false,
+          repostedByUsername = "",
+          recommendationLabel = "You might like this",
+          createdAtMs = 1_000L,
+        ),
+      )
+      assertTrue(vm.uiState.value.postComposer.isOpen)
+      assertEquals("post_owner", vm.uiState.value.postComposer.editingPostId)
+      assertTrue(vm.uiState.value.postComposer.canShare)
+    } finally {
+      vmStore.clear()
+    }
 
     // Delete owner post
     val deleted = repository.deleteOwnerPost("post_owner")
@@ -471,6 +490,27 @@ class TelefamFeedRobolectricTest {
 
     override suspend fun syncContactActions(bearer: String, deviceFingerprint: String, body: ContactSyncBatchRequestDto): Response<SyncBatchResponseDto> =
       Response.success(SyncBatchResponseDto(success = true))
+
+    override suspend fun getUserProfile(bearer: String, deviceFingerprint: String, userId: String): Response<UserProfileResponseDto> =
+      Response.success(UserProfileResponseDto(success = true, userId = userId))
+
+    override suspend fun getUserConnections(bearer: String, deviceFingerprint: String, userId: String, type: String, page: Int, pageSize: Int): Response<UserConnectionsResponseDto> =
+      Response.success(UserConnectionsResponseDto(success = true, page = page))
+
+    override suspend fun getUserFollowers(bearer: String, deviceFingerprint: String, userId: String, page: Int, pageSize: Int): Response<UserConnectionsResponseDto> =
+      Response.success(UserConnectionsResponseDto(success = true, page = page))
+
+    override suspend fun getUserFollowing(bearer: String, deviceFingerprint: String, userId: String, page: Int, pageSize: Int): Response<UserConnectionsResponseDto> =
+      Response.success(UserConnectionsResponseDto(success = true, page = page))
+
+    override suspend fun blockUser(bearer: String, deviceFingerprint: String, userId: String): Response<UserBlockResponseDto> =
+      Response.success(UserBlockResponseDto(success = true, targetUserId = userId, isBlocked = true))
+
+    override suspend fun unblockUser(bearer: String, deviceFingerprint: String, userId: String): Response<UserBlockResponseDto> =
+      Response.success(UserBlockResponseDto(success = true, targetUserId = userId, isBlocked = false))
+
+    override suspend fun reportUser(bearer: String, deviceFingerprint: String, userId: String, body: UserReportRequestDto): Response<UserReportResponseDto> =
+      Response.success(UserReportResponseDto(success = true, targetUserId = userId, reason = body.reason))
 
     override suspend fun downloadMedia(url: String): Response<ResponseBody> =
       Response.success(ByteArray(0).toResponseBody("application/octet-stream".toMediaType()))

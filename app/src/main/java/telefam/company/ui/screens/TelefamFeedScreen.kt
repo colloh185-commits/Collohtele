@@ -158,6 +158,7 @@ fun ReusableVideoFeedScreen(
   onTapHashtag: (tag: String, mode: PostMode) -> Unit,
   onTapAudio: (song: PostSongTrack, mode: PostMode) -> Unit,
   onRecordWatchProgress: (postId: String, watchMs: Long, durationMs: Long) -> Unit,
+  onOpenAuthorProfile: (userId: String) -> Unit = {},
   onShowToast: (String) -> Unit,
 ) {
   val context = LocalContext.current
@@ -583,6 +584,7 @@ fun ReusableVideoFeedScreen(
           FeedBottomLeftMetadata(
             item = item,
             isPlayingAudio = isActivePage && !userPausedCurrent,
+            onClickAuthor = { onOpenAuthorProfile(item.authorUserId) },
             onTapHashtag = { tag -> onTapHashtag(tag, item.mode) },
             onTapAudio = { song -> onTapAudio(song, item.mode) },
             modifier = Modifier
@@ -595,6 +597,7 @@ fun ReusableVideoFeedScreen(
           // Bottom-Right Vertical Action Rail (safe above bottom nav)
           FeedRightActionRail(
             item = item,
+            onOpenAuthorProfile = { onOpenAuthorProfile(item.authorUserId) },
             onToggleFollow = { onToggleFollowAuthor(item.authorUserId, item.isFollowingAuthor) },
             onToggleLike = { onToggleLike(item.postId, item.isLiked) },
             onCommentClick = { onCommentClick(item) },
@@ -777,6 +780,7 @@ fun ReusableVideoFeedScreen(
 private fun FeedBottomLeftMetadata(
   item: FeedUiItem,
   isPlayingAudio: Boolean,
+  onClickAuthor: () -> Unit,
   onTapHashtag: (String) -> Unit,
   onTapAudio: (PostSongTrack) -> Unit,
   modifier: Modifier = Modifier,
@@ -838,7 +842,7 @@ private fun FeedBottomLeftMetadata(
       }
     }
 
-    // Username matching screenshot bold style
+    // Username matching screenshot bold style (tappable to view author profile)
     Text(
       text = item.authorUsername.ifBlank { item.authorFullName },
       color = Color.White,
@@ -846,6 +850,11 @@ private fun FeedBottomLeftMetadata(
       fontWeight = FontWeight.Bold,
       maxLines = 1,
       overflow = TextOverflow.Ellipsis,
+      modifier = Modifier
+        .clip(RoundedCornerShape(6.dp))
+        .clickable(onClick = onClickAuthor)
+        .padding(vertical = 2.dp)
+        .testTag("feed_author_username"),
     )
 
     if (item.caption.isNotBlank()) {
@@ -923,6 +932,7 @@ private fun FeedBottomLeftMetadata(
 @Composable
 private fun FeedRightActionRail(
   item: FeedUiItem,
+  onOpenAuthorProfile: () -> Unit,
   onToggleFollow: () -> Unit,
   onToggleLike: () -> Unit,
   onCommentClick: () -> Unit,
@@ -942,6 +952,7 @@ private fun FeedRightActionRail(
       isFollowing = item.isFollowingAuthor,
       isOwner = item.isOwner,
       onClickFollow = onToggleFollow,
+      onClickProfile = onOpenAuthorProfile,
     )
 
     RailActionItem(
