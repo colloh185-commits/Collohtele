@@ -60,6 +60,11 @@ object DesktopSecurityGuard {
     val digest = MessageDigest.getInstance("SHA-256").digest(raw.toByteArray(StandardCharsets.UTF_8))
     return digest.joinToString("") { "%02x".format(it) }
   }
+
+  fun sha256HexBytes(bytes: ByteArray): String {
+    val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
+    return digest.joinToString("") { "%02x".format(it) }
+  }
 }
 
 data class DesktopCountryDialOption(
@@ -352,6 +357,17 @@ data class DesktopFeedSearchPage(
   val hasMore: Boolean,
 )
 
+data class DesktopProfileBackgroundItem(
+  val mediaId: String,
+  val url: String,
+  val sha256Fingerprint: String = "",
+  val dHashFingerprint: String = "",
+  val width: Int = 0,
+  val height: Int = 0,
+  val byteSize: Int = 0,
+  val createdAtMs: Long = 0L,
+)
+
 data class DesktopUserProfile(
   val userId: String,
   val fullName: String,
@@ -360,6 +376,12 @@ data class DesktopUserProfile(
   val bio: String,
   val location: String,
   val countryIso: String,
+  val gender: String = "",
+  val dateOfBirth: String = "",
+  val phoneNumber: String = "",
+  val usernameChangedAtMs: Long = 0L,
+  val nextUsernameChangeMs: Long = 0L,
+  val backgrounds: List<DesktopProfileBackgroundItem> = emptyList(),
   val followingCount: Long,
   val followersCount: Long,
   val likesCount: Long,
@@ -369,6 +391,9 @@ data class DesktopUserProfile(
   val isBlocked: Boolean,
   val riskScore: Double,
   val posts: List<DesktopFeedPost>,
+  val savedPosts: List<DesktopFeedPost> = emptyList(),
+  val repostedPosts: List<DesktopFeedPost> = emptyList(),
+  val lockedPosts: List<DesktopFeedPost> = emptyList(),
 ) {
   val relationship: telefam.company.shared.ContactRelationshipState
     get() = telefam.company.shared.ContactRelationshipState.compute(isFollowing, followsYou)
@@ -435,27 +460,38 @@ class DesktopApiClient(
     return if (clean.startsWith("/")) "$base$clean" else "$base/$clean"
   }
 
-  fun fetchCachedMediaBytes(pathOrUrl: String): ByteArray? {
+  fun fetchCachedMediaFile(pathOrUrl: String): File? {
     val resolved = resolveMediaUrl(pathOrUrl)
     if (resolved.isBlank()) return null
     val key = "media_${DesktopSecurityGuard.sha256Hex(resolved)}.bin"
     val cachedFile = cacheKeyFile(key)
-    val uri = runCatching { URI(resolved) }.getOrNull() ?: return cachedFile.takeIf { it.exists() }?.readBytes()
+    if (cachedFile.exists() && cachedFile.length() > 0L) {
+      return cachedFile
+    }
+    val uri = runCatching { URI(resolved) }.getOrNull() ?: return null
+    val isTelefamHost = baseUrl()?.let { b ->
+      val bh = runCatching { URI(b).host }.getOrNull()
+      !bh.isNullOrBlank() && bh.equals(uri.host, ignoreCase = true)
+    } ?: false
     val fetched = runCatching {
-      val req = HttpRequest.newBuilder(uri)
-        .header("Authorization", "Bearer ${session.accessToken}")
-        .header("X-Telefam-Device-FP", deviceFingerprint)
+      val reqBuilder = HttpRequest.newBuilder(uri)
         .GET()
-        .timeout(Duration.ofSeconds(15))
-        .build()
-      val res = httpClient.send(req, HttpResponse.BodyHandlers.ofByteArray())
+        .timeout(Duration.ofSeconds(25))
+      if (isTelefamHost && session.accessToken.isNotBlank()) {
+        reqBuilder.header("Authorization", "Bearer ${session.accessToken}")
+        reqBuilder.header("X-Telefam-Device-FP", deviceFingerprint)
+      }
+      val res = httpClient.send(reqBuilder.build(), HttpResponse.BodyHandlers.ofByteArray())
       if (res.statusCode() in 200..299 && res.body().isNotEmpty()) {
         cachedFile.writeBytes(res.body())
-        res.body()
+        cachedFile
       } else null
     }.getOrNull()
-    return fetched ?: cachedFile.takeIf { it.exists() }?.readBytes()
+    return fetched ?: cachedFile.takeIf { it.exists() && it.length() > 0L }
   }
+
+  fun fetchCachedMediaBytes(pathOrUrl: String): ByteArray? =
+    fetchCachedMediaFile(pathOrUrl)?.let { f -> runCatching { f.readBytes() }.getOrNull() }
 
   fun shareUrlForPost(postId: String): String {
     val clean = session.serverBaseUrl.trim().trimEnd('/')
@@ -640,6 +676,94 @@ class DesktopApiClient(
     vault.save(updated)
     onSessionUpdated(updated)
     return DesktopApiOutcome.Ok(updated)
+  }
+
+  fun uploadProfileBackground(bytes: ByteArray): DesktopApiOutcome<List<DesktopProfileBackgroundItem>> {
+    val fpHex = DesktopSecurityGuard.sha256HexBytes(bytes)
+    val resp = executeRaw(
+      method = "POST",
+      path = "/v1/media/background",
+      body = bytes,
+      auth = true,
+      contentType = "image/jpeg",
+      extraHeaders = mapOf("X-Telefam-Content-SHA256" to fpHex),
+    ) ?: return DesktopApiOutcome.Fail(0, "Server connection unavailable")
+    if (resp.first !in 200..299) {
+      return DesktopApiOutcome.Fail(resp.first, parseError(resp.first, resp.second))
+    }
+    val map = DesktopJson.parseObject(resp.second)
+    val parsedList = DesktopJson.objList(map, "backgrounds").mapNotNull(::parseBackgroundItem)
+    return DesktopApiOutcome.Ok(parsedList)
+  }
+
+  fun deleteProfileBackground(mediaId: String): DesktopApiOutcome<List<DesktopProfileBackgroundItem>> {
+    val encId = URLEncoder.encode(mediaId.trim(), StandardCharsets.UTF_8)
+    val resp = executeRaw("DELETE", "/v1/profile/backgrounds/$encId", null, auth = true)
+      ?: return DesktopApiOutcome.Fail(0, "Server connection unavailable")
+    if (resp.first !in 200..299) {
+      return DesktopApiOutcome.Fail(resp.first, parseError(resp.first, resp.second))
+    }
+    val map = DesktopJson.parseObject(resp.second)
+    return DesktopApiOutcome.Ok(DesktopJson.objList(map, "backgrounds").mapNotNull(::parseBackgroundItem))
+  }
+
+  fun reorderProfileBackgrounds(mediaIds: List<String>): DesktopApiOutcome<List<DesktopProfileBackgroundItem>> {
+    val body = "{\"media_ids\":[${mediaIds.joinToString(",") { "\"${DesktopJson.escape(it)}\"" }}]}"
+    val resp = executeRaw("PUT", "/v1/profile/backgrounds", body.toByteArray(StandardCharsets.UTF_8), auth = true)
+      ?: return DesktopApiOutcome.Fail(0, "Server connection unavailable")
+    if (resp.first !in 200..299) {
+      return DesktopApiOutcome.Fail(resp.first, parseError(resp.first, resp.second))
+    }
+    val map = DesktopJson.parseObject(resp.second)
+    return DesktopApiOutcome.Ok(DesktopJson.objList(map, "backgrounds").mapNotNull(::parseBackgroundItem))
+  }
+
+  fun updateProfile(
+    fullName: String,
+    username: String,
+    phoneNumber: String,
+    countryIso: String,
+    gender: String,
+    dateOfBirth: String,
+    location: String,
+    bio: String,
+    avatarMediaId: String?,
+  ): DesktopApiOutcome<Pair<Long, Long>> {
+    val body = buildString {
+      append('{')
+      append("\"full_name\":\"").append(DesktopJson.escape(fullName.trim())).append("\",")
+      append("\"username\":\"").append(DesktopJson.escape(username.trim().lowercase())).append("\",")
+      append("\"phone_number\":\"").append(DesktopJson.escape(phoneNumber.trim())).append("\",")
+      append("\"country_iso\":\"").append(DesktopJson.escape(countryIso.trim().uppercase())).append("\",")
+      append("\"gender\":\"").append(DesktopJson.escape(gender.trim())).append("\",")
+      append("\"date_of_birth\":\"").append(DesktopJson.escape(dateOfBirth.trim())).append("\",")
+      append("\"location\":\"").append(DesktopJson.escape(location.trim())).append("\",")
+      append("\"bio\":\"").append(DesktopJson.escape(bio.trim())).append('"')
+      if (!avatarMediaId.isNullOrBlank()) {
+        append(",\"avatar_media_id\":\"").append(DesktopJson.escape(avatarMediaId)).append('"')
+      }
+      append('}')
+    }
+    val resp = executeRaw("PATCH", "/v1/profile", body.toByteArray(StandardCharsets.UTF_8), auth = true)
+      ?: return DesktopApiOutcome.Fail(0, "Server connection unavailable")
+    if (resp.first !in 200..299) {
+      return DesktopApiOutcome.Fail(resp.first, parseError(resp.first, resp.second))
+    }
+    val map = DesktopJson.parseObject(resp.second)
+    val savedUsername = DesktopJson.str(map, "username").ifBlank { username.trim().lowercase() }
+    val savedFullName = DesktopJson.str(map, "full_name").ifBlank { fullName.trim() }
+    val changedAtMs = DesktopJson.long(map, "username_changed_at_ms", 0L)
+    val nextAllowedMs = DesktopJson.long(map, "next_username_change_ms", 0L)
+    val updatedSession = session.copy(
+      fullName = savedFullName,
+      username = savedUsername,
+      bio = bio.trim(),
+      location = location.trim(),
+    )
+    session = updatedSession
+    vault.save(updatedSession)
+    onSessionUpdated(updatedSession)
+    return DesktopApiOutcome.Ok(changedAtMs to nextAllowedMs)
   }
 
   fun listContacts(filter: ContactFilterTab, query: String, page: Int, pageSize: Int = 20): DesktopApiOutcome<DesktopContactsPage> {
@@ -895,6 +1019,16 @@ class DesktopApiClient(
     return DesktopApiOutcome.Ok(true)
   }
 
+  fun updatePostPrivacy(postId: String, privacy: String): DesktopApiOutcome<Boolean> {
+    val body = "{\"privacy\":\"${DesktopJson.escape(privacy.trim().lowercase())}\"}"
+    val resp = executeRaw("PATCH", "/v1/posts/${URLEncoder.encode(postId, StandardCharsets.UTF_8)}", body.toByteArray(StandardCharsets.UTF_8), auth = true)
+      ?: return DesktopApiOutcome.Fail(0, "Offline")
+    if (resp.first !in 200..299) {
+      return DesktopApiOutcome.Fail(resp.first, parseError(resp.first, resp.second))
+    }
+    return DesktopApiOutcome.Ok(true)
+  }
+
   fun deletePost(postId: String): DesktopApiOutcome<Boolean> {
     val resp = executeRaw("DELETE", "/v1/posts/${URLEncoder.encode(postId, StandardCharsets.UTF_8)}", null, auth = true)
       ?: return DesktopApiOutcome.Fail(0, "Offline")
@@ -1131,7 +1265,28 @@ class DesktopApiClient(
     )
   }
 
+  private fun parseBackgroundItem(map: Map<String, Any?>): DesktopProfileBackgroundItem? {
+    val id = DesktopJson.str(map, "media_id")
+    val url = DesktopJson.str(map, "url")
+    if (id.isBlank() && url.isBlank()) return null
+    return DesktopProfileBackgroundItem(
+      mediaId = id.ifBlank { url },
+      url = url,
+      sha256Fingerprint = DesktopJson.str(map, "sha256_fingerprint"),
+      dHashFingerprint = DesktopJson.str(map, "dhash_fingerprint"),
+      width = DesktopJson.long(map, "width", 0L).toInt(),
+      height = DesktopJson.long(map, "height", 0L).toInt(),
+      byteSize = DesktopJson.long(map, "byte_size", 0L).toInt(),
+      createdAtMs = DesktopJson.long(map, "created_at_ms", 0L),
+    )
+  }
+
   private fun parseUserProfile(map: Map<String, Any?>, fallbackId: String): DesktopUserProfile {
+    val parsedBgs = DesktopJson.objList(map, "backgrounds").mapNotNull(::parseBackgroundItem).ifEmpty {
+      DesktopJson.stringList(map, "background_urls").mapIndexed { idx, rawUrl ->
+        DesktopProfileBackgroundItem(mediaId = "bg_$idx", url = rawUrl)
+      }
+    }
     return DesktopUserProfile(
       userId = DesktopJson.str(map, "user_id").ifBlank { fallbackId },
       fullName = DesktopJson.str(map, "full_name"),
@@ -1140,6 +1295,12 @@ class DesktopApiClient(
       bio = DesktopJson.str(map, "bio"),
       location = DesktopJson.str(map, "location"),
       countryIso = DesktopJson.str(map, "country_iso"),
+      gender = DesktopJson.str(map, "gender"),
+      dateOfBirth = DesktopJson.str(map, "date_of_birth"),
+      phoneNumber = DesktopJson.str(map, "phone_number"),
+      usernameChangedAtMs = DesktopJson.long(map, "username_changed_at_ms", 0L),
+      nextUsernameChangeMs = DesktopJson.long(map, "next_username_change_ms", 0L),
+      backgrounds = parsedBgs,
       followingCount = DesktopJson.long(map, "following_count", 0L),
       followersCount = DesktopJson.long(map, "followers_count", 0L),
       likesCount = DesktopJson.long(map, "likes_count", 0L),
@@ -1149,6 +1310,9 @@ class DesktopApiClient(
       isBlocked = DesktopJson.bool(map, "is_blocked"),
       riskScore = DesktopJson.double(map, "risk_score", 0.0),
       posts = DesktopJson.objList(map, "posts").map(::parseFeedPost),
+      savedPosts = DesktopJson.objList(map, "saved_posts").map(::parseFeedPost),
+      repostedPosts = DesktopJson.objList(map, "reposted_posts").map(::parseFeedPost),
+      lockedPosts = DesktopJson.objList(map, "locked_posts").map(::parseFeedPost),
     )
   }
 
@@ -1177,8 +1341,10 @@ class DesktopApiClient(
       authorUserId = DesktopJson.str(map, "author_user_id"),
       authorUsername = DesktopJson.str(map, "author_username"),
       authorFullName = DesktopJson.str(map, "author_full_name"),
+      authorAvatarUrl = DesktopJson.str(map, "author_avatar_url"),
       isFollowingAuthor = DesktopJson.bool(map, "is_following_author"),
       isOwner = DesktopJson.bool(map, "is_owner"),
+      privacy = DesktopJson.str(map, "privacy").ifBlank { "public" },
       mode = mode,
       textContent = DesktopJson.str(map, "text_content"),
       caption = DesktopJson.str(map, "caption"),
@@ -1186,6 +1352,8 @@ class DesktopApiClient(
       fontOption = font,
       song = song,
       hashtags = DesktopJson.stringList(map, "hashtags"),
+      photoUrls = DesktopJson.stringList(map, "photo_urls"),
+      videoUrl = DesktopJson.str(map, "video_url"),
       thumbnailUrl = DesktopJson.str(map, "thumbnail_url"),
       mediaWidth = DesktopJson.long(map, "width", 1080L).toInt().coerceAtLeast(1),
       mediaHeight = DesktopJson.long(map, "height", 1920L).toInt().coerceAtLeast(1),

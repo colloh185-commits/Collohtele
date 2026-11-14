@@ -67,6 +67,7 @@ struct TelefamIosFeedItem: Identifiable, Codable {
     let repostedByUsername: String
     let recommendationLabel: String
     let createdAtMs: Int64
+    var privacy: String
 
     var id: String { postId }
 
@@ -103,6 +104,7 @@ struct TelefamIosFeedItem: Identifiable, Codable {
         case repostedByUsername = "reposted_by_username"
         case recommendationLabel = "recommendation_label"
         case createdAtMs = "created_at_ms"
+        case privacy
     }
 
     init(
@@ -140,7 +142,8 @@ struct TelefamIosFeedItem: Identifiable, Codable {
         isReposted: Bool = false,
         repostedByUsername: String = "",
         recommendationLabel: String = "",
-        createdAtMs: Int64 = 0
+        createdAtMs: Int64 = 0,
+        privacy: String = "public"
     ) {
         self.postId = postId
         self.authorUserId = authorUserId
@@ -177,6 +180,7 @@ struct TelefamIosFeedItem: Identifiable, Codable {
         self.repostedByUsername = repostedByUsername
         self.recommendationLabel = recommendationLabel
         self.createdAtMs = createdAtMs
+        self.privacy = privacy
     }
 
     init(from decoder: Decoder) throws {
@@ -216,6 +220,7 @@ struct TelefamIosFeedItem: Identifiable, Codable {
         repostedByUsername = try c.decodeIfPresent(String.self, forKey: .repostedByUsername) ?? ""
         recommendationLabel = try c.decodeIfPresent(String.self, forKey: .recommendationLabel) ?? ""
         createdAtMs = try c.decodeIfPresent(Int64.self, forKey: .createdAtMs) ?? 0
+        privacy = try c.decodeIfPresent(String.self, forKey: .privacy) ?? "public"
     }
 }
 
@@ -395,7 +400,9 @@ final class TelefamIosFeedStore: ObservableObject {
     }
 
     func makeAuthorizedAsset(for url: URL) -> AVURLAsset {
-        if let cached = preloadedAssets[url.absoluteString] {
+        let tokenSuffix = String(bearerToken.suffix(12))
+        let cacheKey = "\(url.absoluteString)|\(tokenSuffix)"
+        if let cached = preloadedAssets[cacheKey] {
             return cached
         }
         let headers: [String: String] = [
@@ -403,9 +410,9 @@ final class TelefamIosFeedStore: ObservableObject {
             "X-Telefam-Device-FP": deviceFingerprint
         ]
         let asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
-        preloadedAssets[url.absoluteString] = asset
-        if preloadedAssets.count > 12 {
-            preloadedAssets.removeValue(forKey: preloadedAssets.keys.first ?? "")
+        preloadedAssets[cacheKey] = asset
+        if preloadedAssets.count > 12, let firstKey = preloadedAssets.keys.first {
+            preloadedAssets.removeValue(forKey: firstKey)
         }
         return asset
     }
@@ -577,6 +584,35 @@ final class TelefamIosFeedStore: ObservableObject {
         req.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
         req.setValue(deviceFingerprint, forHTTPHeaderField: "X-Telefam-Device-FP")
         _ = try? await URLSession.shared.data(for: req)
+    }
+
+    func updatePostPrivacy(postId: String, privacy: String) async {
+        let normalized = privacy.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let valid = ["public", "friends", "private"].contains(normalized) ? normalized : "public"
+        mutateItem(postId: postId) { item in
+            item.privacy = valid
+        }
+        if valid == "private" {
+            followingItems.removeAll { $0.postId == postId }
+            forYouItems.removeAll { $0.postId == postId }
+            searchResults.removeAll { $0.postId == postId }
+            persistCaches()
+        }
+        var req = URLRequest(url: baseURL.appendingPathComponent("v1/posts/\(postId)"))
+        req.httpMethod = "PATCH"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
+        req.setValue(deviceFingerprint, forHTTPHeaderField: "X-Telefam-Device-FP")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["privacy": valid])
+
+        if let (_, resp) = try? await URLSession.shared.data(for: req),
+           let http = resp as? HTTPURLResponse,
+           (200...299).contains(http.statusCode) {
+            let label = valid == "private" ? "Private (moved to Locked)" : (valid == "friends" ? "Friends" : "Public")
+            showToast("Privacy updated: \(label)")
+        } else {
+            showToast("Saved locally — will sync when online")
+        }
     }
 
     func recordWatchProgress(postId: String, watchMs: Int64, durationMs: Int64) {
@@ -753,12 +789,16 @@ struct TelefamIosVideoSurfaceView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> PlayerLayerView {
         let v = PlayerLayerView()
+        v.backgroundColor = .clear
+        v.isOpaque = false
+        v.playerLayer.backgroundColor = UIColor.clear.cgColor
         v.playerLayer.videoGravity = .resizeAspect
         v.playerLayer.player = player
         return v
     }
 
     func updateUIView(_ uiView: PlayerLayerView, context: Context) {
+        uiView.playerLayer.videoGravity = .resizeAspect
         if uiView.playerLayer.player !== player {
             uiView.playerLayer.player = player
         }
@@ -905,13 +945,20 @@ struct TelefamIosFeedView: View {
 
     @State private var currentIndex: Int = 0
     @State private var sharedPlayer = AVPlayer()
+    @State private var songPlayer = AVPlayer()
+    @State private var videoEndObserver: NSObjectProtocol? = nil
+    @State private var videoFailObserver: NSObjectProtocol? = nil
+    @State private var songEndObserver: NSObjectProtocol? = nil
     @State private var isPaused: Bool = false
     @State private var isFastForward2x: Bool = false
     @State private var isBuffering: Bool = false
+    @State private var isPlaybackFailed: Bool = false
     @State private var showDoubleTapHeart: Bool = false
+    @State private var expandedPostIds: Set<String> = []
     @State private var activeMoreItem: TelefamIosFeedItem? = nil
     @State private var activeShareItem: TelefamIosFeedItem? = nil
     @State private var reportPostId: String? = nil
+    @State private var privacyPostItem: TelefamIosFeedItem? = nil
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -968,6 +1015,8 @@ struct TelefamIosFeedView: View {
         }
         .onDisappear {
             sharedPlayer.pause()
+            songPlayer.pause()
+            clearPlaybackObservers()
         }
         .confirmationDialog("Share", isPresented: Binding(get: { activeShareItem != nil }, set: { if !$0 { activeShareItem = nil } }), presenting: activeShareItem) { item in
             Button("Share via apps") {
@@ -991,15 +1040,31 @@ struct TelefamIosFeedView: View {
             if item.mode == "video" {
                 Button("Download") { Task { await store.downloadVideoToFiles(item: item) } }
             }
-            Button("Not interested") { store.notInterested(postId: item.postId) }
-            Button("Report") { reportPostId = item.postId }
+            if !item.isOwner {
+                Button("Not interested") { store.notInterested(postId: item.postId) }
+                Button("Report") { reportPostId = item.postId }
+            }
             if item.isOwner {
                 Button("Edit video") { onEditOwnerPost(item) }
+                let privLabel = item.privacy.lowercased() == "private" ? "Private" : (item.privacy.lowercased() == "friends" ? "Friends" : "Public")
+                Button("Privacy: \(privLabel)") { privacyPostItem = item }
                 Button("Delete video", role: .destructive) { Task { await store.deleteOwnerPost(postId: item.postId) } }
             } else {
                 Button("Block @\(item.authorUsername)", role: .destructive) {
                     store.blockAuthor(postId: item.postId, authorUserId: item.authorUserId)
                 }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+        .confirmationDialog("Post privacy", isPresented: Binding(get: { privacyPostItem != nil }, set: { if !$0 { privacyPostItem = nil } }), presenting: privacyPostItem) { item in
+            Button("Public" + (item.privacy.lowercased() == "public" || item.privacy.isEmpty ? " (Current)" : "")) {
+                Task { await store.updatePostPrivacy(postId: item.postId, privacy: "public") }
+            }
+            Button("Friends" + (item.privacy.lowercased() == "friends" ? " (Current)" : "")) {
+                Task { await store.updatePostPrivacy(postId: item.postId, privacy: "friends") }
+            }
+            Button("Private — Move to Locked" + (item.privacy.lowercased() == "private" ? " (Current)" : "")) {
+                Task { await store.updatePostPrivacy(postId: item.postId, privacy: "private") }
             }
             Button("Cancel", role: .cancel) {}
         }
@@ -1023,33 +1088,70 @@ struct TelefamIosFeedView: View {
 
     @ViewBuilder
     private func feedPage(item: TelefamIosFeedItem, isActive: Bool) -> some View {
+        let hasSongAudio = !(item.song?.previewUrl ?? "").isEmpty
         ZStack(alignment: .bottom) {
             ZStack {
                 Color(red: 0.027, green: 0.031, blue: 0.043)
 
-                if item.mode == "video" && isActive {
-                    TelefamIosVideoSurfaceView(player: sharedPlayer)
-                } else if item.mode == "video" && !item.thumbnailUrl.isEmpty {
-                    TelefamIosRemoteImage(
-                        urlString: store.authorizedURLString(item.thumbnailUrl),
-                        bearerToken: store.bearerToken,
-                        deviceFingerprint: store.deviceFingerprint,
-                        fallbackInitials: ""
-                    )
-                    .scaledToFit()
-                } else if item.mode == "photos" && !item.photoUrls.isEmpty {
-                    TabView {
-                        ForEach(item.photoUrls, id: \.self) { rawUrl in
+                if item.mode == "video" {
+                    ZStack {
+                        if !item.thumbnailUrl.isEmpty {
                             TelefamIosRemoteImage(
-                                urlString: store.authorizedURLString(rawUrl),
+                                urlString: store.authorizedURLString(item.thumbnailUrl),
                                 bearerToken: store.bearerToken,
                                 deviceFingerprint: store.deviceFingerprint,
                                 fallbackInitials: ""
                             )
-                            .scaledToFit()
+                            .scaledToFill()
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .clipped()
+                            .blur(radius: 28)
+                            .overlay(Color.black.opacity(0.44))
+
+                            TelefamIosRemoteImage(
+                                urlString: store.authorizedURLString(item.thumbnailUrl),
+                                bearerToken: store.bearerToken,
+                                deviceFingerprint: store.deviceFingerprint,
+                                fallbackInitials: "",
+                                contentMode: .fit
+                            )
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        }
+                        if isActive && !isPlaybackFailed {
+                            TelefamIosVideoSurfaceView(player: sharedPlayer)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
                         }
                     }
-                    .tabViewStyle(.page(indexDisplayMode: .automatic))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if item.mode == "photos" && !item.photoUrls.isEmpty {
+                    ZStack {
+                        TelefamIosRemoteImage(
+                            urlString: store.authorizedURLString(item.photoUrls.first ?? ""),
+                            bearerToken: store.bearerToken,
+                            deviceFingerprint: store.deviceFingerprint,
+                            fallbackInitials: ""
+                        )
+                        .scaledToFill()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .clipped()
+                        .blur(radius: 28)
+                        .overlay(Color.black.opacity(0.44))
+
+                        TabView {
+                            ForEach(item.photoUrls, id: \.self) { rawUrl in
+                                TelefamIosRemoteImage(
+                                    urlString: store.authorizedURLString(rawUrl),
+                                    bearerToken: store.bearerToken,
+                                    deviceFingerprint: store.deviceFingerprint,
+                                    fallbackInitials: "",
+                                    contentMode: .fit
+                                )
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            }
+                        }
+                        .tabViewStyle(.page(indexDisplayMode: item.photoUrls.count > 1 ? .automatic : .never))
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     let theme = TelefamIosPostTheme.all.first { $0.id == item.themeId } ?? TelefamIosPostTheme.all[0]
                     let font = TelefamIosPostFont(rawValue: item.fontId) ?? .classic
@@ -1087,9 +1189,20 @@ struct TelefamIosFeedView: View {
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.65) { showDoubleTapHeart = false }
                     }
                     .onTapGesture(count: 1) {
-                        if item.mode == "video" {
+                        if item.mode == "video" || hasSongAudio {
                             isPaused.toggle()
-                            if isPaused { sharedPlayer.pause() } else { sharedPlayer.play(); sharedPlayer.rate = 1.0 }
+                            if isPaused {
+                                sharedPlayer.pause()
+                                songPlayer.pause()
+                            } else {
+                                if item.mode == "video" {
+                                    sharedPlayer.play()
+                                    sharedPlayer.rate = 1.0
+                                }
+                                if hasSongAudio {
+                                    songPlayer.play()
+                                }
+                            }
                         }
                     }
                     .onLongPressGesture(minimumDuration: 0.35, maximumDistance: 40, pressing: { pressing in
@@ -1098,7 +1211,7 @@ struct TelefamIosFeedView: View {
                         sharedPlayer.rate = pressing ? 2.0 : (isPaused ? 0.0 : 1.0)
                     }, perform: {})
 
-                if isActive && isPaused && item.mode == "video" {
+                if isActive && isPaused && (item.mode == "video" || hasSongAudio) {
                     Image(systemName: "play.fill")
                         .font(.system(size: 30))
                         .foregroundColor(.white)
@@ -1121,7 +1234,7 @@ struct TelefamIosFeedView: View {
                     }
                 }
 
-                if isActive && item.mode == "video" && (isBuffering || (store.isWeakNetwork && !isPaused)) {
+                if isActive && item.mode == "video" && !isPlaybackFailed && (isBuffering || (store.isWeakNetwork && !isPaused)) {
                     TelefamIosTricolorSpinner(size: 44)
                 }
 
@@ -1322,11 +1435,40 @@ struct TelefamIosFeedView: View {
             }
             .buttonStyle(.plain)
 
-            if !item.caption.isEmpty || (item.mode != "text" && !item.textContent.isEmpty) {
-                Text(item.caption.isEmpty ? item.textContent : item.caption)
-                    .font(.system(size: 14))
-                    .foregroundColor(Color.white.opacity(0.92))
-                    .lineLimit(2)
+            let captionText = item.caption.isEmpty ? (item.mode != "text" ? item.textContent : "") : item.caption
+            if !captionText.isEmpty {
+                let isExpanded = expandedPostIds.contains(item.postId)
+                let showToggle = isExpanded || captionText.count > 75 || captionText.contains("\n")
+                VStack(alignment: .leading, spacing: 3) {
+                    if isExpanded {
+                        ScrollView(.vertical, showsIndicators: false) {
+                            Text(captionText)
+                                .font(.system(size: 14))
+                                .foregroundColor(Color.white.opacity(0.94))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .frame(maxHeight: 160)
+                    } else {
+                        Text(captionText)
+                            .font(.system(size: 14))
+                            .foregroundColor(Color.white.opacity(0.94))
+                            .lineLimit(2)
+                    }
+                    if showToggle {
+                        Button {
+                            if isExpanded {
+                                expandedPostIds.remove(item.postId)
+                            } else {
+                                expandedPostIds.insert(item.postId)
+                            }
+                        } label: {
+                            Text(isExpanded ? "Read less" : "Read more")
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundColor(.white)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
             }
 
             if !item.hashtags.isEmpty {
@@ -1374,32 +1516,73 @@ struct TelefamIosFeedView: View {
         }
     }
 
+    private func clearPlaybackObservers() {
+        if let obs = videoEndObserver { NotificationCenter.default.removeObserver(obs); videoEndObserver = nil }
+        if let obs = videoFailObserver { NotificationCenter.default.removeObserver(obs); videoFailObserver = nil }
+        if let obs = songEndObserver { NotificationCenter.default.removeObserver(obs); songEndObserver = nil }
+    }
+
     private func activatePage(at index: Int) {
+        clearPlaybackObservers()
         guard items.indices.contains(index) else { return }
         let active = items[index]
         isPaused = false
         isFastForward2x = false
+        isPlaybackFailed = false
         store.preloadNextFiveVideos(after: index, in: items)
 
         if index >= items.count - 3 && store.hasMoreActive && !isStandaloneViewer {
             Task { await store.loadMore() }
         }
 
-        guard active.mode == "video", let url = store.selectRenditionURL(for: active) else {
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+        try? AVAudioSession.sharedInstance().setActive(true)
+
+        let songUrlStr = store.authorizedURLString(active.song?.previewUrl ?? "")
+        let hasSong = !songUrlStr.isEmpty
+
+        if active.mode == "video", let url = store.selectRenditionURL(for: active) ?? URL(string: store.authorizedURLString(active.videoUrl)) {
+            let asset = store.makeAuthorizedAsset(for: url)
+            let playerItem = AVPlayerItem(asset: asset)
+            playerItem.preferredForwardBufferDuration = 12
+            sharedPlayer.isMuted = active.muteOriginalAudio || hasSong
+            sharedPlayer.automaticallyWaitsToMinimizeStalling = true
+            sharedPlayer.replaceCurrentItem(with: playerItem)
+            videoEndObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: playerItem, queue: .main) { _ in
+                sharedPlayer.seek(to: .zero)
+                sharedPlayer.play()
+            }
+            videoFailObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemFailedToPlayToEndTime, object: playerItem, queue: .main) { _ in
+                if let fallbackURL = URL(string: store.authorizedURLString(active.videoUrl)), fallbackURL != url {
+                    let fallbackItem = AVPlayerItem(asset: store.makeAuthorizedAsset(for: fallbackURL))
+                    sharedPlayer.replaceCurrentItem(with: fallbackItem)
+                    sharedPlayer.play()
+                } else {
+                    isBuffering = false
+                    isPlaybackFailed = true
+                }
+            }
+            sharedPlayer.play()
+            sharedPlayer.rate = 1.0
+            isBuffering = false
+        } else {
             sharedPlayer.pause()
             sharedPlayer.replaceCurrentItem(with: nil)
             isBuffering = false
-            return
         }
-        let asset = store.makeAuthorizedAsset(for: url)
-        let playerItem = AVPlayerItem(asset: asset)
-        playerItem.preferredForwardBufferDuration = 12
-        sharedPlayer.isMuted = active.muteOriginalAudio && active.song == nil
-        sharedPlayer.automaticallyWaitsToMinimizeStalling = true
-        sharedPlayer.replaceCurrentItem(with: playerItem)
-        sharedPlayer.play()
-        sharedPlayer.rate = 1.0
-        isBuffering = false
+
+        if hasSong, let songURL = URL(string: songUrlStr) {
+            let sItem = AVPlayerItem(url: songURL)
+            songPlayer.replaceCurrentItem(with: sItem)
+            songEndObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: sItem, queue: .main) { _ in
+                songPlayer.seek(to: .zero)
+                songPlayer.play()
+            }
+            songPlayer.play()
+        } else {
+            songPlayer.pause()
+            songPlayer.replaceCurrentItem(with: nil)
+        }
     }
 }
 

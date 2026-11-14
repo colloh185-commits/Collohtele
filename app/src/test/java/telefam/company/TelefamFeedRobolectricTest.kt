@@ -1,8 +1,16 @@
 package telefam.company
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onFirst
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.performClick
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.ViewModelStore
@@ -18,9 +26,11 @@ import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -60,7 +70,13 @@ import telefam.company.data.network.HashtagsSearchResponseDto
 import telefam.company.data.network.MediaUploadResponseDto
 import telefam.company.data.network.NetworkQualityMonitor
 import telefam.company.data.network.OAuthDto
+import telefam.company.data.network.ProfileBackgroundAttachDto
+import telefam.company.data.network.ProfileBackgroundListResponseDto
+import telefam.company.data.network.ProfileBackgroundReorderDto
+import telefam.company.data.network.ProfileBackgroundUploadResponseDto
 import telefam.company.data.network.ProfileSetupDto
+import telefam.company.data.network.ProfileUpdateRequestDto
+import telefam.company.data.network.ProfileUpdateResponseDto
 import telefam.company.data.network.RefreshTokenDto
 import telefam.company.data.network.RequestOtpDto
 import telefam.company.data.network.RequestOtpResponseDto
@@ -80,12 +96,19 @@ import telefam.company.data.network.VerifyLinkDto
 import telefam.company.data.network.VerifyOtpDto
 import telefam.company.data.repository.PostPublishResult
 import telefam.company.data.repository.TelefamRepository
+import telefam.company.ui.screens.ReusableVideoFeedScreen
+import telefam.company.ui.theme.TelefamTheme
+import telefam.company.ui.theme.ThemeMode
 import telefam.company.ui.viewmodel.FeedUiItem
 import telefam.company.ui.viewmodel.TelefamViewModel
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
 class TelefamFeedRobolectricTest {
+
+  @get:Rule
+  val composeRule = createComposeRule()
+
   private lateinit var context: Context
   private lateinit var db: TelefamDatabase
   private lateinit var identityStore: DeviceIdentityStore
@@ -305,6 +328,179 @@ class TelefamFeedRobolectricTest {
     assertFalse(db.telefamDao().observeFeedPosts(FeedTab.FOR_YOU.apiParam).first().any { it.postId == "post_owner" })
   }
 
+  @Test
+  fun `resolveMediaUrl preserves local filesystem paths and prefixes backend relative paths`() {
+    assertEquals(
+      "file:///data/user/0/com.telefam.company.app/files/media/avatar.jpg",
+      AdaptiveStreamSelector.resolveMediaUrl(
+        "https://api.telefam.app",
+        "/data/user/0/com.telefam.company.app/files/media/avatar.jpg",
+      ),
+    )
+    assertEquals(
+      "https://api.telefam.app/v1/media/f/vid_720.mp4",
+      AdaptiveStreamSelector.resolveMediaUrl("https://api.telefam.app/", "/v1/media/f/vid_720.mp4"),
+    )
+    assertEquals(
+      "file:///storage/emulated/0/Movies/clip.mp4",
+      AdaptiveStreamSelector.resolveMediaUrl("https://api.telefam.app", "/storage/emulated/0/Movies/clip.mp4"),
+    )
+    assertEquals(
+      "https://cdn.telefam.app/stream/item.mp4",
+      AdaptiveStreamSelector.resolveMediaUrl("https://api.telefam.app", "https://cdn.telefam.app/stream/item.mp4"),
+    )
+  }
+
+  @Test
+  fun `processAndUploadAvatar adopts server returned mediaId in result and local cache`() = runTest {
+    val bmp = Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888)
+    val uploaded = repository.processAndUploadAvatar(
+      userId = "caller_1",
+      sourceBitmap = bmp,
+      centerX = 0.5f,
+      centerY = 0.5f,
+      zoomScale = 1.0f,
+    )
+    assertEquals("srv_avatar_media_99", uploaded.mediaId)
+    val cursor = db.openHelper.readableDatabase.query(
+      "SELECT mediaId FROM media_uploads WHERE mediaId = ?",
+      arrayOf("srv_avatar_media_99"),
+    )
+    try {
+      assertTrue(cursor.moveToFirst())
+      assertEquals("srv_avatar_media_99", cursor.getString(0))
+    } finally {
+      cursor.close()
+    }
+  }
+
+  @Test
+  fun `reusable feed screen renders multi ratio posts and toggles read more and read less on long captions`() {
+    val longCaption =
+      "Capturing late-night city skyline reflections across every single district while testing wide landscape framing and crystal clear sound design for Telefam creators."
+    val items = listOf(
+      FeedUiItem(
+        postId = "post_16_9",
+        authorUserId = "u_1",
+        authorUsername = "rohan.verma",
+        authorFullName = "Rohan Verma",
+        authorAvatarUrl = "https://api.telefam.app/v1/media/f/av1.jpg",
+        isFollowingAuthor = false,
+        isOwner = false,
+        mode = PostMode.VIDEO,
+        textContent = "",
+        caption = longCaption,
+        themeId = "crimson",
+        fontOption = telefam.company.core.PostFontOption.CLASSIC,
+        song = PostSongTrack("s_1", "Night Drive", "FM-84", previewUrl = "https://api.telefam.app/v1/media/f/s1.mp3"),
+        hashtags = listOf("nightvibes", "citylights"),
+        photoUrls = emptyList(),
+        primaryStreamUrl = "/v1/media/f/vid_landscape.mp4",
+        rawDownloadUrl = "/v1/feeds/post_16_9/download",
+        thumbnailUrl = "/v1/media/f/thumb_landscape.jpg",
+        renditions = listOf(
+          FeedVideoRendition("720p", 1280, 720, 1400, "/v1/media/f/vid_landscape.mp4", 1_000_000),
+        ),
+        width = 1920,
+        height = 1080,
+        durationMs = 15_000L,
+        muteOriginalAudio = false,
+        contentId = "cid_16_9",
+        likesCount = 128_420L,
+        commentsCount = 2_345L,
+        sharesCount = 8_765L,
+        favouritesCount = 32_100L,
+        repostsCount = 12L,
+        isLiked = false,
+        isFavourited = false,
+        isReposted = false,
+        repostedByUsername = "",
+        recommendationLabel = "You might like this",
+        createdAtMs = 1_000L,
+      ),
+      FeedUiItem(
+        postId = "post_1_1_photos",
+        authorUserId = "u_2",
+        authorUsername = "amara_reads",
+        authorFullName = "Amara Okafor",
+        authorAvatarUrl = null,
+        isFollowingAuthor = true,
+        isOwner = true,
+        mode = PostMode.PHOTOS,
+        textContent = "",
+        caption = longCaption,
+        themeId = "cobalt",
+        fontOption = telefam.company.core.PostFontOption.SERIF,
+        song = PostSongTrack("s_2", "Warm Coffee", "LoFi", previewUrl = "https://api.telefam.app/v1/media/f/s2.mp3"),
+        hashtags = listOf("photos"),
+        photoUrls = listOf("/v1/media/f/p1.jpg", "/v1/media/f/p2.jpg"),
+        primaryStreamUrl = "",
+        rawDownloadUrl = "",
+        thumbnailUrl = "/v1/media/f/p1.jpg",
+        renditions = emptyList(),
+        width = 1080,
+        height = 1080,
+        durationMs = 0L,
+        muteOriginalAudio = true,
+        contentId = "cid_1_1",
+        likesCount = 450L,
+        commentsCount = 10L,
+        sharesCount = 2L,
+        favouritesCount = 5L,
+        repostsCount = 0L,
+        isLiked = true,
+        isFavourited = false,
+        isReposted = false,
+        repostedByUsername = "",
+        recommendationLabel = "You might like this",
+        createdAtMs = 2_000L,
+      ),
+    )
+
+    composeRule.setContent {
+      TelefamTheme(themeMode = ThemeMode.DARK) {
+        ReusableVideoFeedScreen(
+          items = items,
+          initialIndex = 0,
+          isHostActive = false,
+          streamAccessToken = "acc_caller_1",
+          streamDeviceFp = "fp_1",
+          onToggleFollowAuthor = { _, _ -> },
+          onToggleLike = { _, _ -> },
+          onDoubleTapLike = {},
+          onCommentClick = {},
+          onToggleFavourite = { _, _ -> },
+          onShareRecorded = {},
+          onToggleRepost = { _, _ -> },
+          onDownloadVideo = {},
+          onNotInterested = {},
+          onReportPost = { _, _ -> },
+          onBlockAuthor = { _, _ -> },
+          onEditOwnerPost = {},
+          onDeleteOwnerPost = {},
+          onTapHashtag = { _, _ -> },
+          onTapAudio = { _, _ -> },
+          onRecordWatchProgress = { _, _, _ -> },
+          onShowToast = {},
+        )
+      }
+    }
+
+    composeRule.waitForIdle()
+    composeRule.onNodeWithTag("feed_vertical_pager").assertIsDisplayed()
+    composeRule.onAllNodesWithTag("feed_caption_text").onFirst().assertIsDisplayed()
+    composeRule.onAllNodesWithTag("feed_caption_toggle").onFirst().assertIsDisplayed()
+    composeRule.onAllNodesWithText("Read more").onFirst().assertIsDisplayed()
+
+    composeRule.onAllNodesWithTag("feed_caption_toggle").onFirst().performClick()
+    composeRule.waitForIdle()
+    composeRule.onAllNodesWithText("Read less").onFirst().assertIsDisplayed()
+
+    composeRule.onAllNodesWithTag("feed_caption_toggle").onFirst().performClick()
+    composeRule.waitForIdle()
+    composeRule.onAllNodesWithText("Read more").onFirst().assertIsDisplayed()
+  }
+
   private fun setNetworkOnline(online: Boolean) {
     val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
     val active = cm.activeNetwork ?: return
@@ -453,7 +649,7 @@ class TelefamFeedRobolectricTest {
       Response.success(UsernameCheckResponseDto(available = true))
 
     override suspend fun uploadAvatar(bearer: String, deviceFingerprint: String, cropCenterX: Float, cropCenterY: Float, cropScale: Float, imageBody: RequestBody): Response<MediaUploadResponseDto> =
-      Response.success(MediaUploadResponseDto(success = true))
+      Response.success(MediaUploadResponseDto(success = true, mediaId = "srv_avatar_media_99"))
 
     override suspend fun uploadPostPhoto(bearer: String, deviceFingerprint: String, imageBody: RequestBody): Response<MediaUploadResponseDto> =
       Response.success(MediaUploadResponseDto(success = true))
@@ -511,6 +707,21 @@ class TelefamFeedRobolectricTest {
 
     override suspend fun reportUser(bearer: String, deviceFingerprint: String, userId: String, body: UserReportRequestDto): Response<UserReportResponseDto> =
       Response.success(UserReportResponseDto(success = true, targetUserId = userId, reason = body.reason))
+
+    override suspend fun uploadProfileBackground(bearer: String, deviceFingerprint: String, imageBody: RequestBody): Response<ProfileBackgroundUploadResponseDto> =
+      Response.success(ProfileBackgroundUploadResponseDto(success = true, mediaId = "bg1"))
+
+    override suspend fun attachProfileBackground(bearer: String, deviceFingerprint: String, body: ProfileBackgroundAttachDto): Response<ProfileBackgroundListResponseDto> =
+      Response.success(ProfileBackgroundListResponseDto(success = true))
+
+    override suspend fun reorderProfileBackgrounds(bearer: String, deviceFingerprint: String, body: ProfileBackgroundReorderDto): Response<ProfileBackgroundListResponseDto> =
+      Response.success(ProfileBackgroundListResponseDto(success = true))
+
+    override suspend fun deleteProfileBackground(bearer: String, deviceFingerprint: String, mediaId: String): Response<ProfileBackgroundListResponseDto> =
+      Response.success(ProfileBackgroundListResponseDto(success = true))
+
+    override suspend fun updateProfile(bearer: String, deviceFingerprint: String, body: ProfileUpdateRequestDto): Response<ProfileUpdateResponseDto> =
+      Response.success(ProfileUpdateResponseDto(success = true, username = body.username, fullName = body.fullName))
 
     override suspend fun downloadMedia(url: String): Response<ResponseBody> =
       Response.success(ByteArray(0).toResponseBody("application/octet-stream".toMediaType()))

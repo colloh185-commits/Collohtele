@@ -205,4 +205,35 @@
     <string name="cd_profile_invite">Invite friends</string>
     <string name="cd_profile_sort">Sort posts</string>
     <string name="cd_profile_avatar">Profile photo</string>
+    <string name="cd_profile_settings">Profile settings</string>
+    <string name="cd_profile_menu">Profile menu</string>
+    <string name="cd_profile_subscribers">Subscribers coming soon</string>
+
+    <!-- Owner Profile, Settings, Backgrounds & Edit Profile -->
+    <string name="profile_action_edit">Edit profile</string>
+    <string name="profile_action_share">Share profile</string>
+    <string name="profile_edit_background">Edit background</string>
+    <string name="profile_tab_posts">Posts</string>
+    <string name="profile_tab_saved">Saved</string>
+    <string name="profile_tab_reposts">Reposts</string>
+    <string name="profile_tab_locked">Locked</string>
+    <string name="profile_saved_empty">No saved posts yet</string>
+    <string name="profile_reposts_empty">No reposts yet</string>
+    <string name="profile_locked_empty">No private posts yet</string>
+    <string name="profile_settings_title">Settings</string>
+    <string name="profile_settings_logout">Log out</string>
+    <string name="profile_settings_theme">Appearance</string>
+    <string name="profile_settings_account">Account</string>
+    <string name="profile_backgrounds_title">Background photos</string>
+    <string name="profile_backgrounds_hint">Upload up to 5 photos. They crossfade every 5 seconds on your profile for everyone.</string>
+    <string name="profile_backgrounds_add">Add photos</string>
+    <string name="profile_backgrounds_empty">No background photos uploaded yet.</string>
+    <string name="profile_edit_title">Edit profile</string>
+    <string name="profile_edit_save">Save changes</string>
+    <string name="profile_change_photo">Change photo</string>
+    <string name="profile_username_cooldown_note">Username can be changed once every 2 weeks.</string>
+    <string name="feed_action_privacy">Privacy</string>
+    <string name="feed_privacy_public">Public</string>
+    <string name="feed_privacy_friends">Friends</string>
+    <string name="feed_privacy_private">Private</string>
 </resources>

@@ -1,5 +1,25 @@
+import Combine
+import PhotosUI
 import SwiftUI
 import UIKit
+
+enum TelefamIosOwnerProfileTab: String, CaseIterable, Identifiable {
+    case posts
+    case saved
+    case reposts
+    case locked
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .posts: return "Posts"
+        case .saved: return "Saved"
+        case .reposts: return "Reposts"
+        case .locked: return "Locked"
+        }
+    }
+}
 
 enum TelefamIosProfilePostFilter: String, CaseIterable, Identifiable {
     case all
@@ -55,6 +75,13 @@ struct TelefamIosUserProfile: Codable, Equatable {
     var bio: String
     var location: String
     var countryIso: String
+    var gender: String
+    var dateOfBirth: String
+    var phoneNumber: String
+    var usernameChangedAtMs: Int64
+    var nextUsernameChangeMs: Int64
+    var backgroundUrls: [String]
+    var backgrounds: [TelefamIosProfileBackgroundItem]
     var followingCount: Int64
     var followersCount: Int64
     var likesCount: Int64
@@ -64,6 +91,9 @@ struct TelefamIosUserProfile: Codable, Equatable {
     var isBlocked: Bool
     var riskScore: Double
     var posts: [TelefamIosFeedItem]
+    var savedPosts: [TelefamIosFeedItem]
+    var repostedPosts: [TelefamIosFeedItem]
+    var lockedPosts: [TelefamIosFeedItem]
 
     var relationship: TelefamRelationshipState {
         TelefamRelationshipState.compute(isFollowing: isFollowing, followsYou: followsYou)
@@ -76,6 +106,11 @@ struct TelefamIosUserProfile: Codable, Equatable {
             lhs.avatarUrl == rhs.avatarUrl &&
             lhs.bio == rhs.bio &&
             lhs.location == rhs.location &&
+            lhs.gender == rhs.gender &&
+            lhs.dateOfBirth == rhs.dateOfBirth &&
+            lhs.phoneNumber == rhs.phoneNumber &&
+            lhs.nextUsernameChangeMs == rhs.nextUsernameChangeMs &&
+            lhs.backgrounds == rhs.backgrounds &&
             lhs.followingCount == rhs.followingCount &&
             lhs.followersCount == rhs.followersCount &&
             lhs.likesCount == rhs.likesCount &&
@@ -83,19 +118,41 @@ struct TelefamIosUserProfile: Codable, Equatable {
             lhs.followsYou == rhs.followsYou &&
             lhs.isOwner == rhs.isOwner &&
             lhs.isBlocked == rhs.isBlocked &&
-            lhs.posts.count == rhs.posts.count
+            lhs.posts.count == rhs.posts.count &&
+            lhs.savedPosts.count == rhs.savedPosts.count &&
+            lhs.repostedPosts.count == rhs.repostedPosts.count &&
+            lhs.lockedPosts.count == rhs.lockedPosts.count
+    }
+
+    func posts(for ownerTab: TelefamIosOwnerProfileTab) -> [TelefamIosFeedItem] {
+        guard isOwner else {
+            return posts.filter { $0.privacy.lowercased() != "private" }
+        }
+        switch ownerTab {
+        case .posts:
+            return posts.filter { $0.privacy.lowercased() != "private" }
+        case .saved:
+            return savedPosts
+        case .reposts:
+            return repostedPosts
+        case .locked:
+            if !lockedPosts.isEmpty { return lockedPosts }
+            return posts.filter { $0.privacy.lowercased() == "private" }
+        }
     }
 
     func filteredAndSortedPosts(
+        ownerTab: TelefamIosOwnerProfileTab,
         filter: TelefamIosProfilePostFilter,
         sort: TelefamIosProfilePostSort
     ) -> [TelefamIosFeedItem] {
+        let base = posts(for: ownerTab)
         let filtered: [TelefamIosFeedItem]
         switch filter {
-        case .all: filtered = posts
-        case .videos: filtered = posts.filter { $0.mode == "video" }
-        case .photos: filtered = posts.filter { $0.mode == "photos" }
-        case .text: filtered = posts.filter { $0.mode == "text" }
+        case .all: filtered = base
+        case .videos: filtered = base.filter { $0.mode == "video" }
+        case .photos: filtered = base.filter { $0.mode == "photos" }
+        case .text: filtered = base.filter { $0.mode == "text" }
         }
         switch sort {
         case .latest:
@@ -117,6 +174,13 @@ private struct UserProfileAPIResponse: Codable {
     let bio: String?
     let location: String?
     let countryIso: String?
+    let gender: String?
+    let dateOfBirth: String?
+    let phoneNumber: String?
+    let usernameChangedAtMs: Int64?
+    let nextUsernameChangeMs: Int64?
+    let backgroundUrls: [String]?
+    let backgrounds: [TelefamIosProfileBackgroundItem]?
     let followingCount: Int64?
     let followersCount: Int64?
     let likesCount: Int64?
@@ -126,6 +190,9 @@ private struct UserProfileAPIResponse: Codable {
     let isBlocked: Bool?
     let riskScore: Double?
     let posts: [TelefamIosFeedItem]?
+    let savedPosts: [TelefamIosFeedItem]?
+    let repostedPosts: [TelefamIosFeedItem]?
+    let lockedPosts: [TelefamIosFeedItem]?
 
     enum CodingKeys: String, CodingKey {
         case success
@@ -136,6 +203,13 @@ private struct UserProfileAPIResponse: Codable {
         case bio
         case location
         case countryIso = "country_iso"
+        case gender
+        case dateOfBirth = "date_of_birth"
+        case phoneNumber = "phone_number"
+        case usernameChangedAtMs = "username_changed_at_ms"
+        case nextUsernameChangeMs = "next_username_change_ms"
+        case backgroundUrls = "background_urls"
+        case backgrounds
         case followingCount = "following_count"
         case followersCount = "followers_count"
         case likesCount = "likes_count"
@@ -145,6 +219,9 @@ private struct UserProfileAPIResponse: Codable {
         case isBlocked = "is_blocked"
         case riskScore = "risk_score"
         case posts
+        case savedPosts = "saved_posts"
+        case repostedPosts = "reposted_posts"
+        case lockedPosts = "locked_posts"
     }
 }
 
@@ -228,6 +305,13 @@ final class TelefamIosProfileStore: ObservableObject {
             bio: ownerFlag ? sessionStore.bio : "",
             location: contactMatch?.location ?? (ownerFlag ? sessionStore.location : ""),
             countryIso: contactMatch?.countryIso ?? "",
+            gender: "",
+            dateOfBirth: "",
+            phoneNumber: ownerFlag ? sessionStore.phoneDisplay : "",
+            usernameChangedAtMs: 0,
+            nextUsernameChangeMs: 0,
+            backgroundUrls: [],
+            backgrounds: [],
             followingCount: 0,
             followersCount: 0,
             likesCount: 0,
@@ -236,7 +320,10 @@ final class TelefamIosProfileStore: ObservableObject {
             isOwner: ownerFlag,
             isBlocked: false,
             riskScore: contactMatch?.riskScore ?? 0,
-            posts: []
+            posts: [],
+            savedPosts: [],
+            repostedPosts: [],
+            lockedPosts: []
         )
 
         if let cached = Self.loadCachedProfile(userId: resolvedId) {
@@ -294,6 +381,14 @@ final class TelefamIosProfileStore: ObservableObject {
            let decoded = try? JSONDecoder().decode(UserProfileAPIResponse.self, from: data),
            decoded.success {
             let finalId = (decoded.userId?.isEmpty == false) ? decoded.userId! : targetId
+            let resolvedBgs: [TelefamIosProfileBackgroundItem] = {
+                if let bgs = decoded.backgrounds, !bgs.isEmpty {
+                    return bgs
+                }
+                return (decoded.backgroundUrls ?? []).enumerated().map { idx, u in
+                    TelefamIosProfileBackgroundItem(mediaId: "bg_\(idx)", url: u)
+                }
+            }()
             profile = TelefamIosUserProfile(
                 userId: finalId,
                 fullName: decoded.fullName ?? profile.fullName,
@@ -302,6 +397,13 @@ final class TelefamIosProfileStore: ObservableObject {
                 bio: decoded.bio ?? profile.bio,
                 location: decoded.location ?? profile.location,
                 countryIso: decoded.countryIso ?? profile.countryIso,
+                gender: decoded.gender ?? profile.gender,
+                dateOfBirth: decoded.dateOfBirth ?? profile.dateOfBirth,
+                phoneNumber: decoded.phoneNumber ?? profile.phoneNumber,
+                usernameChangedAtMs: decoded.usernameChangedAtMs ?? profile.usernameChangedAtMs,
+                nextUsernameChangeMs: decoded.nextUsernameChangeMs ?? profile.nextUsernameChangeMs,
+                backgroundUrls: decoded.backgroundUrls ?? resolvedBgs.map(\.url),
+                backgrounds: resolvedBgs,
                 followingCount: decoded.followingCount ?? 0,
                 followersCount: decoded.followersCount ?? 0,
                 likesCount: decoded.likesCount ?? 0,
@@ -310,12 +412,21 @@ final class TelefamIosProfileStore: ObservableObject {
                 isOwner: decoded.isOwner ?? profile.isOwner,
                 isBlocked: decoded.isBlocked ?? false,
                 riskScore: decoded.riskScore ?? 0,
-                posts: decoded.posts ?? []
+                posts: decoded.posts ?? [],
+                savedPosts: decoded.savedPosts ?? [],
+                repostedPosts: decoded.repostedPosts ?? [],
+                lockedPosts: decoded.lockedPosts ?? []
             )
             persistProfileCache()
         } else if let cached = Self.loadCachedProfile(userId: targetId) {
             profile = cached
         }
+    }
+
+    func applyUpdatedBackgrounds(_ bgs: [TelefamIosProfileBackgroundItem]) {
+        profile.backgrounds = Array(bgs.prefix(5))
+        profile.backgroundUrls = profile.backgrounds.map(\.url)
+        persistProfileCache()
     }
 
     func toggleFollow() {
@@ -561,6 +672,7 @@ struct TelefamIosProfileView: View {
     var onTapHashtag: (String, TelefamIosPostMode) -> Void
     var onTapAudio: (TelefamIosSongTrack, TelefamIosPostMode) -> Void
 
+    @State private var activeOwnerTab: TelefamIosOwnerProfileTab = .posts
     @State private var selectedFilter: TelefamIosProfilePostFilter = .all
     @State private var selectedSort: TelefamIosProfilePostSort = .latest
     @State private var viewerPosts: [TelefamIosFeedItem]? = nil
@@ -569,6 +681,11 @@ struct TelefamIosProfileView: View {
     @State private var showReportCategorySheet: Bool = false
     @State private var selectedReportCategory: String? = nil
     @State private var reportDetails: String = ""
+    @State private var showSettingsSheet: Bool = false
+    @State private var showBackgroundsSheet: Bool = false
+    @State private var showEditProfileSheet: Bool = false
+    @State private var heroIndex: Int = 0
+    private let heroCycleTimer = Timer.publish(every: 5.0, on: .main, in: .common).autoconnect()
 
     init(
         targetUserId: String,
@@ -614,11 +731,18 @@ struct TelefamIosProfileView: View {
 
     var body: some View {
         let p = profileStore.profile
-        let filteredPosts = p.filteredAndSortedPosts(filter: selectedFilter, sort: selectedSort)
+        let showHeroBanner = !p.isBlocked && (p.isOwner || !p.backgrounds.isEmpty)
+        let filteredPosts = p.filteredAndSortedPosts(
+            ownerTab: activeOwnerTab,
+            filter: selectedFilter,
+            sort: selectedSort
+        )
 
         ZStack(alignment: .bottom) {
             VStack(spacing: 0) {
-                topBar(profile: p)
+                if !showHeroBanner {
+                    topBar(profile: p)
+                }
 
                 GeometryReader { geo in
                     let gridColumnsCount = geo.size.width >= 960 ? 5 : (geo.size.width >= 680 ? 4 : 3)
@@ -626,29 +750,63 @@ struct TelefamIosProfileView: View {
 
                     ScrollView {
                         VStack(spacing: 0) {
-                            profileHeader(profile: p)
+                            profileHeader(profile: p, showHeroBanner: showHeroBanner)
 
-                            // Posts Tab Strip matching Alex Mwangi screenshot
+                            // Owner 4 Tabs (Posts <count>, Saved, Reposts, Locked) or Visitor Posts Tab
                             VStack(spacing: 0) {
-                                HStack {
-                                    Spacer()
-                                    VStack(spacing: 10) {
-                                        HStack(spacing: 6) {
-                                            PostsGrid2x2SvgIcon(color: TelefamPalette.textPrimary(colorScheme))
-                                                .frame(width: 17, height: 17)
-                                            Text("Posts")
-                                                .font(.system(size: 14, weight: .bold))
-                                                .foregroundColor(TelefamPalette.textPrimary(colorScheme))
+                                if p.isOwner {
+                                    HStack(spacing: 0) {
+                                        ForEach(TelefamIosOwnerProfileTab.allCases) { tab in
+                                            let selected = activeOwnerTab == tab
+                                            let tabColor = selected ? TelefamPalette.textPrimary(colorScheme) : TelefamPalette.textMuted(colorScheme)
+                                            Button {
+                                                activeOwnerTab = tab
+                                            } label: {
+                                                VStack(spacing: 10) {
+                                                    HStack(spacing: 5) {
+                                                        ownerTabIcon(tab: tab, color: tabColor)
+                                                            .frame(width: 15, height: 15)
+                                                        Text(
+                                                            tab == .posts
+                                                                ? "Posts \(formatTelefamProfileMetricCount(Int64(p.posts(for: .posts).count)))"
+                                                                : tab.label
+                                                        )
+                                                        .font(.system(size: 13.5, weight: selected ? .bold : .medium))
+                                                        .foregroundColor(tabColor)
+                                                        .lineLimit(1)
+                                                    }
+                                                    Rectangle()
+                                                        .fill(selected ? accentCrimson : Color.clear)
+                                                        .frame(height: 2.5)
+                                                }
+                                                .frame(maxWidth: .infinity)
+                                                .padding(.top, 14)
+                                            }
+                                            .buttonStyle(.plain)
                                         }
-                                        Rectangle()
-                                            .fill(accentCrimson)
-                                            .frame(width: 96, height: 2.5)
                                     }
-                                    Spacer()
-                                    Spacer()
-                                    Spacer()
+                                    .padding(.horizontal, 6)
+                                } else {
+                                    HStack {
+                                        Spacer()
+                                        VStack(spacing: 10) {
+                                            HStack(spacing: 6) {
+                                                PostsGrid2x2SvgIcon(color: TelefamPalette.textPrimary(colorScheme))
+                                                    .frame(width: 17, height: 17)
+                                                Text("Posts")
+                                                    .font(.system(size: 14, weight: .bold))
+                                                    .foregroundColor(TelefamPalette.textPrimary(colorScheme))
+                                            }
+                                            Rectangle()
+                                                .fill(accentCrimson)
+                                                .frame(width: 96, height: 2.5)
+                                        }
+                                        Spacer()
+                                        Spacer()
+                                        Spacer()
+                                    }
+                                    .padding(.top, 18)
                                 }
-                                .padding(.top, 18)
 
                                 Divider().background(TelefamPalette.border(colorScheme))
                             }
@@ -709,10 +867,30 @@ struct TelefamIosProfileView: View {
                                 }
                             } else if filteredPosts.isEmpty {
                                 VStack(spacing: 8) {
-                                    Text("No posts yet")
+                                    let emptyTitle: String = {
+                                        if p.isBlocked { return "Blocked account" }
+                                        if !p.isOwner { return "No posts yet" }
+                                        switch activeOwnerTab {
+                                        case .posts: return "No posts yet"
+                                        case .saved: return "No saved posts"
+                                        case .reposts: return "No reposts yet"
+                                        case .locked: return "No locked posts"
+                                        }
+                                    }()
+                                    let emptyBody: String = {
+                                        if p.isBlocked { return "Unblock this account to view their posts." }
+                                        if !p.isOwner { return "Published photos, text cards, and videos appear here." }
+                                        switch activeOwnerTab {
+                                        case .posts: return "Published photos, text cards, and videos appear here."
+                                        case .saved: return "Bookmarked posts you save in feeds will appear here."
+                                        case .reposts: return "Posts you repost will appear here."
+                                        case .locked: return "Posts you switch to Private appear safely locked here."
+                                        }
+                                    }()
+                                    Text(emptyTitle)
                                         .font(.system(size: 15.5, weight: .bold))
                                         .foregroundColor(TelefamPalette.textPrimary(colorScheme))
-                                    Text(p.isBlocked ? "Unblock this account to view their posts." : "Published photos, text cards, and videos appear here.")
+                                    Text(emptyBody)
                                         .font(.system(size: 13))
                                         .foregroundColor(TelefamPalette.textMuted(colorScheme))
                                         .multilineTextAlignment(.center)
@@ -724,6 +902,7 @@ struct TelefamIosProfileView: View {
                                     ForEach(Array(filteredPosts.enumerated()), id: \.element.postId) { idx, post in
                                         ProfilePostGridCell(
                                             post: post,
+                                            isOwner: p.isOwner,
                                             feedStore: feedStore,
                                             accentCrimson: accentCrimson
                                         ) {
@@ -820,6 +999,31 @@ struct TelefamIosProfileView: View {
             }
             .preferredColorScheme(themeMode.preferredColorScheme)
         }
+        .sheet(isPresented: $showSettingsSheet) {
+            OwnerProfileSettingsSheet(
+                sessionStore: sessionStore,
+                themeMode: $themeMode,
+                username: p.username,
+                email: sessionStore.email
+            )
+            .preferredColorScheme(themeMode.preferredColorScheme)
+        }
+        .sheet(isPresented: $showBackgroundsSheet) {
+            EditBackgroundsSheet(
+                sessionStore: sessionStore,
+                profileStore: profileStore,
+                feedStore: feedStore
+            )
+            .preferredColorScheme(themeMode.preferredColorScheme)
+        }
+        .fullScreenCover(isPresented: $showEditProfileSheet) {
+            EditProfileSheet(
+                sessionStore: sessionStore,
+                profileStore: profileStore,
+                feedStore: feedStore
+            )
+            .preferredColorScheme(themeMode.preferredColorScheme)
+        }
         .fullScreenCover(isPresented: Binding(get: { viewerPosts != nil }, set: { if !$0 { viewerPosts = nil } })) {
             if let vPosts = viewerPosts {
                 TelefamIosFeedView(
@@ -853,6 +1057,16 @@ struct TelefamIosProfileView: View {
                     }
                 )
                 .preferredColorScheme(themeMode.preferredColorScheme)
+            }
+        }
+        .onReceive(heroCycleTimer) { _ in
+            let count = profileStore.profile.backgrounds.count
+            if count > 1 {
+                withAnimation(.easeInOut(duration: 0.7)) {
+                    heroIndex = (heroIndex + 1) % count
+                }
+            } else {
+                heroIndex = 0
             }
         }
     }
@@ -924,52 +1138,187 @@ struct TelefamIosProfileView: View {
         .frame(height: 52)
     }
 
-    private func profileHeader(profile: TelefamIosUserProfile) -> some View {
-        VStack(spacing: 0) {
-            // Gradient-ringed Avatar matching Alex Mwangi reference
-            ZStack {
-                Circle()
-                    .stroke(
-                        LinearGradient(
-                            colors: [
-                                Color(hex: 0xFF7A00),
-                                Color(hex: 0xE61E62),
-                                Color(hex: 0x9C27B0)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: 2.5
-                    )
-                    .frame(width: 98, height: 98)
+    private func profileHeader(profile: TelefamIosUserProfile, showHeroBanner: Bool) -> some View {
+        let bgColor = TelefamPalette.background(colorScheme)
+        let bgs = profile.backgrounds
+        let safeIdx = bgs.isEmpty ? 0 : (heroIndex % bgs.count)
 
-                if !profile.avatarUrl.isEmpty {
-                    TelefamIosRemoteImage(
-                        urlString: feedStore.authorizedURLString(profile.avatarUrl),
-                        bearerToken: sessionStore.sessionToken,
-                        deviceFingerprint: sessionStore.deviceFingerprint,
-                        fallbackInitials: initials(from: profile)
-                    )
-                    .frame(width: 90, height: 90)
-                    .clipShape(Circle())
-                } else {
-                    Circle()
-                        .fill(TelefamPalette.blush(colorScheme))
-                        .frame(width: 90, height: 90)
-                        .overlay(
-                            Text(initials(from: profile))
-                                .font(.system(size: 28, weight: .bold))
-                                .foregroundColor(accentCrimson)
+        return VStack(spacing: 0) {
+            if showHeroBanner {
+                ZStack(alignment: .bottom) {
+                    // Multi-background auto-crossfade + smooth bottom fade matching reference
+                    ZStack(alignment: .top) {
+                        if bgs.isEmpty {
+                            LinearGradient(
+                                colors: [Color(hex: 0x35101A), Color(hex: 0x161922), bgColor],
+                                startPoint: .topLeading,
+                                endPoint: .bottom
+                            )
+                        } else {
+                            let bg = bgs[safeIdx]
+                            TelefamIosRemoteImage(
+                                urlString: feedStore.authorizedURLString(bg.url),
+                                bearerToken: sessionStore.sessionToken,
+                                deviceFingerprint: sessionStore.deviceFingerprint,
+                                fallbackInitials: ""
+                            )
+                            .id(bg.mediaId)
+                            .frame(maxWidth: .infinity, minHeight: 232, maxHeight: 232)
+                            .clipped()
+                            .transition(.opacity)
+                        }
+
+                        // Top dark scrim
+                        LinearGradient(
+                            colors: [Color.black.opacity(0.62), .clear],
+                            startPoint: .top,
+                            endPoint: .center
                         )
+                        .frame(height: 120)
+
+                        // Bottom smooth fade into page background
+                        VStack {
+                            Spacer()
+                            LinearGradient(
+                                colors: [.clear, bgColor.opacity(0.68), bgColor],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                            .frame(height: 112)
+                        }
+
+                        // Top overlay controls + Edit background pill
+                        VStack {
+                            HStack(spacing: 6) {
+                                if !isEmbeddedOwnProfileTab {
+                                    Button(action: onBack) {
+                                        Image(systemName: "arrow.left")
+                                            .font(.system(size: 17, weight: .bold))
+                                            .foregroundColor(.white)
+                                            .frame(width: 40, height: 40)
+                                            .background(Color.black.opacity(0.38))
+                                            .clipShape(Circle())
+                                    }
+                                } else {
+                                    Spacer().frame(width: 8, height: 40)
+                                }
+
+                                Text(profile.fullName.isEmpty ? "@\(profile.username.isEmpty ? profile.userId : profile.username)" : profile.fullName)
+                                    .font(.system(size: 18, weight: .bold))
+                                    .foregroundColor(.white)
+                                    .shadow(color: .black.opacity(0.5), radius: 3, y: 1)
+                                    .lineLimit(1)
+
+                                Spacer()
+
+                                if profile.isOwner {
+                                    // Crown -> Subscribers (Coming soon)
+                                    Button {
+                                        profileStore.showToast("Subscribers — Coming soon")
+                                    } label: {
+                                        SubscribeCrownSvgIcon(color: .white)
+                                            .frame(width: 18, height: 18)
+                                            .frame(width: 38, height: 38)
+                                            .background(Color.black.opacity(0.38))
+                                            .clipShape(Circle())
+                                    }
+
+                                    // Gear -> Settings (Log out first)
+                                    Button {
+                                        showSettingsSheet = true
+                                    } label: {
+                                        GearProfileSvgIcon(color: .white)
+                                            .frame(width: 18, height: 18)
+                                            .frame(width: 38, height: 38)
+                                            .background(Color.black.opacity(0.38))
+                                            .clipShape(Circle())
+                                    }
+
+                                    // Three horizontal dashes -> Menu (Coming soon)
+                                    Button {
+                                        profileStore.showToast("Menu — Coming soon")
+                                    } label: {
+                                        MenuDashesSvgIcon(color: .white)
+                                            .frame(width: 18, height: 18)
+                                            .frame(width: 38, height: 38)
+                                            .background(Color.black.opacity(0.38))
+                                            .clipShape(Circle())
+                                    }
+                                } else {
+                                    Button(action: presentInviteShare) {
+                                        InviteTBadgeSvgIcon(badgeColor: accentCrimson)
+                                            .frame(width: 38, height: 38)
+                                    }
+                                    Menu {
+                                        Button("Copy link") {
+                                            UIPasteboard.general.string = profileStore.shareProfileURL().absoluteString
+                                            profileStore.showToast("Link copied")
+                                        }
+                                        Button("Invite friends") { presentInviteShare() }
+                                        if profile.isBlocked {
+                                            Button("Unblock") { Task { await profileStore.unblockUser() } }
+                                        } else {
+                                            Button("Block", role: .destructive) { Task { await profileStore.blockUser() } }
+                                        }
+                                        Button("Report", role: .destructive) { showReportCategorySheet = true }
+                                    } label: {
+                                        Image(systemName: "ellipsis")
+                                            .font(.system(size: 16, weight: .bold))
+                                            .foregroundColor(.white)
+                                            .frame(width: 38, height: 38)
+                                            .background(Color.black.opacity(0.38))
+                                            .clipShape(Circle())
+                                    }
+                                }
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.top, 10)
+
+                            Spacer()
+
+                            if profile.isOwner {
+                                HStack {
+                                    Spacer()
+                                    Button {
+                                        showBackgroundsSheet = true
+                                    } label: {
+                                        HStack(spacing: 6) {
+                                            CameraBgSvgIcon(color: .white)
+                                                .frame(width: 15, height: 15)
+                                            Text(bgs.isEmpty ? "Edit background" : "Edit background (\(bgs.count)/5)")
+                                                .font(.system(size: 12.5, weight: .semibold))
+                                                .foregroundColor(.white)
+                                        }
+                                        .padding(.horizontal, 13)
+                                        .frame(height: 34)
+                                        .background(Color.black.opacity(0.56))
+                                        .clipShape(Capsule())
+                                        .overlay(Capsule().stroke(Color.white.opacity(0.28), lineWidth: 1))
+                                    }
+                                }
+                                .padding(.horizontal, 14)
+                                .padding(.bottom, 64)
+                            }
+                        }
+                    }
+                    .frame(height: 232)
+                    .clipped()
+
+                    // Overlapping gradient-ringed Avatar matching Chrome screenshot
+                    avatarRingView(profile: profile)
+                        .offset(y: 40)
                 }
+                .padding(.bottom, 44)
+            } else {
+                avatarRingView(profile: profile)
+                    .padding(.top, 6)
             }
-            .padding(.top, 6)
 
             Text("@\(profile.username.isEmpty ? profile.userId : profile.username)")
                 .font(.system(size: 15.5, weight: .bold))
                 .foregroundColor(TelefamPalette.textPrimary(colorScheme))
                 .lineLimit(1)
-                .padding(.top, 10)
+                .padding(.top, 8)
 
             // Stats Row: Following | Followers | Likes
             HStack(spacing: 0) {
@@ -1075,28 +1424,36 @@ struct TelefamIosProfileView: View {
                 .padding(.horizontal, 18)
                 .padding(.top, 16)
             } else {
+                // Owner Actions matching Chrome reference: [Pencil Edit profile] + [Share nodes Share profile]
                 HStack(spacing: 10) {
-                    Button { presentInviteShare() } label: {
-                        Text("Invite friends")
-                            .font(.system(size: 13.5, weight: .semibold))
-                            .foregroundColor(.white)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 40)
-                            .background(accentCrimson)
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                    Button { showEditProfileSheet = true } label: {
+                        HStack(spacing: 7) {
+                            EditPencilSvgIcon(color: .white)
+                                .frame(width: 15, height: 15)
+                            Text("Edit profile")
+                                .font(.system(size: 13.5, weight: .semibold))
+                                .foregroundColor(.white)
+                                .lineLimit(1)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 42)
+                        .background(accentCrimson)
+                        .clipShape(RoundedRectangle(cornerRadius: 21))
                     }
-                    Button {
-                        UIPasteboard.general.string = profileStore.shareProfileURL().absoluteString
-                        profileStore.showToast("Link copied")
-                    } label: {
-                        Text("Copy link")
-                            .font(.system(size: 13.5, weight: .semibold))
-                            .foregroundColor(TelefamPalette.textPrimary(colorScheme))
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 40)
-                            .background(TelefamPalette.surface(colorScheme))
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(TelefamPalette.border(colorScheme), lineWidth: 1))
+                    Button { presentInviteShare() } label: {
+                        HStack(spacing: 7) {
+                            ShareNodesSvgIcon(color: TelefamPalette.textPrimary(colorScheme))
+                                .frame(width: 15, height: 15)
+                            Text("Share profile")
+                                .font(.system(size: 13.5, weight: .semibold))
+                                .foregroundColor(TelefamPalette.textPrimary(colorScheme))
+                                .lineLimit(1)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 42)
+                        .background(TelefamPalette.surface(colorScheme))
+                        .clipShape(RoundedRectangle(cornerRadius: 21))
+                        .overlay(RoundedRectangle(cornerRadius: 21).stroke(TelefamPalette.border(colorScheme), lineWidth: 1))
                     }
                 }
                 .frame(maxWidth: 380)
@@ -1124,8 +1481,61 @@ struct TelefamIosProfileView: View {
                         .foregroundColor(TelefamPalette.textMuted(colorScheme))
                         .lineLimit(1)
                 }
-                .padding(.top, 6)
+                .padding(.top, 8)
             }
+        }
+    }
+
+    private func avatarRingView(profile: TelefamIosUserProfile) -> some View {
+        ZStack {
+            Circle()
+                .stroke(
+                    LinearGradient(
+                        colors: [
+                            Color(hex: 0xFF7A00),
+                            Color(hex: 0xE61E62),
+                            Color(hex: 0x9C27B0)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 2.8
+                )
+                .frame(width: 98, height: 98)
+
+            if !profile.avatarUrl.isEmpty {
+                TelefamIosRemoteImage(
+                    urlString: feedStore.authorizedURLString(profile.avatarUrl),
+                    bearerToken: sessionStore.sessionToken,
+                    deviceFingerprint: sessionStore.deviceFingerprint,
+                    fallbackInitials: initials(from: profile)
+                )
+                .frame(width: 90, height: 90)
+                .clipShape(Circle())
+            } else {
+                Circle()
+                    .fill(TelefamPalette.blush(colorScheme))
+                    .frame(width: 90, height: 90)
+                    .overlay(
+                        Text(initials(from: profile))
+                            .font(.system(size: 28, weight: .bold))
+                            .foregroundColor(accentCrimson)
+                    )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func ownerTabIcon(tab: TelefamIosOwnerProfileTab, color: Color) -> some View {
+        switch tab {
+        case .posts:
+            PostsGrid2x2SvgIcon(color: color)
+        case .saved:
+            BookmarkTabSvgIcon(color: color)
+        case .reposts:
+            RepostTabSvgIcon(color: color)
+        case .locked:
+            LockTabSvgIcon(color: color)
         }
     }
 
@@ -1196,6 +1606,7 @@ struct TelefamIosProfileView: View {
 
 private struct ProfilePostGridCell: View {
     let post: TelefamIosFeedItem
+    let isOwner: Bool
     @ObservedObject var feedStore: TelefamIosFeedStore
     let accentCrimson: Color
     let onTap: () -> Void
@@ -1235,6 +1646,28 @@ private struct ProfilePostGridCell: View {
                     startPoint: .center,
                     endPoint: .bottom
                 )
+
+                if isOwner && post.privacy.lowercased() != "public" && !post.privacy.isEmpty {
+                    VStack {
+                        HStack {
+                            Spacer()
+                            Group {
+                                if post.privacy.lowercased() == "private" {
+                                    LockTabSvgIcon(color: .white)
+                                        .frame(width: 12, height: 12)
+                                } else {
+                                    FriendsPrivacySvgIcon(color: .white)
+                                        .frame(width: 12, height: 12)
+                                }
+                            }
+                            .padding(5)
+                            .background(Color.black.opacity(0.62))
+                            .clipShape(Circle())
+                            .padding(6)
+                        }
+                        Spacer()
+                    }
+                }
 
                 HStack(spacing: 4) {
                     PlayOutlineSvgIcon()
@@ -1520,5 +1953,942 @@ private struct PlayOutlineSvgIcon: View {
             p.closeSubpath()
             ctx.stroke(p, with: .color(.white), style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
         }
+    }
+}
+
+private struct GearProfileSvgIcon: View {
+    let color: Color
+    var body: some View {
+        Canvas { ctx, size in
+            let w = size.width
+            let h = size.height
+            let cx = w * 0.5
+            let cy = h * 0.5
+            let stroke = StrokeStyle(lineWidth: 1.7, lineCap: .round, lineJoin: .round)
+            ctx.stroke(Path(ellipseIn: CGRect(x: cx - w * 0.16, y: cy - h * 0.16, width: w * 0.32, height: h * 0.32)), with: .color(color), style: stroke)
+            for i in 0..<8 {
+                let a = Double(i) * (.pi / 4.0)
+                var tooth = Path()
+                tooth.move(to: CGPoint(x: cx + CGFloat(cos(a)) * w * 0.26, y: cy + CGFloat(sin(a)) * h * 0.26))
+                tooth.addLine(to: CGPoint(x: cx + CGFloat(cos(a)) * w * 0.40, y: cy + CGFloat(sin(a)) * h * 0.40))
+                ctx.stroke(tooth, with: .color(color), style: StrokeStyle(lineWidth: 2.0, lineCap: .round))
+            }
+        }
+    }
+}
+
+private struct MenuDashesSvgIcon: View {
+    let color: Color
+    var body: some View {
+        Canvas { ctx, size in
+            let w = size.width
+            let h = size.height
+            let stroke = StrokeStyle(lineWidth: 2.0, lineCap: .round)
+            for yFrac in [0.28, 0.50, 0.72] {
+                var line = Path()
+                line.move(to: CGPoint(x: w * 0.16, y: h * yFrac))
+                line.addLine(to: CGPoint(x: w * 0.84, y: h * yFrac))
+                ctx.stroke(line, with: .color(color), style: stroke)
+            }
+        }
+    }
+}
+
+private struct CameraBgSvgIcon: View {
+    let color: Color
+    var body: some View {
+        Canvas { ctx, size in
+            let w = size.width
+            let h = size.height
+            let stroke = StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round)
+            ctx.stroke(Path(roundedRect: CGRect(x: w * 0.10, y: h * 0.26, width: w * 0.80, height: h * 0.58), cornerRadius: w * 0.12), with: .color(color), style: stroke)
+            var top = Path()
+            top.move(to: CGPoint(x: w * 0.34, y: h * 0.26))
+            top.addLine(to: CGPoint(x: w * 0.40, y: h * 0.14))
+            top.addLine(to: CGPoint(x: w * 0.60, y: h * 0.14))
+            top.addLine(to: CGPoint(x: w * 0.66, y: h * 0.26))
+            ctx.stroke(top, with: .color(color), style: stroke)
+            ctx.stroke(Path(ellipseIn: CGRect(x: w * 0.34, y: h * 0.39, width: w * 0.32, height: h * 0.32)), with: .color(color), style: stroke)
+        }
+    }
+}
+
+private struct EditPencilSvgIcon: View {
+    let color: Color
+    var body: some View {
+        Canvas { ctx, size in
+            let w = size.width
+            let h = size.height
+            let stroke = StrokeStyle(lineWidth: 1.7, lineCap: .round, lineJoin: .round)
+            var p = Path()
+            p.move(to: CGPoint(x: w * 0.16, y: h * 0.84))
+            p.addLine(to: CGPoint(x: w * 0.22, y: h * 0.62))
+            p.addLine(to: CGPoint(x: w * 0.72, y: h * 0.12))
+            p.addLine(to: CGPoint(x: w * 0.88, y: h * 0.28))
+            p.addLine(to: CGPoint(x: w * 0.38, y: h * 0.78))
+            p.closeSubpath()
+            ctx.stroke(p, with: .color(color), style: stroke)
+        }
+    }
+}
+
+private struct ShareNodesSvgIcon: View {
+    let color: Color
+    var body: some View {
+        Canvas { ctx, size in
+            let w = size.width
+            let h = size.height
+            let stroke = StrokeStyle(lineWidth: 1.7, lineCap: .round, lineJoin: .round)
+            var l1 = Path()
+            l1.move(to: CGPoint(x: w * 0.28, y: h * 0.50))
+            l1.addLine(to: CGPoint(x: w * 0.70, y: h * 0.24))
+            var l2 = Path()
+            l2.move(to: CGPoint(x: w * 0.28, y: h * 0.50))
+            l2.addLine(to: CGPoint(x: w * 0.70, y: h * 0.76))
+            ctx.stroke(l1, with: .color(color), style: stroke)
+            ctx.stroke(l2, with: .color(color), style: stroke)
+            for (cx, cy) in [(0.22, 0.50), (0.76, 0.20), (0.76, 0.80)] {
+                ctx.fill(Path(ellipseIn: CGRect(x: w * cx - w * 0.10, y: h * cy - h * 0.10, width: w * 0.20, height: h * 0.20)), with: .color(color))
+            }
+        }
+    }
+}
+
+private struct BookmarkTabSvgIcon: View {
+    let color: Color
+    var body: some View {
+        Canvas { ctx, size in
+            let w = size.width
+            let h = size.height
+            var p = Path()
+            p.move(to: CGPoint(x: w * 0.22, y: h * 0.14))
+            p.addLine(to: CGPoint(x: w * 0.78, y: h * 0.14))
+            p.addLine(to: CGPoint(x: w * 0.78, y: h * 0.88))
+            p.addLine(to: CGPoint(x: w * 0.50, y: h * 0.66))
+            p.addLine(to: CGPoint(x: w * 0.22, y: h * 0.88))
+            p.closeSubpath()
+            ctx.stroke(p, with: .color(color), style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
+        }
+    }
+}
+
+private struct RepostTabSvgIcon: View {
+    let color: Color
+    var body: some View {
+        Canvas { ctx, size in
+            let w = size.width
+            let h = size.height
+            let stroke = StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round)
+            var top = Path()
+            top.move(to: CGPoint(x: w * 0.16, y: h * 0.36))
+            top.addLine(to: CGPoint(x: w * 0.76, y: h * 0.36))
+            top.addLine(to: CGPoint(x: w * 0.62, y: h * 0.20))
+            var bot = Path()
+            bot.move(to: CGPoint(x: w * 0.84, y: h * 0.64))
+            bot.addLine(to: CGPoint(x: w * 0.24, y: h * 0.64))
+            bot.addLine(to: CGPoint(x: w * 0.38, y: h * 0.80))
+            ctx.stroke(top, with: .color(color), style: stroke)
+            ctx.stroke(bot, with: .color(color), style: stroke)
+        }
+    }
+}
+
+private struct LockTabSvgIcon: View {
+    let color: Color
+    var body: some View {
+        Canvas { ctx, size in
+            let w = size.width
+            let h = size.height
+            let stroke = StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round)
+            ctx.stroke(Path(roundedRect: CGRect(x: w * 0.20, y: h * 0.44, width: w * 0.60, height: h * 0.44), cornerRadius: w * 0.10), with: .color(color), style: stroke)
+            var shackle = Path()
+            shackle.move(to: CGPoint(x: w * 0.32, y: h * 0.44))
+            shackle.addLine(to: CGPoint(x: w * 0.32, y: h * 0.30))
+            shackle.addCurve(to: CGPoint(x: w * 0.68, y: h * 0.30), control1: CGPoint(x: w * 0.32, y: h * 0.12), control2: CGPoint(x: w * 0.68, y: h * 0.12))
+            shackle.addLine(to: CGPoint(x: w * 0.68, y: h * 0.44))
+            ctx.stroke(shackle, with: .color(color), style: stroke)
+        }
+    }
+}
+
+private struct FriendsPrivacySvgIcon: View {
+    let color: Color
+    var body: some View {
+        Canvas { ctx, size in
+            let w = size.width
+            let h = size.height
+            let stroke = StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round)
+            ctx.stroke(Path(ellipseIn: CGRect(x: w * 0.20, y: h * 0.18, width: w * 0.30, height: h * 0.30)), with: .color(color), style: stroke)
+            var a1 = Path()
+            a1.move(to: CGPoint(x: w * 0.12, y: h * 0.82))
+            a1.addQuadCurve(to: CGPoint(x: w * 0.58, y: h * 0.82), control: CGPoint(x: w * 0.35, y: h * 0.54))
+            ctx.stroke(a1, with: .color(color), style: stroke)
+            ctx.stroke(Path(ellipseIn: CGRect(x: w * 0.58, y: h * 0.24, width: w * 0.24, height: h * 0.24)), with: .color(color), style: stroke)
+            var a2 = Path()
+            a2.move(to: CGPoint(x: w * 0.62, y: h * 0.60))
+            a2.addQuadCurve(to: CGPoint(x: w * 0.88, y: h * 0.82), control: CGPoint(x: w * 0.78, y: h * 0.58))
+            ctx.stroke(a2, with: .color(color), style: stroke)
+        }
+    }
+}
+
+// MARK: - Owner Settings Modal (Log out STRICTLY FIRST)
+
+private struct OwnerProfileSettingsSheet: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.dismiss) private var dismiss
+
+    @ObservedObject var sessionStore: TelefamIosSessionStore
+    @Binding var themeMode: TelefamThemeMode
+    let username: String
+    let email: String
+
+    private var accentCrimson: Color {
+        colorScheme == .dark ? TelefamPalette.crimsonBright : TelefamPalette.crimson
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 16) {
+                // 1. Log out MUST appear FIRST in Settings
+                Button {
+                    dismiss()
+                    sessionStore.signOut()
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "rectangle.portrait.and.arrow.right")
+                            .font(.system(size: 16, weight: .bold))
+                        Text("Log out")
+                            .font(.system(size: 15, weight: .bold))
+                    }
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity, minHeight: 50)
+                    .background(accentCrimson)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                }
+
+                Divider().background(TelefamPalette.border(colorScheme))
+
+                // 2. Theme Toggle Row
+                Button {
+                    themeMode = themeMode.next
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Appearance")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundColor(TelefamPalette.textPrimary(colorScheme))
+                            Text(themeMode.label)
+                                .font(.system(size: 12.5))
+                                .foregroundColor(TelefamPalette.textMuted(colorScheme))
+                        }
+                        Spacer()
+                        Text("Switch theme")
+                            .font(.system(size: 12.5, weight: .bold))
+                            .foregroundColor(accentCrimson)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(accentCrimson.opacity(0.14))
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                    }
+                    .padding(14)
+                    .background(TelefamPalette.surface(colorScheme))
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(TelefamPalette.border(colorScheme), lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+
+                // 3. Account Details
+                if !username.isEmpty || !email.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Account")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(TelefamPalette.textMuted(colorScheme))
+                        if !username.isEmpty {
+                            Text("@\(username)")
+                                .font(.system(size: 14.5, weight: .semibold))
+                                .foregroundColor(TelefamPalette.textPrimary(colorScheme))
+                        }
+                        if !email.isEmpty {
+                            Text(email)
+                                .font(.system(size: 13))
+                                .foregroundColor(TelefamPalette.textMuted(colorScheme))
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(14)
+                    .background(TelefamPalette.surface(colorScheme))
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(TelefamPalette.border(colorScheme), lineWidth: 1))
+                }
+
+                Spacer()
+            }
+            .padding(20)
+            .background(TelefamPalette.background(colorScheme).ignoresSafeArea())
+            .navigationTitle("Settings")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Edit Background Photos Sheet (Up to 5 photos, SHA-256 & dHash fingerprinted)
+
+private struct EditBackgroundsSheet: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.dismiss) private var dismiss
+
+    @ObservedObject var sessionStore: TelefamIosSessionStore
+    @ObservedObject var profileStore: TelefamIosProfileStore
+    @ObservedObject var feedStore: TelefamIosFeedStore
+
+    @State private var pickedItems: [PhotosPickerItem] = []
+    @State private var isUploading: Bool = false
+    @State private var errorMessage: String? = nil
+
+    private var accentCrimson: Color {
+        colorScheme == .dark ? TelefamPalette.crimsonBright : TelefamPalette.crimson
+    }
+
+    var body: some View {
+        let backgrounds = profileStore.profile.backgrounds
+        let remainingSlots = max(0, 5 - backgrounds.count)
+
+        NavigationStack {
+            VStack(spacing: 14) {
+                Text("Upload up to 5 photos. They fade smoothly and rotate every 5 seconds for all visitors.")
+                    .font(.system(size: 13))
+                    .foregroundColor(TelefamPalette.textMuted(colorScheme))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                if isUploading {
+                    ProgressView().tint(accentCrimson)
+                }
+
+                if let err = errorMessage, !err.isEmpty {
+                    Text(err)
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundColor(accentCrimson)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                if remainingSlots > 0 {
+                    PhotosPicker(
+                        selection: $pickedItems,
+                        maxSelectionCount: remainingSlots,
+                        matching: .images
+                    ) {
+                        HStack(spacing: 8) {
+                            CameraBgSvgIcon(color: .white)
+                                .frame(width: 17, height: 17)
+                            Text("Add background photo (\(remainingSlots) left)")
+                                .font(.system(size: 14, weight: .bold))
+                        }
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity, minHeight: 46)
+                        .background(accentCrimson)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+                    .disabled(isUploading)
+                }
+
+                if backgrounds.isEmpty {
+                    Spacer()
+                    Text("No background photos uploaded yet.")
+                        .font(.system(size: 14))
+                        .foregroundColor(TelefamPalette.textMuted(colorScheme))
+                    Spacer()
+                } else {
+                    List {
+                        ForEach(Array(backgrounds.enumerated()), id: \.element.mediaId) { idx, bg in
+                            HStack(spacing: 12) {
+                                TelefamIosRemoteImage(
+                                    urlString: feedStore.authorizedURLString(bg.url),
+                                    bearerToken: sessionStore.sessionToken,
+                                    deviceFingerprint: sessionStore.deviceFingerprint,
+                                    fallbackInitials: ""
+                                )
+                                .frame(width: 82, height: 56)
+                                .clipShape(RoundedRectangle(cornerRadius: 10))
+
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Slide #\(idx + 1)")
+                                        .font(.system(size: 14, weight: .bold))
+                                        .foregroundColor(TelefamPalette.textPrimary(colorScheme))
+                                    if bg.width > 0 && bg.height > 0 {
+                                        Text("\(bg.width)x\(bg.height) · \(max(1, bg.byteSize / 1024)) KB")
+                                            .font(.system(size: 11.5))
+                                            .foregroundColor(TelefamPalette.textMuted(colorScheme))
+                                    }
+                                    if !bg.sha256Fingerprint.isEmpty || !bg.dHashFingerprint.isEmpty {
+                                        Text("SHA:\(bg.sha256Fingerprint.prefix(8)) dH:\(bg.dHashFingerprint.prefix(8))")
+                                            .font(.system(size: 10, design: .monospaced))
+                                            .foregroundColor(TelefamPalette.textMuted(colorScheme))
+                                            .lineLimit(1)
+                                    }
+                                }
+
+                                Spacer()
+
+                                if idx > 0 {
+                                    Button {
+                                        var ids = backgrounds.map(\.mediaId)
+                                        ids.swapAt(idx - 1, idx)
+                                        Task { await reorder(ids) }
+                                    } label: {
+                                        Image(systemName: "arrow.up")
+                                            .font(.system(size: 14, weight: .semibold))
+                                            .frame(width: 30, height: 30)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+
+                                if idx < backgrounds.count - 1 {
+                                    Button {
+                                        var ids = backgrounds.map(\.mediaId)
+                                        ids.swapAt(idx, idx + 1)
+                                        Task { await reorder(ids) }
+                                    } label: {
+                                        Image(systemName: "arrow.down")
+                                            .font(.system(size: 14, weight: .semibold))
+                                            .frame(width: 30, height: 30)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+
+                                Button(role: .destructive) {
+                                    Task {
+                                        isUploading = true
+                                        let res = await sessionStore.deleteProfileBackground(mediaId: bg.mediaId)
+                                        isUploading = false
+                                        if res.ok {
+                                            profileStore.applyUpdatedBackgrounds(res.backgrounds)
+                                        } else {
+                                            errorMessage = res.error
+                                        }
+                                    }
+                                } label: {
+                                    Image(systemName: "trash")
+                                        .font(.system(size: 15, weight: .semibold))
+                                        .foregroundColor(accentCrimson)
+                                        .frame(width: 32, height: 32)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .listRowBackground(TelefamPalette.surface(colorScheme))
+                        }
+                    }
+                    .listStyle(.plain)
+                }
+            }
+            .padding(18)
+            .background(TelefamPalette.background(colorScheme).ignoresSafeArea())
+            .navigationTitle("Background photos (\(backgrounds.count)/5)")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .onChange(of: pickedItems) { items in
+                guard !items.isEmpty else { return }
+                let allowed = Array(items.prefix(max(0, 5 - profileStore.profile.backgrounds.count)))
+                pickedItems = []
+                Task {
+                    isUploading = true
+                    errorMessage = nil
+                    for item in allowed {
+                        if let raw = try? await item.loadTransferable(type: Data.self),
+                           let uiImg = UIImage(data: raw),
+                           let jpeg = uiImg.jpegData(compressionQuality: 0.86) {
+                            let res = await sessionStore.uploadProfileBackground(jpegData: jpeg)
+                            if res.ok {
+                                profileStore.applyUpdatedBackgrounds(res.backgrounds)
+                            } else {
+                                errorMessage = res.error
+                                break
+                            }
+                        }
+                    }
+                    isUploading = false
+                }
+            }
+        }
+    }
+
+    private func reorder(_ ids: [String]) async {
+        isUploading = true
+        let res = await sessionStore.reorderProfileBackgrounds(mediaIds: ids)
+        isUploading = false
+        if res.ok {
+            profileStore.applyUpdatedBackgrounds(res.backgrounds)
+        } else {
+            errorMessage = res.error
+        }
+    }
+}
+
+// MARK: - Edit Profile Modal Sheet (14-day username lock + full editing + DP circular cropper)
+
+private struct EditProfileSheet: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.dismiss) private var dismiss
+
+    @ObservedObject var sessionStore: TelefamIosSessionStore
+    @ObservedObject var profileStore: TelefamIosProfileStore
+    @ObservedObject var feedStore: TelefamIosFeedStore
+
+    @State private var fullName: String = ""
+    @State private var username: String = ""
+    @State private var selectedCountry: TelefamIosCountryOption = TelefamIosCountryCatalog.defaultOption()
+    @State private var phoneDigits: String = ""
+    @State private var gender: String = "Prefer not to say"
+    @State private var dobDate: Date = Calendar.current.date(byAdding: .year, value: -20, to: Date()) ?? Date()
+    @State private var location: String = ""
+    @State private var bio: String = ""
+    @State private var avatarMediaId: String? = nil
+
+    @State private var avatarPickerItem: PhotosPickerItem? = nil
+    @State private var rawPickedImage: UIImage? = nil
+    @State private var avatarPreview: UIImage? = nil
+    @State private var cropOffset: CGSize = .zero
+    @State private var cropScale: CGFloat = 1.0
+    @State private var showCropSheet: Bool = false
+
+    @State private var showCountrySheet: Bool = false
+    @State private var countrySearch: String = ""
+    @State private var showDobPickerSheet: Bool = false
+    @State private var isSaving: Bool = false
+    @State private var validationError: String? = nil
+
+    private var accentCrimson: Color {
+        colorScheme == .dark ? TelefamPalette.crimsonBright : TelefamPalette.crimson
+    }
+
+    private var isUsernameLocked: Bool {
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        let p = profileStore.profile
+        let nextMs = p.nextUsernameChangeMs > 0
+            ? p.nextUsernameChangeMs
+            : (p.usernameChangedAtMs > 0 ? p.usernameChangedAtMs + (14 * 24 * 60 * 60 * 1000) : 0)
+        return nextMs > nowMs
+    }
+
+    private var usernameLockText: String {
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        let p = profileStore.profile
+        let nextMs = p.nextUsernameChangeMs > 0
+            ? p.nextUsernameChangeMs
+            : (p.usernameChangedAtMs > 0 ? p.usernameChangedAtMs + (14 * 24 * 60 * 60 * 1000) : 0)
+        guard nextMs > nowMs else {
+            return "Username can only be changed once every 2 weeks."
+        }
+        let remMs = nextMs - nowMs
+        let days = remMs / (24 * 60 * 60 * 1000)
+        let hours = (remMs % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000)
+        return days > 0
+            ? "Locked for \(days)d \(hours)h (once per 2 weeks)"
+            : "Locked for \(max(1, hours))h (once per 2 weeks)"
+    }
+
+    private var isoDobString: String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        f.locale = Locale(identifier: "en_US_POSIX")
+        return f.string(from: dobDate)
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    // Circular DP / Avatar Picker
+                    VStack(spacing: 8) {
+                        PhotosPicker(selection: $avatarPickerItem, matching: .images) {
+                            ZStack(alignment: .bottomTrailing) {
+                                if let img = avatarPreview {
+                                    Image(uiImage: img)
+                                        .resizable()
+                                        .scaledToFill()
+                                        .frame(width: 92, height: 92)
+                                        .clipShape(Circle())
+                                } else if !profileStore.profile.avatarUrl.isEmpty {
+                                    TelefamIosRemoteImage(
+                                        urlString: feedStore.authorizedURLString(profileStore.profile.avatarUrl),
+                                        bearerToken: sessionStore.sessionToken,
+                                        deviceFingerprint: sessionStore.deviceFingerprint,
+                                        fallbackInitials: "DP"
+                                    )
+                                    .frame(width: 92, height: 92)
+                                    .clipShape(Circle())
+                                } else {
+                                    Circle()
+                                        .fill(TelefamPalette.blush(colorScheme))
+                                        .frame(width: 92, height: 92)
+                                        .overlay(
+                                            CameraBgSvgIcon(color: accentCrimson)
+                                                .frame(width: 28, height: 28)
+                                        )
+                                }
+
+                                Circle()
+                                    .fill(accentCrimson)
+                                    .frame(width: 28, height: 28)
+                                    .overlay(
+                                        CameraBgSvgIcon(color: .white)
+                                            .frame(width: 14, height: 14)
+                                    )
+                                    .overlay(Circle().stroke(TelefamPalette.background(colorScheme), lineWidth: 2))
+                            }
+                        }
+                        Text("Change profile photo (DP)")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(accentCrimson)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+
+                    if let err = validationError, !err.isEmpty {
+                        Text(err)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(accentCrimson)
+                    }
+
+                    editLabel("Full name *")
+                    editField("Your full name", text: $fullName)
+
+                    editLabel("Username *")
+                    VStack(alignment: .leading, spacing: 4) {
+                        TextField("username", text: $username)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .disabled(isUsernameLocked)
+                            .padding(.horizontal, 12)
+                            .frame(height: 48)
+                            .background(TelefamPalette.surface(colorScheme).opacity(isUsernameLocked ? 0.55 : 1.0))
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                            .overlay(RoundedRectangle(cornerRadius: 12).stroke(TelefamPalette.border(colorScheme)))
+                        Text(usernameLockText)
+                            .font(.system(size: 11.5, weight: isUsernameLocked ? .semibold : .regular))
+                            .foregroundColor(isUsernameLocked ? accentCrimson : TelefamPalette.textMuted(colorScheme))
+                    }
+
+                    editLabel("Phone")
+                    HStack(spacing: 10) {
+                        Button { showCountrySheet = true } label: {
+                            HStack(spacing: 4) {
+                                Text("\(selectedCountry.flag) \(selectedCountry.dialCode)")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundColor(TelefamPalette.textPrimary(colorScheme))
+                                Image(systemName: "chevron.down")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(TelefamPalette.textMuted(colorScheme))
+                            }
+                            .padding(.horizontal, 10)
+                            .frame(height: 48)
+                            .background(TelefamPalette.surface(colorScheme))
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                            .overlay(RoundedRectangle(cornerRadius: 12).stroke(TelefamPalette.border(colorScheme)))
+                        }
+                        TextField("Phone number", text: $phoneDigits)
+                            .keyboardType(.phonePad)
+                            .padding(.horizontal, 12)
+                            .frame(height: 48)
+                            .background(TelefamPalette.surface(colorScheme))
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                            .overlay(RoundedRectangle(cornerRadius: 12).stroke(TelefamPalette.border(colorScheme)))
+                    }
+
+                    editLabel("Gender")
+                    Menu {
+                        ForEach(["Female", "Male", "Non-binary", "Prefer not to say"], id: \.self) { g in
+                            Button(g) { gender = g }
+                        }
+                    } label: {
+                        HStack {
+                            Text(gender)
+                                .foregroundColor(TelefamPalette.textPrimary(colorScheme))
+                            Spacer()
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 12))
+                                .foregroundColor(TelefamPalette.textMuted(colorScheme))
+                        }
+                        .padding(.horizontal, 12)
+                        .frame(height: 48)
+                        .background(TelefamPalette.surface(colorScheme))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(TelefamPalette.border(colorScheme)))
+                    }
+
+                    editLabel("Date of birth")
+                    Button { showDobPickerSheet = true } label: {
+                        HStack {
+                            Text(isoDobString)
+                                .foregroundColor(TelefamPalette.textPrimary(colorScheme))
+                            Spacer()
+                            Image(systemName: "calendar")
+                                .foregroundColor(accentCrimson)
+                        }
+                        .padding(.horizontal, 12)
+                        .frame(height: 48)
+                        .background(TelefamPalette.surface(colorScheme))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(TelefamPalette.border(colorScheme)))
+                    }
+
+                    editLabel("Location *")
+                    editField("City, Country", text: $location)
+
+                    editLabel("Bio")
+                    TextEditor(text: $bio)
+                        .frame(minHeight: 88)
+                        .padding(8)
+                        .background(TelefamPalette.surface(colorScheme))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(TelefamPalette.border(colorScheme)))
+
+                    Button {
+                        saveChanges()
+                    } label: {
+                        HStack {
+                            if isSaving { ProgressView().tint(.white) }
+                            Text(isSaving ? "Saving..." : "Save changes")
+                                .font(.system(size: 15, weight: .bold))
+                        }
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity, minHeight: 50)
+                        .background(accentCrimson)
+                        .clipShape(Capsule())
+                    }
+                    .disabled(isSaving)
+                    .padding(.top, 8)
+                }
+                .padding(20)
+                .frame(maxWidth: 640)
+                .frame(maxWidth: .infinity)
+            }
+            .background(TelefamPalette.background(colorScheme).ignoresSafeArea())
+            .navigationTitle("Edit profile")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") { saveChanges() }
+                        .disabled(isSaving)
+                        .foregroundColor(accentCrimson)
+                }
+            }
+            .onAppear {
+                let p = profileStore.profile
+                fullName = p.fullName.isEmpty ? sessionStore.fullName : p.fullName
+                username = p.username.isEmpty ? sessionStore.username : p.username
+                location = p.location.isEmpty ? sessionStore.location : p.location
+                bio = p.bio.isEmpty ? sessionStore.bio : p.bio
+                if !p.gender.isEmpty { gender = p.gender }
+                if let match = TelefamIosCountryCatalog.all.first(where: { $0.isoCode.caseInsensitiveCompare(p.countryIso) == .orderedSame }) {
+                    selectedCountry = match
+                }
+                let rawPhone = p.phoneNumber.isEmpty ? sessionStore.phoneDisplay : p.phoneNumber
+                let cleanDigits = rawPhone.filter(\.isNumber)
+                let dialDigits = selectedCountry.dialCode.filter(\.isNumber)
+                if !dialDigits.isEmpty && cleanDigits.hasPrefix(dialDigits) && cleanDigits.count > dialDigits.count {
+                    phoneDigits = String(cleanDigits.dropFirst(dialDigits.count))
+                } else {
+                    phoneDigits = cleanDigits
+                }
+                let f = DateFormatter()
+                f.dateFormat = "yyyy-MM-dd"
+                f.locale = Locale(identifier: "en_US_POSIX")
+                if let parsed = f.date(from: p.dateOfBirth) {
+                    dobDate = parsed
+                }
+            }
+            .onChange(of: avatarPickerItem) { item in
+                guard let item else { return }
+                Task {
+                    if let data = try? await item.loadTransferable(type: Data.self),
+                       let img = UIImage(data: data) {
+                        rawPickedImage = img
+                        cropOffset = .zero
+                        cropScale = 1.0
+                        showCropSheet = true
+                    }
+                }
+            }
+            .sheet(isPresented: $showCropSheet) {
+                NavigationStack {
+                    VStack(spacing: 18) {
+                        if let img = rawPickedImage {
+                            ZStack {
+                                Color.black.opacity(0.88)
+                                Image(uiImage: img)
+                                    .resizable()
+                                    .scaledToFill()
+                                    .scaleEffect(cropScale)
+                                    .offset(cropOffset)
+                                    .gesture(DragGesture().onChanged { cropOffset = $0.translation })
+                                    .gesture(MagnificationGesture().onChanged { cropScale = max(1.0, min(3.0, $0)) })
+                                    .frame(width: 240, height: 240)
+                                    .clipShape(Circle())
+                                    .overlay(Circle().stroke(Color.white, lineWidth: 2))
+                            }
+                            .frame(height: 300)
+                            .clipShape(RoundedRectangle(cornerRadius: 16))
+                        }
+                        Button("Use Photo") {
+                            guard let img = rawPickedImage, let data = img.jpegData(compressionQuality: 0.84) else {
+                                showCropSheet = false
+                                return
+                            }
+                            avatarPreview = img
+                            showCropSheet = false
+                            Task {
+                                let cx = Float(0.5 - (cropOffset.width / 480.0))
+                                let cy = Float(0.5 - (cropOffset.height / 480.0))
+                                avatarMediaId = await sessionStore.uploadAvatar(
+                                    jpegData: data,
+                                    cx: max(0.0, min(1.0, cx)),
+                                    cy: max(0.0, min(1.0, cy)),
+                                    scale: Float(cropScale)
+                                )
+                            }
+                        }
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity, minHeight: 48)
+                        .background(accentCrimson)
+                        .clipShape(Capsule())
+                    }
+                    .padding(20)
+                    .navigationTitle("Crop Photo")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Cancel") { showCropSheet = false }
+                        }
+                    }
+                }
+            }
+            .sheet(isPresented: $showCountrySheet) {
+                NavigationStack {
+                    VStack {
+                        TextField("Search country or dial code", text: $countrySearch)
+                            .padding(10)
+                            .overlay(Capsule().stroke(accentCrimson, lineWidth: 1.5))
+                            .padding(.horizontal, 16)
+                        List(TelefamIosCountryCatalog.all.filter {
+                            countrySearch.isEmpty ||
+                            $0.name.localizedCaseInsensitiveContains(countrySearch) ||
+                            $0.dialCode.contains(countrySearch)
+                        }) { option in
+                            Button {
+                                selectedCountry = option
+                                showCountrySheet = false
+                            } label: {
+                                HStack {
+                                    Text(option.flag)
+                                    Text(option.name).foregroundColor(TelefamPalette.textPrimary(colorScheme))
+                                    Spacer()
+                                    Text(option.dialCode).foregroundColor(TelefamPalette.textMuted(colorScheme))
+                                }
+                            }
+                        }
+                    }
+                    .navigationTitle("Select Country")
+                    .navigationBarTitleDisplayMode(.inline)
+                }
+            }
+            .sheet(isPresented: $showDobPickerSheet) {
+                NavigationStack {
+                    VStack {
+                        DatePicker("Date of Birth", selection: $dobDate, in: ...Date(), displayedComponents: .date)
+                            .datePickerStyle(.graphical)
+                            .tint(accentCrimson)
+                        Button("OK") { showDobPickerSheet = false }
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity, minHeight: 48)
+                            .background(accentCrimson)
+                            .clipShape(Capsule())
+                            .padding(.horizontal, 16)
+                    }
+                    .padding(16)
+                    .navigationTitle("Date of Birth")
+                    .navigationBarTitleDisplayMode(.inline)
+                }
+            }
+        }
+    }
+
+    private func saveChanges() {
+        let cleanName = fullName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanUser = username.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let cleanLoc = location.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanBio = bio.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard cleanName.count >= 2 else {
+            validationError = "Enter your full name."
+            return
+        }
+        let validUsernameRegex = try? NSRegularExpression(pattern: "^[a-z0-9._]{3,24}$")
+        let range = NSRange(cleanUser.startIndex..<cleanUser.endIndex, in: cleanUser)
+        guard validUsernameRegex?.firstMatch(in: cleanUser, range: range) != nil else {
+            validationError = "Username must be 3-24 characters (letters, numbers, . or _)."
+            return
+        }
+        let age = Calendar.current.dateComponents([.year], from: dobDate, to: Date()).year ?? 0
+        guard age >= 13 else {
+            validationError = "You must be at least 13 years old."
+            return
+        }
+        guard !cleanLoc.isEmpty else {
+            validationError = "Enter your location."
+            return
+        }
+        let phoneE164 = phoneDigits.isEmpty ? "" : "\(selectedCountry.dialCode)\(phoneDigits.filter(\.isNumber))"
+        validationError = nil
+        isSaving = true
+        Task {
+            let res = await sessionStore.updateProfile(
+                fullName: cleanName,
+                username: cleanUser,
+                phoneE164: phoneE164,
+                countryIso: selectedCountry.isoCode,
+                gender: gender,
+                dateOfBirthIso: isoDobString,
+                location: cleanLoc,
+                bio: cleanBio,
+                avatarMediaId: avatarMediaId
+            )
+            isSaving = false
+            if res.ok {
+                await profileStore.fetchProfile()
+                dismiss()
+                profileStore.showToast("Profile updated")
+            } else {
+                validationError = res.error
+            }
+        }
+    }
+
+    private func editLabel(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundColor(TelefamPalette.textPrimary(colorScheme))
+    }
+
+    private func editField(_ placeholder: String, text: Binding<String>) -> some View {
+        TextField(placeholder, text: text)
+            .padding(.horizontal, 12)
+            .frame(height: 48)
+            .background(TelefamPalette.surface(colorScheme))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(TelefamPalette.border(colorScheme)))
     }
 }

@@ -26,13 +26,16 @@ import (
 
 const (
 	MaxUploadBytes        = 8 << 20   // 8 MiB avatar
+	MaxProfileBgBytes     = 10 << 20  // 10 MiB profile hero background
 	MaxPostPhotoBytes     = 15 << 20  // 15 MiB per post photo
 	MaxPostVideoBytes     = 200 << 20 // 200 MiB per video (209,715,200 bytes)
 	MaxPostThumbnailBytes = 5 << 20   // 5 MiB thumbnail
 	TargetAvatarPx        = 512
+	MaxProfileBgEdgePx    = 1600
 	MaxPostPhotoEdgePx    = 1440
 	MaxThumbEdgePx        = 720
 	MaxCompressedSize     = 180 * 1024
+	MaxProfileBgCompBytes = 520 * 1024
 	MaxPostPhotoCompBytes = 420 * 1024
 	MaxThumbCompBytes     = 140 * 1024
 )
@@ -106,6 +109,49 @@ func SanitizeCropAndCompressAvatar(r io.Reader, cropCenterX, cropCenterY, cropSc
 		Width:             TargetAvatarPx,
 		Height:            TargetAvatarPx,
 		ContentID:         "img_" + shaHex[:24],
+		EncodedBytes:      encoded,
+	}, nil
+}
+
+// SanitizeCompressAndFingerprintProfileBackground reads a hero background image up to 10 MiB,
+// verifies magic bytes, strips all EXIF/XMP metadata, resizes cleanly preserving aspect ratio up to 1600px,
+// compresses as bounded JPEG, computes SHA-256 + 64-bit dHash fingerprints, and assigns a UUID object key.
+func SanitizeCompressAndFingerprintProfileBackground(r io.Reader) (*ProcessedMedia, error) {
+	raw, err := readBounded(r, MaxProfileBgBytes)
+	if err != nil {
+		return nil, err
+	}
+	srcImg, err := decodeSafeImage(raw)
+	if err != nil {
+		return nil, err
+	}
+	scaled := resizePreservingAspect(srcImg, MaxProfileBgEdgePx)
+	encoded, err := encodeBoundedJPEG(scaled, []int{86, 78, 70, 62}, MaxProfileBgCompBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	sum := sha256.Sum256(encoded)
+	shaHex := hex.EncodeToString(sum[:])
+	dhashHex := computeDHashHex(scaled)
+
+	mediaID, err := newUUIDv4()
+	if err != nil {
+		return nil, err
+	}
+
+	contentSum := sha256.Sum256([]byte("tf_bg_fp_v1|" + dhashHex + "|" + shaHex))
+	contentID := "bg_" + hex.EncodeToString(contentSum[:16])
+
+	return &ProcessedMedia{
+		MediaID:           mediaID,
+		StorageObjectKey:  fmt.Sprintf("media/bg/%s.jpg", mediaID),
+		MimeType:          "image/jpeg",
+		Sha256Fingerprint: shaHex,
+		DHashFingerprint:  dhashHex,
+		Width:             scaled.Bounds().Dx(),
+		Height:            scaled.Bounds().Dy(),
+		ContentID:         contentID,
 		EncodedBytes:      encoded,
 	}, nil
 }

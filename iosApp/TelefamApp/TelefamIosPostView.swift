@@ -335,22 +335,34 @@ final class TelefamIosPostStore: ObservableObject {
         }
     }
 
+    private var previewEndObserver: NSObjectProtocol? = nil
+
     func togglePreview(track: TelefamIosSongTrack) {
         if playingTrackId == track.trackId {
-            previewPlayer?.pause()
-            previewPlayer = nil
-            playingTrackId = nil
+            stopPreview()
             return
         }
         guard let url = URL(string: track.previewUrl) else { return }
-        previewPlayer?.pause()
-        let player = AVPlayer(url: url)
+        stopPreview()
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+        try? AVAudioSession.sharedInstance().setActive(true)
+        let item = AVPlayerItem(url: url)
+        let player = AVPlayer(playerItem: item)
+        previewEndObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                self?.playingTrackId = nil
+            }
+        }
         previewPlayer = player
         playingTrackId = track.trackId
         player.play()
     }
 
     func stopPreview() {
+        if let obs = previewEndObserver {
+            NotificationCenter.default.removeObserver(obs)
+            previewEndObserver = nil
+        }
         previewPlayer?.pause()
         previewPlayer = nil
         playingTrackId = nil

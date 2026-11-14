@@ -36,10 +36,13 @@ import telefam.company.core.FeedTab
 import telefam.company.core.FeedVideoRendition
 import telefam.company.core.HashtagItem
 import telefam.company.core.NetworkTier
+import telefam.company.core.OwnerProfileTab
 import telefam.company.core.PostFontOption
 import telefam.company.core.PostMode
+import telefam.company.core.PostPrivacy
 import telefam.company.core.PostSongTrack
 import telefam.company.core.PostUploadStatus
+import telefam.company.core.ProfileBackgroundItem
 import telefam.company.core.ProfilePostFilter
 import telefam.company.core.ProfilePostSort
 import telefam.company.core.TelefamContactsRules
@@ -51,12 +54,14 @@ import telefam.company.data.model.CountryCatalog
 import telefam.company.data.model.CountryDialOption
 import telefam.company.data.network.ContactItemDto
 import telefam.company.data.network.FeedItemDto
+import telefam.company.data.network.ProfileBackgroundItemDto
 import telefam.company.data.network.UserProfileResponseDto
 import telefam.company.data.repository.AuthActionResult
 import telefam.company.data.repository.ContactToggleResult
 import telefam.company.data.repository.PostPublishResult
 import telefam.company.data.repository.PostSubmissionInput
 import telefam.company.data.repository.ProfileActionResult
+import telefam.company.data.repository.ProfileBackgroundResult
 import telefam.company.data.repository.TelefamRepository
 import telefam.company.media.PreparedPostVideo
 import telefam.company.media.ProcessedAvatarMedia
@@ -131,6 +136,7 @@ data class FeedUiItem(
   val authorAvatarUrl: String?,
   val isFollowingAuthor: Boolean,
   val isOwner: Boolean,
+  val privacy: PostPrivacy = PostPrivacy.PUBLIC,
   val mode: PostMode,
   val textContent: String,
   val caption: String,
@@ -169,6 +175,13 @@ data class UserProfileScreenState(
   val avatarUrl: String? = null,
   val bio: String = "",
   val location: String = "",
+  val countryIso: String = "",
+  val gender: String = "",
+  val dateOfBirth: String = "",
+  val phoneNumber: String = "",
+  val usernameChangedAtMs: Long = 0L,
+  val nextUsernameChangeMs: Long = 0L,
+  val backgrounds: List<ProfileBackgroundItem> = emptyList(),
   val followingCount: Long = 0L,
   val followersCount: Long = 0L,
   val likesCount: Long = 0L,
@@ -177,7 +190,11 @@ data class UserProfileScreenState(
   val isOwner: Boolean = false,
   val isBlocked: Boolean = false,
   val relationshipState: ContactRelationshipState = ContactRelationshipState.FOLLOW,
+  val activeOwnerTab: OwnerProfileTab = OwnerProfileTab.POSTS,
   val posts: List<FeedUiItem> = emptyList(),
+  val savedPosts: List<FeedUiItem> = emptyList(),
+  val repostedPosts: List<FeedUiItem> = emptyList(),
+  val lockedPosts: List<FeedUiItem> = emptyList(),
   val selectedFilter: ProfilePostFilter = ProfilePostFilter.ALL,
   val selectedSort: ProfilePostSort = ProfilePostSort.LATEST,
   val isLoading: Boolean = true,
@@ -187,13 +204,24 @@ data class UserProfileScreenState(
   val connectionsPage: Int = 1,
   val connectionsHasMore: Boolean = false,
 ) {
+  val activeTabPosts: List<FeedUiItem>
+    get() = when {
+      !isOwner -> posts
+      activeOwnerTab == OwnerProfileTab.POSTS -> posts
+      activeOwnerTab == OwnerProfileTab.SAVED -> savedPosts
+      activeOwnerTab == OwnerProfileTab.REPOSTS -> repostedPosts
+      activeOwnerTab == OwnerProfileTab.LOCKED -> lockedPosts
+      else -> posts
+    }
+
   val filteredAndSortedPosts: List<FeedUiItem>
     get() {
+      val base = activeTabPosts
       val filtered = when (selectedFilter) {
-        ProfilePostFilter.ALL -> posts
-        ProfilePostFilter.VIDEOS -> posts.filter { it.mode == PostMode.VIDEO }
-        ProfilePostFilter.PHOTOS -> posts.filter { it.mode == PostMode.PHOTOS }
-        ProfilePostFilter.TEXT -> posts.filter { it.mode == PostMode.TEXT }
+        ProfilePostFilter.ALL -> base
+        ProfilePostFilter.VIDEOS -> base.filter { it.mode == PostMode.VIDEO }
+        ProfilePostFilter.PHOTOS -> base.filter { it.mode == PostMode.PHOTOS }
+        ProfilePostFilter.TEXT -> base.filter { it.mode == PostMode.TEXT }
       }
       return when (selectedSort) {
         ProfilePostSort.LATEST -> filtered.sortedByDescending { it.createdAtMs }
@@ -305,6 +333,15 @@ data class TelefamUiState(
   val profileViewerInitialIndex: Int = 0,
   val profileToastMessage: String? = null,
   val comingSoonMessage: String? = null,
+  val showSettingsModal: Boolean = false,
+  val showBackgroundsModal: Boolean = false,
+  val isUploadingBackground: Boolean = false,
+  val backgroundError: String? = null,
+  val showEditProfileModal: Boolean = false,
+  val isSavingEditedProfile: Boolean = false,
+  val editProfileError: String? = null,
+  val editProfileCropBitmap: Bitmap? = null,
+  val editProfileProcessedAvatar: ProcessedAvatarMedia? = null,
 ) {
   val activeUserProfile: UserProfileScreenState?
     get() = profileBackStack.lastOrNull()
@@ -1093,8 +1130,65 @@ class TelefamViewModel(
 
   fun onDeleteOwnerFeedPost(postId: String) {
     removeFromSearchLists(postId)
+    _uiState.update { s ->
+      s.copy(
+        profileBackStack = s.profileBackStack.map { p ->
+          p.copy(
+            posts = p.posts.filterNot { it.postId == postId },
+            savedPosts = p.savedPosts.filterNot { it.postId == postId },
+            repostedPosts = p.repostedPosts.filterNot { it.postId == postId },
+            lockedPosts = p.lockedPosts.filterNot { it.postId == postId },
+          )
+        },
+        ownProfileState = s.ownProfileState?.let { p ->
+          p.copy(
+            posts = p.posts.filterNot { it.postId == postId },
+            savedPosts = p.savedPosts.filterNot { it.postId == postId },
+            repostedPosts = p.repostedPosts.filterNot { it.postId == postId },
+            lockedPosts = p.lockedPosts.filterNot { it.postId == postId },
+          )
+        },
+      )
+    }
     viewModelScope.launch {
       repository.deleteOwnerPost(postId)
+    }
+  }
+
+  fun onChangeFeedPostPrivacy(postId: String, privacy: PostPrivacy) {
+    mutateSearchResultOptimistically(postId) { it.copy(privacy = privacy) }
+    _uiState.update { s ->
+      fun movePostForPrivacy(p: UserProfileScreenState): UserProfileScreenState {
+        val target = (p.posts + p.lockedPosts).firstOrNull { it.postId == postId }?.copy(privacy = privacy)
+          ?: return p
+        return if (privacy == PostPrivacy.PRIVATE) {
+          p.copy(
+            posts = p.posts.filterNot { it.postId == postId },
+            lockedPosts = (listOf(target) + p.lockedPosts.filterNot { it.postId == postId }),
+          )
+        } else {
+          p.copy(
+            lockedPosts = p.lockedPosts.filterNot { it.postId == postId },
+            posts = (listOf(target) + p.posts.filterNot { it.postId == postId })
+              .sortedByDescending { it.createdAtMs },
+          )
+        }
+      }
+      s.copy(
+        ownProfileState = s.ownProfileState?.let(::movePostForPrivacy),
+        profileBackStack = s.profileBackStack.map(::movePostForPrivacy),
+        feedsState = s.feedsState.copy(toastMessage = "Privacy: ${privacy.label}"),
+      )
+    }
+    viewModelScope.launch {
+      val ok = repository.updatePostPrivacy(postId, privacy)
+      if (!ok) {
+        _uiState.update { it.copy(feedsState = it.feedsState.copy(toastMessage = "Unable to update privacy")) }
+      }
+      if (privacy == PostPrivacy.PRIVATE) {
+        refreshFeeds()
+      }
+      _uiState.value.userId.takeIf { it.isNotBlank() }?.let { uid -> refreshUserProfile(uid) }
     }
   }
 
@@ -1260,10 +1354,20 @@ class TelefamViewModel(
         ),
         profileViewerItems = s.profileViewerItems?.map { if (it.postId == postId) transform(it) else it },
         profileBackStack = s.profileBackStack.map { p ->
-          p.copy(posts = p.posts.map { if (it.postId == postId) transform(it) else it })
+          p.copy(
+            posts = p.posts.map { if (it.postId == postId) transform(it) else it },
+            savedPosts = p.savedPosts.map { if (it.postId == postId) transform(it) else it },
+            repostedPosts = p.repostedPosts.map { if (it.postId == postId) transform(it) else it },
+            lockedPosts = p.lockedPosts.map { if (it.postId == postId) transform(it) else it },
+          )
         },
         ownProfileState = s.ownProfileState?.let { p ->
-          p.copy(posts = p.posts.map { if (it.postId == postId) transform(it) else it })
+          p.copy(
+            posts = p.posts.map { if (it.postId == postId) transform(it) else it },
+            savedPosts = p.savedPosts.map { if (it.postId == postId) transform(it) else it },
+            repostedPosts = p.repostedPosts.map { if (it.postId == postId) transform(it) else it },
+            lockedPosts = p.lockedPosts.map { if (it.postId == postId) transform(it) else it },
+          )
         },
       )
     }
@@ -1305,6 +1409,7 @@ class TelefamViewModel(
       },
       isFollowingAuthor = entity.isFollowingAuthor,
       isOwner = entity.isOwner,
+      privacy = PostPrivacy.fromApi(entity.privacy),
       mode = PostMode.entries.firstOrNull { it.apiValue == entity.mode } ?: PostMode.VIDEO,
       textContent = entity.textContent,
       caption = entity.caption,
@@ -1338,6 +1443,40 @@ class TelefamViewModel(
     )
   }
 
+  private fun mapBackgroundDtos(
+    bgs: List<ProfileBackgroundItemDto>,
+    urls: List<String>,
+  ): List<ProfileBackgroundItem> {
+    val baseUrl = BuildConfig.TELEFAM_API_BASE_URL
+    if (bgs.isNotEmpty()) {
+      return bgs.take(5).map { b ->
+        val raw = b.url.trim()
+        val resolved = if (raw.isBlank()) "" else AdaptiveStreamSelector.resolveMediaUrl(baseUrl, raw)
+        val localPath = if (raw.startsWith("/") && !raw.startsWith("/v1/") && !raw.startsWith("/media/") && File(raw).exists()) raw else ""
+        ProfileBackgroundItem(
+          mediaId = b.mediaId,
+          url = resolved,
+          localFilePath = localPath,
+          sha256Fingerprint = b.sha256Fingerprint,
+          dHashFingerprint = b.dHashFingerprint,
+          width = b.width,
+          height = b.height,
+          byteSize = b.byteSize,
+          createdAtMs = b.createdAtMs,
+        )
+      }
+    }
+    return urls.filter { it.isNotBlank() }.take(5).mapIndexed { idx, raw ->
+      val resolved = AdaptiveStreamSelector.resolveMediaUrl(baseUrl, raw)
+      val localPath = if (raw.startsWith("/") && !raw.startsWith("/v1/") && !raw.startsWith("/media/") && File(raw).exists()) raw else ""
+      ProfileBackgroundItem(
+        mediaId = "bg_$idx",
+        url = resolved,
+        localFilePath = localPath,
+      )
+    }
+  }
+
   private fun mapProfileDtoToState(
     dto: UserProfileResponseDto,
     existing: UserProfileScreenState?,
@@ -1358,6 +1497,7 @@ class TelefamViewModel(
           authorAvatarUrl = dto.avatarUrl.ifBlank { null }?.let { AdaptiveStreamSelector.resolveMediaUrl(baseUrl, it) },
           isFollowingAuthor = dto.isFollowing,
           isOwner = dto.isOwner,
+          privacy = PostPrivacy.PUBLIC,
           mode = PostMode.VIDEO,
           textContent = "",
           caption = v.caption,
@@ -1390,6 +1530,10 @@ class TelefamViewModel(
         )
       }
     }
+    val savedPosts = dto.savedPosts.map { mapFeedEntityToUi(repository.feedPostDtoToEntity(it, "saved"), tier) }
+    val repostedPosts = dto.repostedPosts.map { mapFeedEntityToUi(repository.feedPostDtoToEntity(it, "reposts"), tier) }
+    val lockedPosts = dto.lockedPosts.map { mapFeedEntityToUi(repository.feedPostDtoToEntity(it, "locked"), tier) }
+    val resolvedBgs = mapBackgroundDtos(dto.backgrounds, dto.backgroundUrls)
     val avatarResolved = dto.avatarUrl.trim().takeIf { it.isNotBlank() }?.let {
       AdaptiveStreamSelector.resolveMediaUrl(baseUrl, it)
     }
@@ -1400,6 +1544,13 @@ class TelefamViewModel(
       avatarUrl = avatarResolved ?: existing?.avatarUrl,
       bio = dto.bio,
       location = dto.location,
+      countryIso = dto.countryIso.ifBlank { existing?.countryIso.orEmpty() },
+      gender = dto.gender.ifBlank { existing?.gender.orEmpty() },
+      dateOfBirth = dto.dateOfBirth.ifBlank { existing?.dateOfBirth.orEmpty() },
+      phoneNumber = dto.phoneNumber.ifBlank { existing?.phoneNumber.orEmpty() },
+      usernameChangedAtMs = maxOf(dto.usernameChangedAtMs, existing?.usernameChangedAtMs ?: 0L),
+      nextUsernameChangeMs = maxOf(dto.nextUsernameChangeMs, existing?.nextUsernameChangeMs ?: 0L),
+      backgrounds = if (resolvedBgs.isNotEmpty() || !dto.isBlocked) resolvedBgs else existing?.backgrounds.orEmpty(),
       followingCount = dto.followingCount,
       followersCount = dto.followersCount,
       likesCount = dto.likesCount,
@@ -1408,7 +1559,11 @@ class TelefamViewModel(
       isOwner = dto.isOwner || dto.userId == _uiState.value.userId,
       isBlocked = dto.isBlocked,
       relationshipState = ContactRelationshipState.compute(dto.isFollowing, dto.followsYou),
+      activeOwnerTab = existing?.activeOwnerTab ?: OwnerProfileTab.POSTS,
       posts = posts,
+      savedPosts = savedPosts,
+      repostedPosts = repostedPosts,
+      lockedPosts = lockedPosts,
       selectedFilter = existing?.selectedFilter ?: ProfilePostFilter.ALL,
       selectedSort = existing?.selectedSort ?: ProfilePostSort.LATEST,
       isLoading = false,
@@ -2341,6 +2496,227 @@ class TelefamViewModel(
 
   fun selectProfileSortOrder(userId: String, sort: ProfilePostSort) {
     updateProfileInState(userId) { it.copy(selectedSort = sort) }
+  }
+
+  fun selectOwnerProfileTab(userId: String, tab: OwnerProfileTab) {
+    updateProfileInState(userId) { it.copy(activeOwnerTab = tab) }
+  }
+
+  fun openOwnerSettingsModal() {
+    _uiState.update { it.copy(showSettingsModal = true) }
+  }
+
+  fun dismissOwnerSettingsModal() {
+    _uiState.update { it.copy(showSettingsModal = false) }
+  }
+
+  fun openOwnerBackgroundsModal() {
+    _uiState.update { it.copy(showBackgroundsModal = true, backgroundError = null) }
+  }
+
+  fun dismissOwnerBackgroundsModal() {
+    _uiState.update { it.copy(showBackgroundsModal = false, backgroundError = null) }
+  }
+
+  fun openEditProfileModal() {
+    _uiState.update {
+      it.copy(
+        showEditProfileModal = true,
+        editProfileError = null,
+        editProfileCropBitmap = null,
+        editProfileProcessedAvatar = null,
+      )
+    }
+  }
+
+  fun dismissEditProfileModal() {
+    _uiState.update {
+      it.copy(
+        showEditProfileModal = false,
+        editProfileError = null,
+        editProfileCropBitmap = null,
+      )
+    }
+  }
+
+  fun onEditProfilePhotoPicked(bitmap: Bitmap) {
+    _uiState.update { it.copy(editProfileCropBitmap = bitmap, editProfileError = null) }
+  }
+
+  fun dismissEditProfileCropper() {
+    _uiState.update { it.copy(editProfileCropBitmap = null) }
+  }
+
+  fun confirmEditProfileCroppedPhoto(bitmap: Bitmap, centerX: Float, centerY: Float, zoomScale: Float) {
+    val uid = _uiState.value.userId.ifBlank { "local_user" }
+    _uiState.update { it.copy(editProfileCropBitmap = null, isSavingEditedProfile = true) }
+    viewModelScope.launch {
+      val processed = repository.processAndUploadAvatar(uid, bitmap, centerX, centerY, zoomScale)
+      _uiState.update { s ->
+        s.copy(
+          editProfileProcessedAvatar = processed,
+          isSavingEditedProfile = false,
+          savedAvatarLocalPath = processed.localFilePath,
+        )
+      }
+      updateProfileInState(uid) { p -> p.copy(avatarUrl = processed.localFilePath) }
+    }
+  }
+
+  fun uploadOwnerBackgrounds(uris: List<Uri>) {
+    if (uris.isEmpty()) return
+    val uid = _uiState.value.userId
+    if (uid.isBlank()) return
+    val currentCount = _uiState.value.ownProfileState?.backgrounds?.size
+      ?: _uiState.value.activeUserProfile?.takeIf { it.isOwner }?.backgrounds?.size ?: 0
+    val remaining = (5 - currentCount).coerceAtLeast(0)
+    if (remaining <= 0) {
+      _uiState.update { it.copy(backgroundError = "You can upload up to 5 background photos.") }
+      return
+    }
+    _uiState.update { it.copy(isUploadingBackground = true, backgroundError = null) }
+    viewModelScope.launch {
+      var lastError: String? = null
+      var latestList: List<ProfileBackgroundItemDto>? = null
+      for (uri in uris.take(remaining)) {
+        when (val res = repository.uploadProfileBackground(uri)) {
+          is ProfileBackgroundResult.Updated -> latestList = res.backgrounds
+          is ProfileBackgroundResult.Error -> {
+            lastError = res.message
+            break
+          }
+        }
+      }
+      latestList?.let { dtos ->
+        val mapped = mapBackgroundDtos(dtos, emptyList())
+        updateProfileInState(uid) { it.copy(backgrounds = mapped) }
+      }
+      _uiState.update {
+        it.copy(
+          isUploadingBackground = false,
+          backgroundError = lastError,
+          profileToastMessage = if (lastError == null) "Background updated" else null,
+        )
+      }
+      if (lastError == null) {
+        refreshUserProfile(uid)
+      }
+    }
+  }
+
+  fun deleteOwnerBackground(mediaId: String) {
+    val uid = _uiState.value.userId
+    if (uid.isBlank()) return
+    _uiState.update { it.copy(isUploadingBackground = true, backgroundError = null) }
+    viewModelScope.launch {
+      when (val res = repository.deleteProfileBackground(mediaId)) {
+        is ProfileBackgroundResult.Updated -> {
+          val mapped = mapBackgroundDtos(res.backgrounds, emptyList())
+          updateProfileInState(uid) { it.copy(backgrounds = mapped) }
+          _uiState.update { it.copy(isUploadingBackground = false, profileToastMessage = "Background removed") }
+        }
+        is ProfileBackgroundResult.Error -> {
+          _uiState.update { it.copy(isUploadingBackground = false, backgroundError = res.message) }
+        }
+      }
+    }
+  }
+
+  fun reorderOwnerBackgrounds(mediaIds: List<String>) {
+    val uid = _uiState.value.userId
+    if (uid.isBlank() || mediaIds.isEmpty()) return
+    _uiState.update { it.copy(isUploadingBackground = true, backgroundError = null) }
+    viewModelScope.launch {
+      when (val res = repository.reorderProfileBackgrounds(mediaIds)) {
+        is ProfileBackgroundResult.Updated -> {
+          val mapped = mapBackgroundDtos(res.backgrounds, emptyList())
+          updateProfileInState(uid) { it.copy(backgrounds = mapped) }
+          _uiState.update { it.copy(isUploadingBackground = false) }
+        }
+        is ProfileBackgroundResult.Error -> {
+          _uiState.update { it.copy(isUploadingBackground = false, backgroundError = res.message) }
+        }
+      }
+    }
+  }
+
+  fun saveEditedProfile(
+    fullNameRaw: String,
+    usernameRaw: String,
+    country: CountryDialOption,
+    phoneDigitsRaw: String,
+    genderRaw: String,
+    dobYear: Int,
+    dobMonthZeroBased: Int,
+    dobDay: Int,
+    locationRaw: String,
+    bioRaw: String,
+  ) {
+    val state = _uiState.value
+    val uid = state.userId
+    if (uid.isBlank() || state.isSavingEditedProfile) return
+    _uiState.update { it.copy(isSavingEditedProfile = true, editProfileError = null) }
+    viewModelScope.launch {
+      val avatarToUse = state.editProfileProcessedAvatar
+      when (
+        val res = repository.updateUserProfile(
+          fullNameRaw = fullNameRaw,
+          usernameRaw = usernameRaw,
+          dialCode = country.dialCode,
+          phoneDigitsRaw = phoneDigitsRaw,
+          countryIso = country.iso,
+          genderRaw = genderRaw,
+          dobYear = dobYear,
+          dobMonthZeroBased = dobMonthZeroBased,
+          dobDay = dobDay,
+          locationRaw = locationRaw,
+          bioRaw = bioRaw,
+          avatar = avatarToUse,
+        )
+      ) {
+        is ProfileActionResult.Saved -> {
+          val cleanFullName = TelefamProfileSanitizer.sanitizePlainText(fullNameRaw, 64, singleLine = true)
+          val cleanUsername = TelefamProfileSanitizer.sanitizeUsernameInput(usernameRaw)
+          val cleanLocation = TelefamProfileSanitizer.sanitizePlainText(locationRaw, 80, singleLine = true)
+          val cleanBio = TelefamProfileSanitizer.sanitizePlainText(bioRaw, 150, singleLine = false)
+          val dobIso = String.format("%04d-%02d-%02d", dobYear, dobMonthZeroBased + 1, dobDay)
+          val cleanDigits = phoneDigitsRaw.filter { it.isDigit() }
+          val phoneE164 = if (cleanDigits.isNotBlank()) "${country.dialCode}$cleanDigits" else ""
+          updateProfileInState(uid) { p ->
+            p.copy(
+              fullName = cleanFullName,
+              username = cleanUsername,
+              location = cleanLocation,
+              bio = cleanBio,
+              countryIso = country.iso,
+              gender = genderRaw,
+              dateOfBirth = dobIso,
+              phoneNumber = phoneE164.ifBlank { p.phoneNumber },
+              avatarUrl = avatarToUse?.localFilePath ?: p.avatarUrl,
+            )
+          }
+          _uiState.update { s ->
+            s.copy(
+              isSavingEditedProfile = false,
+              showEditProfileModal = false,
+              editProfileError = null,
+              editProfileProcessedAvatar = null,
+              savedAvatarLocalPath = avatarToUse?.localFilePath ?: s.savedAvatarLocalPath,
+              profileToastMessage = "Profile updated",
+            )
+          }
+          refreshUserProfile(uid)
+        }
+        is ProfileActionResult.Error -> {
+          _uiState.update {
+            it.copy(
+              isSavingEditedProfile = false,
+              editProfileError = res.message,
+            )
+          }
+        }
+      }
+    }
   }
 
   fun openProfilePostViewer(posts: List<FeedUiItem>, index: Int) {

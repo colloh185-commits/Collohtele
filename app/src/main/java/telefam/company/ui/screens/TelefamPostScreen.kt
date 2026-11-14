@@ -89,6 +89,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
 import com.telefam.company.app.R
 import telefam.company.core.PostBackgroundTheme
 import telefam.company.core.PostFontOption
@@ -1141,10 +1142,16 @@ private fun TagPeopleModalSheet(
                 .background(blush),
               contentAlignment = Alignment.Center,
             ) {
+              Text(person.initials, color = TelefamCrimson, fontWeight = FontWeight.Bold, fontSize = 14.sp)
               if (bmp != null) {
                 Image(bitmap = bmp, contentDescription = person.fullName, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-              } else {
-                Text(person.initials, color = TelefamCrimson, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+              } else if (!person.avatarLocalPath.isNullOrBlank()) {
+                AsyncImage(
+                  model = person.avatarLocalPath,
+                  contentDescription = person.fullName,
+                  contentScale = ContentScale.Crop,
+                  modifier = Modifier.fillMaxSize(),
+                )
               }
             }
             Spacer(modifier = Modifier.width(12.dp))

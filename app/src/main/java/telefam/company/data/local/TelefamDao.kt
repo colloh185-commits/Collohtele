@@ -217,6 +217,9 @@ interface TelefamDao {
   @Query("UPDATE cached_feed_posts SET viewsCount = viewsCount + 1 WHERE postId = :postId")
   suspend fun incrementCachedFeedPostView(postId: String)
 
+  @Query("UPDATE cached_feed_posts SET privacy = :privacy WHERE postId = :postId")
+  suspend fun updateCachedFeedPostPrivacy(postId: String, privacy: String)
+
   // Cached Full User Profiles & Followers/Following Lists (offline-first fallback)
   @Query("SELECT * FROM cached_user_profiles WHERE userId = :userId LIMIT 1")
   suspend fun getCachedUserProfile(userId: String): CachedUserProfileEntity?

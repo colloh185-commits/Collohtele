@@ -3,11 +3,15 @@ package auth
 import (
 	"bytes"
 	"encoding/json"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"telefam.company/backend/internal/audit"
 	"telefam.company/backend/internal/contacts"
@@ -510,6 +514,232 @@ func TestUserProfileViewsConnectionsBlockAndReport(t *testing.T) {
 		t.Fatalf("expected own profile via /me, got %d: %s", meRec.Code, meRec.Body.String())
 	}
 }
+
+func makeTestJPEGBytes(seed byte) []byte {
+	img := image.NewRGBA(image.Rect(0, 0, 120, 80))
+	for y := 0; y < 80; y++ {
+		for x := 0; x < 120; x++ {
+			img.SetRGBA(x, y, color.RGBA{
+				R: uint8((x*3 + int(seed)*17) % 256),
+				G: uint8((y*5 + int(seed)*31) % 256),
+				B: uint8((x + y + int(seed)*11) % 256),
+				A: 255,
+			})
+		}
+	}
+	var buf bytes.Buffer
+	_ = jpeg.Encode(&buf, img, &jpeg.Options{Quality: 85})
+	return buf.Bytes()
+}
+
+func TestProfileBackgroundsEditingUsernameCooldownAndPostPrivacy(t *testing.T) {
+	secret := []byte("0123456789abcdef0123456789abcdef")
+	fp := fingerprint.NewService(secret)
+	limiter := ratelimit.NewLimiter()
+	otpSvc := NewOtpService(secret, "https://telefam.company")
+	tokens := NewTokenService(secret)
+	aud := audit.NewLogger()
+	contactsSvc := contacts.NewService()
+	h := NewHandler(fp, limiter, otpSvc, tokens, aud, nil, contactsSvc)
+
+	devOwner := "android_owner_fp_001"
+	devFriend := "android_friend_fp_002"
+	devStranger := "android_stranger_fp_003"
+	fpOwner, _ := fp.ExtractDeviceFingerprint(&http.Request{Header: http.Header{"X-Telefam-Device-FP": []string{devOwner}}})
+	fpFriend, _ := fp.ExtractDeviceFingerprint(&http.Request{Header: http.Header{"X-Telefam-Device-FP": []string{devFriend}}})
+	fpStranger, _ := fp.ExtractDeviceFingerprint(&http.Request{Header: http.Header{"X-Telefam-Device-FP": []string{devStranger}}})
+
+	pairOwner, _, _ := tokens.IssueInitialPair("owner_u1", "felistar@telefam.company", fpOwner)
+	pairFriend, _, _ := tokens.IssueInitialPair("friend_u2", "friend@telefam.company", fpFriend)
+	pairStranger, _, _ := tokens.IssueInitialPair("stranger_u3", "stranger@telefam.company", fpStranger)
+
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	setupPayload := `{"full_name":"Felistar","username":"colloh","phone_number":"+254712345678","country_iso":"KE","gender":"Female","date_of_birth":"2001-05-12","location":"Konoin, Kenya","bio":"Building memories"}`
+	setupReq := httptest.NewRequest(http.MethodPost, "/v1/profile/setup", bytes.NewBufferString(setupPayload))
+	setupReq.Header.Set("Authorization", "Bearer "+pairOwner.AccessToken)
+	setupReq.Header.Set("X-Telefam-Device-FP", devOwner)
+	setupRec := httptest.NewRecorder()
+	mux.ServeHTTP(setupRec, setupReq)
+	if setupRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 setup, got %d: %s", setupRec.Code, setupRec.Body.String())
+	}
+
+	contactsSvc.RegisterOrUpdateUser(contacts.DirectoryUser{UserID: "friend_u2", Username: "mutual_friend", FullName: "Mutual Friend", Country: "Kenya", CountryISO: "KE"}, fpFriend)
+	contactsSvc.RegisterOrUpdateUser(contacts.DirectoryUser{UserID: "stranger_u3", Username: "stranger", FullName: "Stranger", Country: "Kenya", CountryISO: "KE"}, fpStranger)
+	contactsSvc.SetFollowing("owner_u1", "friend_u2", fpOwner, true)
+	contactsSvc.SetFollowing("friend_u2", "owner_u1", fpFriend, true)
+
+	var uploadedBgIDs []string
+	for i := 1; i <= 5; i++ {
+		bgReq := httptest.NewRequest(http.MethodPost, "/v1/media/background", bytes.NewReader(makeTestJPEGBytes(byte(i))))
+		bgReq.Header.Set("Authorization", "Bearer "+pairOwner.AccessToken)
+		bgReq.Header.Set("X-Telefam-Device-FP", devOwner)
+		bgRec := httptest.NewRecorder()
+		mux.ServeHTTP(bgRec, bgReq)
+		if bgRec.Code != http.StatusOK {
+			t.Fatalf("expected 200 uploading bg %d, got %d: %s", i, bgRec.Code, bgRec.Body.String())
+		}
+		var out struct {
+			MediaID string `json:"media_id"`
+			Sha256  string `json:"sha256_fingerprint"`
+			DHash   string `json:"dhash_fingerprint"`
+		}
+		_ = json.NewDecoder(bgRec.Body).Decode(&out)
+		if len(out.Sha256) != 64 || len(out.DHash) != 16 {
+			t.Fatalf("expected SHA-256 + 64-bit dHash fingerprints, got sha=%q dhash=%q", out.Sha256, out.DHash)
+		}
+		uploadedBgIDs = append(uploadedBgIDs, out.MediaID)
+	}
+	sixthReq := httptest.NewRequest(http.MethodPost, "/v1/media/background", bytes.NewReader(makeTestJPEGBytes(6)))
+	sixthReq.Header.Set("Authorization", "Bearer "+pairOwner.AccessToken)
+	sixthReq.Header.Set("X-Telefam-Device-FP", devOwner)
+	sixthRec := httptest.NewRecorder()
+	mux.ServeHTTP(sixthRec, sixthReq)
+	if sixthRec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 when uploading 6th background, got %d: %s", sixthRec.Code, sixthRec.Body.String())
+	}
+
+	delBgReq := httptest.NewRequest(http.MethodDelete, "/v1/profile/backgrounds/"+uploadedBgIDs[0], nil)
+	delBgReq.Header.Set("Authorization", "Bearer "+pairOwner.AccessToken)
+	delBgReq.Header.Set("X-Telefam-Device-FP", devOwner)
+	delBgRec := httptest.NewRecorder()
+	mux.ServeHTTP(delBgRec, delBgReq)
+	if delBgRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 deleting background, got %d", delBgRec.Code)
+	}
+
+	visitorProfReq := httptest.NewRequest(http.MethodGet, "/v1/users/owner_u1/profile", nil)
+	visitorProfReq.Header.Set("Authorization", "Bearer "+pairStranger.AccessToken)
+	visitorProfReq.Header.Set("X-Telefam-Device-FP", devStranger)
+	visitorProfRec := httptest.NewRecorder()
+	mux.ServeHTTP(visitorProfRec, visitorProfReq)
+	var visitorProf UserProfileResponse
+	_ = json.NewDecoder(visitorProfRec.Body).Decode(&visitorProf)
+	if len(visitorProf.BackgroundURLs) != 4 || len(visitorProf.Backgrounds) != 4 {
+		t.Fatalf("expected visitor to receive 4 hero backgrounds, got %d urls", len(visitorProf.BackgroundURLs))
+	}
+
+	earlyUserChange := httptest.NewRequest(http.MethodPatch, "/v1/profile", bytes.NewBufferString(`{"full_name":"Felistar K","username":"colloh_new","location":"Nairobi, Kenya","bio":"Updated bio"}`))
+	earlyUserChange.Header.Set("Authorization", "Bearer "+pairOwner.AccessToken)
+	earlyUserChange.Header.Set("X-Telefam-Device-FP", devOwner)
+	earlyUserRec := httptest.NewRecorder()
+	mux.ServeHTTP(earlyUserRec, earlyUserChange)
+	if earlyUserRec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 on early username change, got %d: %s", earlyUserRec.Code, earlyUserRec.Body.String())
+	}
+
+	bioEditReq := httptest.NewRequest(http.MethodPatch, "/v1/profile", bytes.NewBufferString(`{"full_name":"Felistar K","username":"colloh","location":"Konoin, Kenya, Angola","bio":"Traveler","gender":"Female","date_of_birth":"2001-05-12","country_iso":"KE","phone_number":"+254712345678"}`))
+	bioEditReq.Header.Set("Authorization", "Bearer "+pairOwner.AccessToken)
+	bioEditReq.Header.Set("X-Telefam-Device-FP", devOwner)
+	bioEditRec := httptest.NewRecorder()
+	mux.ServeHTTP(bioEditRec, bioEditReq)
+	if bioEditRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 editing non-username fields during cooldown, got %d: %s", bioEditRec.Code, bioEditRec.Body.String())
+	}
+
+	h.mu.Lock()
+	sp := h.profiles["owner_u1"]
+	sp.UsernameChangedAtMs = time.Now().Add(-15 * 24 * time.Hour).UnixMilli()
+	h.profiles["owner_u1"] = sp
+	h.mu.Unlock()
+
+	lateUserChange := httptest.NewRequest(http.MethodPatch, "/v1/profile", bytes.NewBufferString(`{"full_name":"Felistar K","username":"felistar_k","location":"Konoin, Kenya","bio":"Traveler"}`))
+	lateUserChange.Header.Set("Authorization", "Bearer "+pairOwner.AccessToken)
+	lateUserChange.Header.Set("X-Telefam-Device-FP", devOwner)
+	lateUserRec := httptest.NewRecorder()
+	mux.ServeHTTP(lateUserRec, lateUserChange)
+	if lateUserRec.Code != http.StatusOK || !strings.Contains(lateUserRec.Body.String(), `"username":"felistar_k"`) {
+		t.Fatalf("expected 200 changing username after 14d, got %d: %s", lateUserRec.Code, lateUserRec.Body.String())
+	}
+
+	mp4 := []byte{0x00, 0x00, 0x00, 0x18, 'f', 't', 'y', 'p', 'm', 'p', '4', '2', 0, 0, 0, 0, 'm', 'd', 'a', 't', 1, 2, 3, 4}
+	upReq := httptest.NewRequest(http.MethodPost, "/v1/media/video?duration_ms=7000&width=1080&height=1920", bytes.NewReader(mp4))
+	upReq.Header.Set("Authorization", "Bearer "+pairOwner.AccessToken)
+	upReq.Header.Set("X-Telefam-Device-FP", devOwner)
+	upRec := httptest.NewRecorder()
+	mux.ServeHTTP(upRec, upReq)
+	var upOut MediaUploadResponse
+	_ = json.NewDecoder(upRec.Body).Decode(&upOut)
+
+	postReq := httptest.NewRequest(http.MethodPost, "/v1/posts", bytes.NewBufferString(`{"client_op_id":"op_priv_1","mode":"video","caption":"Secret sunset","video_media_id":"`+upOut.MediaID+`","hashtags":["sunset"]}`))
+	postReq.Header.Set("Authorization", "Bearer "+pairOwner.AccessToken)
+	postReq.Header.Set("X-Telefam-Device-FP", devOwner)
+	postRec := httptest.NewRecorder()
+	mux.ServeHTTP(postRec, postReq)
+	var pOut struct {
+		Post struct {
+			PostID string `json:"post_id"`
+		} `json:"post"`
+	}
+	_ = json.NewDecoder(postRec.Body).Decode(&pOut)
+	postID := pOut.Post.PostID
+
+	privFriendsReq := httptest.NewRequest(http.MethodPatch, "/v1/posts/"+postID, bytes.NewBufferString(`{"privacy":"friends"}`))
+	privFriendsReq.Header.Set("Authorization", "Bearer "+pairOwner.AccessToken)
+	privFriendsReq.Header.Set("X-Telefam-Device-FP", devOwner)
+	privFriendsRec := httptest.NewRecorder()
+	mux.ServeHTTP(privFriendsRec, privFriendsReq)
+	if privFriendsRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 switching privacy to friends, got %d", privFriendsRec.Code)
+	}
+
+	friendFeedReq := httptest.NewRequest(http.MethodGet, "/v1/feeds?tab=for_you", nil)
+	friendFeedReq.Header.Set("Authorization", "Bearer "+pairFriend.AccessToken)
+	friendFeedReq.Header.Set("X-Telefam-Device-FP", devFriend)
+	friendFeedRec := httptest.NewRecorder()
+	mux.ServeHTTP(friendFeedRec, friendFeedReq)
+	var friendFeed feeds.FeedPageResponse
+	_ = json.NewDecoder(friendFeedRec.Body).Decode(&friendFeed)
+	if len(friendFeed.Items) != 1 || friendFeed.Items[0].Privacy != "friends" {
+		t.Fatalf("expected mutual friend to view friends-only post, got %+v", friendFeed.Items)
+	}
+
+	strangerFeedReq := httptest.NewRequest(http.MethodGet, "/v1/feeds?tab=for_you", nil)
+	strangerFeedReq.Header.Set("Authorization", "Bearer "+pairStranger.AccessToken)
+	strangerFeedReq.Header.Set("X-Telefam-Device-FP", devStranger)
+	strangerFeedRec := httptest.NewRecorder()
+	mux.ServeHTTP(strangerFeedRec, strangerFeedReq)
+	var strangerFeed feeds.FeedPageResponse
+	_ = json.NewDecoder(strangerFeedRec.Body).Decode(&strangerFeed)
+	if len(strangerFeed.Items) != 0 {
+		t.Fatalf("expected stranger to NOT see friends-only post, got %+v", strangerFeed.Items)
+	}
+
+	privLockedReq := httptest.NewRequest(http.MethodPatch, "/v1/posts/"+postID, bytes.NewBufferString(`{"privacy":"private"}`))
+	privLockedReq.Header.Set("Authorization", "Bearer "+pairOwner.AccessToken)
+	privLockedReq.Header.Set("X-Telefam-Device-FP", devOwner)
+	mux.ServeHTTP(httptest.NewRecorder(), privLockedReq)
+
+	ownerSaveReq := httptest.NewRequest(http.MethodPost, "/v1/feeds/interact", bytes.NewBufferString(`{"post_id":"`+postID+`","action":"favourite"}`))
+	ownerSaveReq.Header.Set("Authorization", "Bearer "+pairOwner.AccessToken)
+	ownerSaveReq.Header.Set("X-Telefam-Device-FP", devOwner)
+	mux.ServeHTTP(httptest.NewRecorder(), ownerSaveReq)
+
+	ownerProfReq := httptest.NewRequest(http.MethodGet, "/v1/users/me/profile", nil)
+	ownerProfReq.Header.Set("Authorization", "Bearer "+pairOwner.AccessToken)
+	ownerProfReq.Header.Set("X-Telefam-Device-FP", devOwner)
+	ownerProfRec := httptest.NewRecorder()
+	mux.ServeHTTP(ownerProfRec, ownerProfReq)
+	var ownerProf UserProfileResponse
+	_ = json.NewDecoder(ownerProfRec.Body).Decode(&ownerProf)
+	if len(ownerProf.Posts) != 0 || len(ownerProf.LockedPosts) != 1 || len(ownerProf.SavedPosts) != 1 || ownerProf.LockedPosts[0].Privacy != "private" {
+		t.Fatalf("expected private post moved to LockedPosts, got posts=%d locked=%d saved=%d", len(ownerProf.Posts), len(ownerProf.LockedPosts), len(ownerProf.SavedPosts))
+	}
+
+	friendFeedAfterReq := httptest.NewRequest(http.MethodGet, "/v1/feeds?tab=for_you", nil)
+	friendFeedAfterReq.Header.Set("Authorization", "Bearer "+pairFriend.AccessToken)
+	friendFeedAfterReq.Header.Set("X-Telefam-Device-FP", devFriend)
+	friendFeedAfterRec := httptest.NewRecorder()
+	mux.ServeHTTP(friendFeedAfterRec, friendFeedAfterReq)
+	var friendFeedAfter feeds.FeedPageResponse
+	_ = json.NewDecoder(friendFeedAfterRec.Body).Decode(&friendFeedAfter)
+	if len(friendFeedAfter.Items) != 0 {
+		t.Fatalf("expected private post excluded from friend's For You feed, got %+v", friendFeedAfter.Items)
+	}
+}
+
 
 
 

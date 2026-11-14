@@ -19,6 +19,7 @@ type AuthorSummary struct {
 	FullName    string `json:"full_name"`
 	AvatarURL   string `json:"avatar_url,omitempty"`
 	IsFollowing bool   `json:"is_following"`
+	FollowsYou  bool   `json:"follows_you"`
 }
 
 type FeedVideoRendition struct {
@@ -38,6 +39,7 @@ type FeedItem struct {
 	AuthorAvatarURL     string               `json:"author_avatar_url,omitempty"`
 	IsFollowingAuthor   bool                 `json:"is_following_author"`
 	IsOwner             bool                 `json:"is_owner"`
+	Privacy             posts.PostPrivacy    `json:"privacy"`
 	Mode                posts.PostMode       `json:"mode"`
 	TextContent         string               `json:"text_content,omitempty"`
 	Caption             string               `json:"caption,omitempty"`
@@ -335,25 +337,89 @@ func (e *Engine) RecordUserReport(reporterID, targetID, reason, details string) 
 	})
 }
 
+func CanViewPost(viewerUserID string, p *posts.StoredPost, author AuthorSummary) bool {
+	if p == nil {
+		return false
+	}
+	if p.AuthorUserID == viewerUserID {
+		return true
+	}
+	switch posts.NormalizePrivacy(string(p.Privacy)) {
+	case posts.PrivacyPrivate:
+		return false
+	case posts.PrivacyFriends:
+		return author.IsFollowing && author.FollowsYou
+	default:
+		return true
+	}
+}
+
 func (e *Engine) BuildAuthorFeedItems(
 	viewerUserID string,
 	authorPosts []*posts.StoredPost,
 	author AuthorSummary,
-) ([]FeedItem, int64) {
+) (publicAndFriends []FeedItem, lockedPrivate []FeedItem, totalLikes int64) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
-	out := make([]FeedItem, 0, len(authorPosts))
-	var totalLikes int64
+	publicAndFriends = make([]FeedItem, 0, len(authorPosts))
+	lockedPrivate = make([]FeedItem, 0)
 	for _, p := range authorPosts {
 		if p == nil {
 			continue
 		}
+		if !CanViewPost(viewerUserID, p, author) {
+			continue
+		}
 		item := e.buildFeedItemLocked(viewerUserID, p, author, "", float64(p.CreatedAtMs))
 		totalLikes += item.LikesCount
-		out = append(out, item)
+		if p.AuthorUserID == viewerUserID && posts.NormalizePrivacy(string(p.Privacy)) == posts.PrivacyPrivate {
+			lockedPrivate = append(lockedPrivate, item)
+		} else {
+			publicAndFriends = append(publicAndFriends, item)
+		}
 	}
-	return out, totalLikes
+	return publicAndFriends, lockedPrivate, totalLikes
+}
+
+func (e *Engine) BuildOwnerSavedAndRepostedItems(
+	ownerUserID string,
+	allPosts []*posts.StoredPost,
+	authorResolver func(userID string) AuthorSummary,
+) (saved []FeedItem, reposted []FeedItem) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	saved = make([]FeedItem, 0)
+	reposted = make([]FeedItem, 0)
+	blocked := e.blockedUsers[ownerUserID]
+	for _, p := range allPosts {
+		if p == nil {
+			continue
+		}
+		if blocked != nil && blocked[p.AuthorUserID] {
+			continue
+		}
+		author := authorResolver(p.AuthorUserID)
+		if !CanViewPost(ownerUserID, p, author) {
+			continue
+		}
+		isFav := e.favourites[p.PostID] != nil && e.favourites[p.PostID][ownerUserID]
+		_, isRep := e.reposts[p.PostID][ownerUserID]
+		if !isFav && !isRep {
+			continue
+		}
+		item := e.buildFeedItemLocked(ownerUserID, p, author, "", float64(p.CreatedAtMs))
+		if isFav {
+			saved = append(saved, item)
+		}
+		if isRep {
+			reposted = append(reposted, item)
+		}
+	}
+	sort.Slice(saved, func(i, j int) bool { return saved[i].CreatedAtMs > saved[j].CreatedAtMs })
+	sort.Slice(reposted, func(i, j int) bool { return reposted[i].CreatedAtMs > reposted[j].CreatedAtMs })
+	return saved, reposted
 }
 
 func (e *Engine) GetFeed(
@@ -388,6 +454,10 @@ func (e *Engine) GetFeed(
 		if p == nil {
 			continue
 		}
+		// Private posts only belong in the owner's Locked profile tab, never in For You or Following feeds
+		if posts.NormalizePrivacy(string(p.Privacy)) == posts.PrivacyPrivate {
+			continue
+		}
 		if suppressed != nil && suppressed[p.PostID] {
 			continue
 		}
@@ -396,6 +466,9 @@ func (e *Engine) GetFeed(
 		}
 
 		author := authorResolver(p.AuthorUserID)
+		if !CanViewPost(viewerUserID, p, author) {
+			continue
+		}
 		repostUser := e.findVisibleRepostAuthorLocked(p.PostID, viewerUserID, blocked, authorResolver)
 		isFollowingFeedEligible := author.IsFollowing || p.AuthorUserID == viewerUserID || repostUser != ""
 
@@ -470,6 +543,7 @@ func (e *Engine) Search(
 
 	tagCounts := make(map[string]int64)
 	matched := make([]FeedItem, 0, len(allPosts))
+	var visibleCorpusCount int64
 
 	for _, p := range allPosts {
 		if p == nil {
@@ -478,11 +552,17 @@ func (e *Engine) Search(
 		if blocked != nil && blocked[p.AuthorUserID] {
 			continue
 		}
+		if posts.NormalizePrivacy(string(p.Privacy)) == posts.PrivacyPrivate {
+			continue
+		}
+		author := authorResolver(p.AuthorUserID)
+		if !CanViewPost(viewerUserID, p, author) {
+			continue
+		}
+		visibleCorpusCount++
 		for _, h := range p.Hashtags {
 			tagCounts[h] = tagCounts[h] + 1
 		}
-
-		author := authorResolver(p.AuthorUserID)
 		if shortcut != "" && shortcut != "all" {
 			shortcutMatched := false
 			for _, h := range p.Hashtags {
@@ -531,7 +611,7 @@ func (e *Engine) Search(
 	})
 
 	shortcuts := make([]SearchShortcut, 0, min(len(tagList), 10)+1)
-	shortcuts = append(shortcuts, SearchShortcut{Key: "all", Label: "All", Count: int64(len(allPosts))})
+	shortcuts = append(shortcuts, SearchShortcut{Key: "all", Label: "All", Count: visibleCorpusCount})
 	for i := 0; i < len(tagList) && i < 10; i++ {
 		shortcuts = append(shortcuts, SearchShortcut{
 			Key:   tagList[i].tag,
@@ -729,6 +809,7 @@ func (e *Engine) buildFeedItemLocked(
 		AuthorAvatarURL:     author.AvatarURL,
 		IsFollowingAuthor:   author.IsFollowing,
 		IsOwner:             p.AuthorUserID == viewerUserID,
+		Privacy:             posts.NormalizePrivacy(string(p.Privacy)),
 		Mode:                p.Mode,
 		TextContent:         p.TextContent,
 		Caption:             p.Caption,

@@ -45,6 +45,8 @@ data class UserProfileEntity(
   val avatarLocalPath: String?,
   val avatarSha256: String?,
   val avatarDHash: String?,
+  val usernameChangedAtMs: Long = 0L,
+  val backgroundsJson: String = "[]",
   val updatedAtMs: Long,
 )
 
@@ -232,6 +234,7 @@ data class CachedFeedPostEntity(
   val sortOrder: Int,
   val isHiddenByUser: Boolean,
   val viewsCount: Long = 0L,
+  val privacy: String = "public",
   val createdAtMs: Long,
   val cachedAtMs: Long,
 )
@@ -258,7 +261,17 @@ data class CachedUserProfileEntity(
   val isBlocked: Boolean,
   val riskScore: Double,
   val relationshipState: String,
+  val gender: String = "",
+  val dateOfBirth: String = "",
+  val phoneNumber: String = "",
+  val usernameChangedAtMs: Long = 0L,
+  val nextUsernameChangeMs: Long = 0L,
+  val backgroundUrlsJson: String = "[]",
+  val backgroundsJson: String = "[]",
   val postsJson: String,
+  val savedPostsJson: String = "[]",
+  val repostedPostsJson: String = "[]",
+  val lockedPostsJson: String = "[]",
   val cachedAtMs: Long,
 )
 

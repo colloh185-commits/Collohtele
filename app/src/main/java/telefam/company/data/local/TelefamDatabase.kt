@@ -25,7 +25,7 @@ import androidx.room.RoomDatabase
     CachedUserProfileEntity::class,
     CachedUserConnectionEntity::class,
   ],
-  version = 6,
+  version = 7,
   exportSchema = false,
 )
 abstract class TelefamDatabase : RoomDatabase() {

@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -37,8 +38,10 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.PlayArrow
@@ -63,6 +66,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -70,7 +74,6 @@ import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -80,6 +83,10 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
@@ -89,10 +96,10 @@ import coil.compose.AsyncImage
 import com.telefam.company.app.R
 import kotlinx.coroutines.delay
 import telefam.company.core.AdaptiveStreamSelector
-import telefam.company.core.FeedAspectRatioCalculator
 import telefam.company.core.FeedTab
 import telefam.company.core.NetworkTier
 import telefam.company.core.PostMode
+import telefam.company.core.PostPrivacy
 import telefam.company.core.PostSongTrack
 import telefam.company.core.TelefamPostRules
 import telefam.company.core.formatCompactCount
@@ -130,6 +137,7 @@ fun ReusableVideoFeedScreen(
   initialIndex: Int = 0,
   activeTab: FeedTab = FeedTab.FOR_YOU,
   isStandaloneViewer: Boolean = false,
+  isHostActive: Boolean = true,
   isLoading: Boolean = false,
   hasMore: Boolean = false,
   networkTier: NetworkTier = NetworkTier.GOOD,
@@ -154,6 +162,7 @@ fun ReusableVideoFeedScreen(
   onReportPost: (postId: String, reason: String) -> Unit,
   onBlockAuthor: (postId: String, authorUserId: String) -> Unit,
   onEditOwnerPost: (FeedUiItem) -> Unit,
+  onChangePostPrivacy: (postId: String, privacy: PostPrivacy) -> Unit = { _, _ -> },
   onDeleteOwnerPost: (postId: String) -> Unit,
   onTapHashtag: (tag: String, mode: PostMode) -> Unit,
   onTapAudio: (song: PostSongTrack, mode: PostMode) -> Unit,
@@ -162,6 +171,11 @@ fun ReusableVideoFeedScreen(
   onShowToast: (String) -> Unit,
 ) {
   val context = LocalContext.current
+  val lifecycleOwner = LocalLifecycleOwner.current
+
+  LaunchedEffect(streamAccessToken, streamDeviceFp) {
+    TelefamVideoCacheManager.updateCredentials(streamAccessToken, streamDeviceFp)
+  }
 
   // Shared ExoPlayer instance tuned with 512MB SimpleCache & play-ahead buffering
   val exoPlayer = remember(context) {
@@ -174,20 +188,85 @@ fun ReusableVideoFeedScreen(
     )
   }
 
+  // Dedicated looping audio ExoPlayer so posts (VIDEO / PHOTOS / TEXT) play attached songs smoothly
+  val songPlayer = remember(context) {
+    TelefamVideoCacheManager.buildFeedAudioExoPlayer(
+      context = context,
+      repeatOne = true,
+    )
+  }
+
   var isPlayerBuffering by remember { mutableStateOf(false) }
+  var isVideoPlaybackFailed by remember { mutableStateOf(false) }
+  var fallbackPrimaryUrl by remember { mutableStateOf("") }
+  var activeStreamUrl by remember { mutableStateOf("") }
   var userPausedCurrent by remember { mutableStateOf(false) }
   var isFastForward2x by remember { mutableStateOf(false) }
 
-  DisposableEffect(exoPlayer) {
+  DisposableEffect(exoPlayer, songPlayer) {
     val listener = object : Player.Listener {
       override fun onPlaybackStateChanged(playbackState: Int) {
-        isPlayerBuffering = playbackState == Player.STATE_BUFFERING
+        when (playbackState) {
+          Player.STATE_BUFFERING -> isPlayerBuffering = true
+          Player.STATE_READY -> {
+            isPlayerBuffering = false
+            isVideoPlaybackFailed = false
+          }
+          Player.STATE_ENDED, Player.STATE_IDLE -> isPlayerBuffering = false
+        }
+      }
+
+      override fun onPlayerError(error: PlaybackException) {
+        val fallback = fallbackPrimaryUrl
+        if (fallback.isNotBlank() && fallback != activeStreamUrl) {
+          activeStreamUrl = fallback
+          isVideoPlaybackFailed = false
+          exoPlayer.setMediaItem(TelefamVideoCacheManager.createMediaItem(fallback))
+          exoPlayer.prepare()
+          exoPlayer.playWhenReady = !userPausedCurrent
+        } else {
+          isPlayerBuffering = false
+          isVideoPlaybackFailed = true
+        }
       }
     }
     exoPlayer.addListener(listener)
     onDispose {
       exoPlayer.removeListener(listener)
       exoPlayer.release()
+      songPlayer.release()
+    }
+  }
+
+  DisposableEffect(lifecycleOwner, exoPlayer, songPlayer, isHostActive) {
+    val observer = LifecycleEventObserver { _, event ->
+      when (event) {
+        Lifecycle.Event.ON_PAUSE, Lifecycle.Event.ON_STOP -> {
+          exoPlayer.playWhenReady = false
+          songPlayer.playWhenReady = false
+        }
+        Lifecycle.Event.ON_RESUME -> {
+          if (isHostActive && !userPausedCurrent) {
+            if (exoPlayer.mediaItemCount > 0) exoPlayer.playWhenReady = true
+            if (songPlayer.mediaItemCount > 0) songPlayer.playWhenReady = true
+          }
+        }
+        else -> Unit
+      }
+    }
+    lifecycleOwner.lifecycle.addObserver(observer)
+    onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+  }
+
+  LaunchedEffect(isHostActive) {
+    if (!isHostActive) {
+      exoPlayer.playWhenReady = false
+      exoPlayer.pause()
+      songPlayer.playWhenReady = false
+      songPlayer.pause()
+    } else if (!userPausedCurrent) {
+      if (exoPlayer.mediaItemCount > 0) exoPlayer.playWhenReady = true
+      if (songPlayer.mediaItemCount > 0) songPlayer.playWhenReady = true
     }
   }
 
@@ -199,13 +278,12 @@ fun ReusableVideoFeedScreen(
   var moreSheetItem by remember { mutableStateOf<FeedUiItem?>(null) }
   var reportTargetPostId by remember { mutableStateOf<String?>(null) }
 
-  BoxWithConstraints(
+  Box(
     modifier = Modifier
       .fillMaxSize()
       .background(Color(0xFF07080B))
       .testTag("reusable_video_feed_root"),
   ) {
-    val isWideScreen = maxWidth >= 700.dp
 
     if (items.isEmpty()) {
       Box(
@@ -273,28 +351,49 @@ fun ReusableVideoFeedScreen(
       val currentItem = items.getOrNull(pagerState.currentPage)
       val latestRecordWatch by rememberUpdatedState(onRecordWatchProgress)
 
-      // Switch media item smoothly + preload next 5 upcoming videos + record watch telemetry
+      // Switch media item smoothly + preload next 5 upcoming videos + sync attached song + record watch telemetry
       LaunchedEffect(pagerState.currentPage, items, networkTier, streamAccessToken) {
         val pageIdx = pagerState.currentPage
         val active = items.getOrNull(pageIdx) ?: return@LaunchedEffect
         userPausedCurrent = false
         isFastForward2x = false
+        isVideoPlaybackFailed = false
         exoPlayer.setPlaybackParameters(PlaybackParameters(1.0f))
 
+        val baseApiUrl = BuildConfig.TELEFAM_API_BASE_URL
+        val resolvedSongUrl = active.song?.previewUrl?.trim().orEmpty().let { raw ->
+          if (raw.isBlank()) "" else AdaptiveStreamSelector.resolveMediaUrl(baseApiUrl, raw)
+        }
+
         if (active.mode == PostMode.VIDEO && active.primaryStreamUrl.isNotBlank()) {
+          val resolvedPrimary = AdaptiveStreamSelector.resolveMediaUrl(baseApiUrl, active.primaryStreamUrl)
           val streamUrl = AdaptiveStreamSelector.selectRenditionUrl(
-            baseUrl = "",
+            baseUrl = baseApiUrl,
             primaryVideoUrl = active.primaryStreamUrl,
             renditions = active.renditions,
             networkTier = networkTier,
-          ).ifBlank { active.primaryStreamUrl }
-          exoPlayer.volume = if (active.muteOriginalAudio || active.song != null) 0f else 1f
+          ).ifBlank { resolvedPrimary }
+          fallbackPrimaryUrl = resolvedPrimary
+          activeStreamUrl = streamUrl
+          exoPlayer.volume = if (active.muteOriginalAudio || resolvedSongUrl.isNotBlank()) 0f else 1f
           exoPlayer.setMediaItem(TelefamVideoCacheManager.createMediaItem(streamUrl))
           exoPlayer.prepare()
-          exoPlayer.playWhenReady = true
+          exoPlayer.playWhenReady = isHostActive
         } else {
+          fallbackPrimaryUrl = ""
+          activeStreamUrl = ""
           exoPlayer.pause()
           exoPlayer.clearMediaItems()
+        }
+
+        if (resolvedSongUrl.isNotBlank()) {
+          songPlayer.volume = 1f
+          songPlayer.setMediaItem(TelefamVideoCacheManager.createMediaItem(resolvedSongUrl))
+          songPlayer.prepare()
+          songPlayer.playWhenReady = isHostActive
+        } else {
+          songPlayer.pause()
+          songPlayer.clearMediaItems()
         }
 
         // Preload next 5 upcoming videos into disk LRU SimpleCache
@@ -304,11 +403,11 @@ fun ReusableVideoFeedScreen(
           .take(5)
           .map { item ->
             AdaptiveStreamSelector.selectRenditionUrl(
-              baseUrl = "",
+              baseUrl = baseApiUrl,
               primaryVideoUrl = item.primaryStreamUrl,
               renditions = item.renditions,
               networkTier = networkTier,
-            ).ifBlank { item.primaryStreamUrl }
+            ).ifBlank { AdaptiveStreamSelector.resolveMediaUrl(baseApiUrl, item.primaryStreamUrl) }
           }
           .toList()
         if (nextFiveUrls.isNotEmpty()) {
@@ -325,13 +424,15 @@ fun ReusableVideoFeedScreen(
           onLoadMore()
         }
 
-        val startMs = System.currentTimeMillis()
-        while (true) {
-          delay(2_000L)
-          val elapsed = System.currentTimeMillis() - startMs
-          if (elapsed >= 4_000L) {
-            latestRecordWatch(active.postId, elapsed, active.durationMs.coerceAtLeast(5_000L))
-            break
+        if (isHostActive) {
+          val startMs = System.currentTimeMillis()
+          while (true) {
+            delay(2_000L)
+            val elapsed = System.currentTimeMillis() - startMs
+            if (elapsed >= 4_000L) {
+              latestRecordWatch(active.postId, elapsed, active.durationMs.coerceAtLeast(5_000L))
+              break
+            }
           }
         }
       }
@@ -345,6 +446,7 @@ fun ReusableVideoFeedScreen(
       ) { pageIndex ->
         val item = items[pageIndex]
         val isActivePage = pagerState.currentPage == pageIndex
+        val hasSongAudio = !item.song?.previewUrl.isNullOrBlank()
         var showDoubleTapHeart by remember(item.postId) { mutableStateOf(false) }
 
         LaunchedEffect(showDoubleTapHeart) {
@@ -359,21 +461,25 @@ fun ReusableVideoFeedScreen(
             .fillMaxSize()
             .padding(bottom = bottomChromePadding),
         ) {
-          // Adaptive Centered Media Stage respecting ALL aspect ratios without stretching/overlap
-          BoxWithConstraints(
+          // Full-screen Media Stage: FIT + blurred ambient background preserves ALL aspect ratios cleanly
+          Box(
             modifier = Modifier
               .fillMaxSize()
-              .then(if (isWideScreen) Modifier.widthIn(max = 580.dp).align(Alignment.Center) else Modifier)
-              .pointerInput(item.postId, isActivePage) {
+              .pointerInput(item.postId, isActivePage, hasSongAudio) {
                 detectTapGestures(
                   onDoubleTap = {
                     showDoubleTapHeart = true
                     onDoubleTapLike(item.postId)
                   },
                   onTap = {
-                    if (isActivePage && item.mode == PostMode.VIDEO) {
+                    if (isActivePage && (item.mode == PostMode.VIDEO || hasSongAudio)) {
                       userPausedCurrent = !userPausedCurrent
-                      exoPlayer.playWhenReady = !userPausedCurrent
+                      if (item.mode == PostMode.VIDEO) {
+                        exoPlayer.playWhenReady = !userPausedCurrent
+                      }
+                      if (hasSongAudio) {
+                        songPlayer.playWhenReady = !userPausedCurrent
+                      }
                     }
                   },
                   onLongPress = {
@@ -399,29 +505,30 @@ fun ReusableVideoFeedScreen(
               },
             contentAlignment = Alignment.Center,
           ) {
-            val density = LocalDensity.current
-            val stageW = with(density) { maxWidth.toPx() }
-            val stageH = with(density) { maxHeight.toPx() }
-            val fitted = remember(stageW, stageH, item.width, item.height) {
-              FeedAspectRatioCalculator.computeFittedSize(
-                containerWidth = stageW,
-                containerHeight = stageH,
-                mediaWidth = item.width,
-                mediaHeight = item.height,
-              )
-            }
-            val fittedW = with(density) { fitted.width.toDp() }
-            val fittedH = with(density) { fitted.height.toDp() }
-
             when (item.mode) {
               PostMode.VIDEO -> {
                 Box(
                   modifier = Modifier
-                    .size(width = fittedW, height = fittedH)
-                    .background(Color.Black),
+                    .fillMaxSize()
+                    .background(Color(0xFF07080B)),
                   contentAlignment = Alignment.Center,
                 ) {
+                  // 1) Full-screen blurred ambient background behind FIT video bars
                   if (item.thumbnailUrl.isNotBlank()) {
+                    AsyncImage(
+                      model = item.thumbnailUrl,
+                      contentDescription = null,
+                      contentScale = ContentScale.Crop,
+                      modifier = Modifier
+                        .fillMaxSize()
+                        .blur(28.dp),
+                    )
+                    Box(
+                      modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.44f)),
+                    )
+                    // Crisp FIT thumbnail preview before first frame renders / on non-active pages
                     AsyncImage(
                       model = item.thumbnailUrl,
                       contentDescription = item.caption.ifBlank { item.authorFullName },
@@ -429,16 +536,20 @@ fun ReusableVideoFeedScreen(
                       modifier = Modifier.fillMaxSize(),
                     )
                   }
-                  if (isActivePage && item.primaryStreamUrl.isNotBlank()) {
+                  // 2) Full-screen PlayerView (TextureView + RESIZE_MODE_FIT + transparent shutter)
+                  if (isActivePage && item.primaryStreamUrl.isNotBlank() && !isVideoPlaybackFailed) {
                     AndroidView(
                       factory = { ctx ->
                         (LayoutInflater.from(ctx).inflate(R.layout.view_feed_player, null) as PlayerView).apply {
                           resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
                           useController = false
+                          setShutterBackgroundColor(android.graphics.Color.TRANSPARENT)
+                          setBackgroundColor(android.graphics.Color.TRANSPARENT)
                           player = exoPlayer
                         }
                       },
                       update = { pv ->
+                        pv.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
                         if (pv.player !== exoPlayer) pv.player = exoPlayer
                       },
                       modifier = Modifier.fillMaxSize(),
@@ -450,14 +561,35 @@ fun ReusableVideoFeedScreen(
               PostMode.PHOTOS -> {
                 if (item.photoUrls.isNotEmpty()) {
                   val photoPager = rememberPagerState(pageCount = { item.photoUrls.size })
-                  Box(modifier = Modifier.size(width = fittedW, height = fittedH)) {
+                  val currentBackdrop = item.photoUrls.getOrNull(photoPager.currentPage).orEmpty()
+                  Box(
+                    modifier = Modifier
+                      .fillMaxSize()
+                      .background(Color(0xFF07080B)),
+                    contentAlignment = Alignment.Center,
+                  ) {
+                    if (currentBackdrop.isNotBlank()) {
+                      AsyncImage(
+                        model = currentBackdrop,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                          .fillMaxSize()
+                          .blur(28.dp),
+                      )
+                      Box(
+                        modifier = Modifier
+                          .fillMaxSize()
+                          .background(Color.Black.copy(alpha = 0.44f)),
+                      )
+                    }
                     HorizontalPager(
                       state = photoPager,
                       modifier = Modifier.fillMaxSize(),
                     ) { pIdx ->
                       AsyncImage(
                         model = item.photoUrls[pIdx],
-                        contentDescription = null,
+                        contentDescription = item.caption.ifBlank { item.authorFullName },
                         contentScale = ContentScale.Fit,
                         modifier = Modifier.fillMaxSize(),
                       )
@@ -466,8 +598,8 @@ fun ReusableVideoFeedScreen(
                       Row(
                         modifier = Modifier
                           .align(Alignment.BottomCenter)
-                          .padding(bottom = 12.dp)
-                          .background(Color.Black.copy(alpha = 0.45f), RoundedCornerShape(10.dp))
+                          .padding(bottom = 14.dp)
+                          .background(Color.Black.copy(alpha = 0.48f), RoundedCornerShape(10.dp))
                           .padding(horizontal = 8.dp, vertical = 4.dp),
                         horizontalArrangement = Arrangement.spacedBy(5.dp),
                       ) {
@@ -492,6 +624,7 @@ fun ReusableVideoFeedScreen(
                   theme = theme,
                   modifier = Modifier
                     .padding(horizontal = 20.dp)
+                    .widthIn(max = 520.dp)
                     .fillMaxWidth()
                     .height(340.dp)
                     .clip(RoundedCornerShape(24.dp)),
@@ -526,7 +659,7 @@ fun ReusableVideoFeedScreen(
 
             // Pause emblem
             AnimatedVisibility(
-              visible = isActivePage && userPausedCurrent && item.mode == PostMode.VIDEO,
+              visible = isActivePage && userPausedCurrent && (item.mode == PostMode.VIDEO || hasSongAudio),
               enter = fadeIn(),
               exit = fadeOut(),
             ) {
@@ -572,7 +705,7 @@ fun ReusableVideoFeedScreen(
             }
 
             // Red/White/Green 3-dot spinner when buffering or on weak internet
-            if (isActivePage && item.mode == PostMode.VIDEO && (isPlayerBuffering || networkTier == NetworkTier.WEAK && !userPausedCurrent && !exoPlayer.isPlaying)) {
+            if (isActivePage && item.mode == PostMode.VIDEO && !isVideoPlaybackFailed && (isPlayerBuffering || (networkTier == NetworkTier.WEAK && !userPausedCurrent && !exoPlayer.isPlaying))) {
               TelefamTricolorSpinner(size = 44.dp)
             }
 
@@ -762,6 +895,7 @@ fun ReusableVideoFeedScreen(
       onReport = { reportTargetPostId = item.postId },
       onBlock = { onBlockAuthor(item.postId, item.authorUserId) },
       onEdit = { onEditOwnerPost(item) },
+      onChangePrivacy = { newPrivacy -> onChangePostPrivacy(item.postId, newPrivacy) },
       onDelete = { onDeleteOwnerPost(item.postId) },
       onDismiss = { moreSheetItem = null },
     )
@@ -857,15 +991,62 @@ private fun FeedBottomLeftMetadata(
         .testTag("feed_author_username"),
     )
 
-    if (item.caption.isNotBlank()) {
-      Text(
-        text = item.caption,
-        color = Color.White.copy(alpha = 0.96f),
-        fontSize = 13.5.sp,
-        lineHeight = 18.sp,
-        maxLines = 3,
-        overflow = TextOverflow.Ellipsis,
-      )
+    val captionText = item.caption.ifBlank {
+      if (item.mode != PostMode.TEXT) item.textContent else ""
+    }
+    if (captionText.isNotBlank()) {
+      var isCaptionExpanded by remember(item.postId) { mutableStateOf(false) }
+      var hasOverflow by remember(item.postId) { mutableStateOf(false) }
+      val showToggle = hasOverflow || isCaptionExpanded || captionText.length > 85 || captionText.contains('\n')
+
+      Column(modifier = Modifier.fillMaxWidth()) {
+        if (isCaptionExpanded) {
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .heightIn(max = 170.dp)
+              .verticalScroll(rememberScrollState()),
+          ) {
+            Text(
+              text = captionText,
+              color = Color.White.copy(alpha = 0.96f),
+              fontSize = 13.5.sp,
+              lineHeight = 18.sp,
+              modifier = Modifier.testTag("feed_caption_text"),
+            )
+          }
+        } else {
+          Text(
+            text = captionText,
+            color = Color.White.copy(alpha = 0.96f),
+            fontSize = 13.5.sp,
+            lineHeight = 18.sp,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            onTextLayout = { res ->
+              if (res.hasVisualOverflow) hasOverflow = true
+            },
+            modifier = Modifier.testTag("feed_caption_text"),
+          )
+        }
+        if (showToggle) {
+          Text(
+            text = if (isCaptionExpanded) {
+              stringResource(R.string.feed_read_less)
+            } else {
+              stringResource(R.string.feed_read_more)
+            },
+            color = Color.White,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier
+              .clip(RoundedCornerShape(6.dp))
+              .clickable { isCaptionExpanded = !isCaptionExpanded }
+              .padding(top = 3.dp, bottom = 2.dp, end = 8.dp)
+              .testTag("feed_caption_toggle"),
+          )
+        }
+      }
     }
 
     // Tappable #hashtags -> autofills Post Screen with zero mistakes

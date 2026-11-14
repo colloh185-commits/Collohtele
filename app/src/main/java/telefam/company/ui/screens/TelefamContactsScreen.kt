@@ -72,6 +72,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
 import com.telefam.company.app.R
 import kotlinx.coroutines.flow.distinctUntilChanged
 import telefam.company.core.ContactFilterTab
@@ -618,6 +619,14 @@ private fun ContactAvatarCircle(
       .background(bgColor),
     contentAlignment = Alignment.Center,
   ) {
+    Text(
+      text = initials,
+      style = MaterialTheme.typography.titleSmall.copy(
+        fontSize = 15.sp,
+        fontWeight = FontWeight.Bold,
+      ),
+      color = fgColor,
+    )
     if (bitmap != null) {
       Image(
         bitmap = bitmap,
@@ -625,14 +634,12 @@ private fun ContactAvatarCircle(
         contentScale = ContentScale.Crop,
         modifier = Modifier.fillMaxSize(),
       )
-    } else {
-      Text(
-        text = initials,
-        style = MaterialTheme.typography.titleSmall.copy(
-          fontSize = 15.sp,
-          fontWeight = FontWeight.Bold,
-        ),
-        color = fgColor,
+    } else if (!avatarLocalPath.isNullOrBlank()) {
+      AsyncImage(
+        model = avatarLocalPath,
+        contentDescription = stringResource(R.string.cd_contact_avatar),
+        contentScale = ContentScale.Crop,
+        modifier = Modifier.fillMaxSize(),
       )
     }
   }

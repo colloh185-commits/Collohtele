@@ -47,7 +47,13 @@ import telefam.company.data.network.HashtagsSearchResponseDto
 import telefam.company.data.network.MediaUploadResponseDto
 import telefam.company.data.network.NetworkQualityMonitor
 import telefam.company.data.network.OAuthDto
+import telefam.company.data.network.ProfileBackgroundAttachDto
+import telefam.company.data.network.ProfileBackgroundListResponseDto
+import telefam.company.data.network.ProfileBackgroundReorderDto
+import telefam.company.data.network.ProfileBackgroundUploadResponseDto
 import telefam.company.data.network.ProfileSetupDto
+import telefam.company.data.network.ProfileUpdateRequestDto
+import telefam.company.data.network.ProfileUpdateResponseDto
 import telefam.company.data.network.RefreshTokenDto
 import telefam.company.data.network.RequestOtpDto
 import telefam.company.data.network.RequestOtpResponseDto
@@ -471,6 +477,41 @@ class TelefamAuthRobolectricTest {
       body: UserReportRequestDto,
     ): Response<UserReportResponseDto> =
       Response.success(UserReportResponseDto(success = true, targetUserId = userId, reason = body.reason))
+
+    override suspend fun uploadProfileBackground(
+      bearer: String,
+      deviceFingerprint: String,
+      imageBody: RequestBody,
+    ): Response<ProfileBackgroundUploadResponseDto> =
+      Response.success(ProfileBackgroundUploadResponseDto(success = true, mediaId = "bg1"))
+
+    override suspend fun attachProfileBackground(
+      bearer: String,
+      deviceFingerprint: String,
+      body: ProfileBackgroundAttachDto,
+    ): Response<ProfileBackgroundListResponseDto> =
+      Response.success(ProfileBackgroundListResponseDto(success = true))
+
+    override suspend fun reorderProfileBackgrounds(
+      bearer: String,
+      deviceFingerprint: String,
+      body: ProfileBackgroundReorderDto,
+    ): Response<ProfileBackgroundListResponseDto> =
+      Response.success(ProfileBackgroundListResponseDto(success = true))
+
+    override suspend fun deleteProfileBackground(
+      bearer: String,
+      deviceFingerprint: String,
+      mediaId: String,
+    ): Response<ProfileBackgroundListResponseDto> =
+      Response.success(ProfileBackgroundListResponseDto(success = true))
+
+    override suspend fun updateProfile(
+      bearer: String,
+      deviceFingerprint: String,
+      body: ProfileUpdateRequestDto,
+    ): Response<ProfileUpdateResponseDto> =
+      Response.success(ProfileUpdateResponseDto(success = true, username = body.username, fullName = body.fullName))
 
     override suspend fun downloadMedia(url: String): Response<ResponseBody> =
       Response.success(ByteArray(0).toResponseBody("application/octet-stream".toMediaType()))

@@ -38,9 +38,13 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowNetworkCapabilities
 import retrofit2.Response
+import androidx.compose.ui.test.assertIsNotEnabled
 import telefam.company.core.ContactRelationshipState
+import telefam.company.core.OwnerProfileTab
 import telefam.company.core.PostFontOption
 import telefam.company.core.PostMode
+import telefam.company.core.PostPrivacy
+import telefam.company.core.ProfileBackgroundItem
 import telefam.company.core.ProfilePostFilter
 import telefam.company.core.formatProfileMetricCount
 import telefam.company.data.local.DeviceIdentityStore
@@ -66,7 +70,14 @@ import telefam.company.data.network.HashtagsSearchResponseDto
 import telefam.company.data.network.MediaUploadResponseDto
 import telefam.company.data.network.NetworkQualityMonitor
 import telefam.company.data.network.OAuthDto
+import telefam.company.data.network.ProfileBackgroundAttachDto
+import telefam.company.data.network.ProfileBackgroundItemDto
+import telefam.company.data.network.ProfileBackgroundListResponseDto
+import telefam.company.data.network.ProfileBackgroundReorderDto
+import telefam.company.data.network.ProfileBackgroundUploadResponseDto
 import telefam.company.data.network.ProfileSetupDto
+import telefam.company.data.network.ProfileUpdateRequestDto
+import telefam.company.data.network.ProfileUpdateResponseDto
 import telefam.company.data.network.RefreshTokenDto
 import telefam.company.data.network.RequestOtpDto
 import telefam.company.data.network.RequestOtpResponseDto
@@ -84,15 +95,20 @@ import telefam.company.data.network.UsernameCheckResponseDto
 import telefam.company.data.network.VerifyLinkDto
 import telefam.company.data.network.VerifyOtpDto
 import telefam.company.data.repository.TelefamRepository
+import telefam.company.ui.components.EditBackgroundsBottomSheet
+import telefam.company.ui.components.EditProfileModalSheet
+import telefam.company.ui.components.FeedMoreOptionsSheet
+import telefam.company.ui.components.OwnerProfileSettingsSheet
 import telefam.company.ui.screens.TelefamUserProfileScreen
 import telefam.company.ui.theme.TelefamTheme
 import telefam.company.ui.theme.ThemeMode
 import telefam.company.ui.viewmodel.FeedUiItem
+import telefam.company.ui.viewmodel.ProfileFormState
 import telefam.company.ui.viewmodel.TelefamViewModel
 import telefam.company.ui.viewmodel.UserProfileScreenState
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [35])
+@Config(sdk = [35], qualifiers = "w411dp-h915dp")
 class TelefamProfileNavigationRobolectricTest {
 
   @get:Rule
@@ -372,6 +388,270 @@ class TelefamProfileNavigationRobolectricTest {
     assertEquals(0, openedPostIdx)
   }
 
+  @Test
+  fun `owner profile screen shows hero banner, 4 tabs, and switches private posts into Locked`() {
+    var selectedTab = OwnerProfileTab.POSTS
+    var editClicked = false
+    var bgClicked = false
+
+    val publicPost = FeedUiItem(
+      postId = "owner_pub_1",
+      authorUserId = "caller_1",
+      authorUsername = "colloh",
+      authorFullName = "Felistar",
+      authorAvatarUrl = null,
+      isFollowingAuthor = false,
+      isOwner = true,
+      privacy = PostPrivacy.PUBLIC,
+      mode = PostMode.VIDEO,
+      textContent = "",
+      caption = "Public post",
+      themeId = "crimson",
+      fontOption = PostFontOption.CLASSIC,
+      song = null,
+      hashtags = emptyList(),
+      photoUrls = emptyList(),
+      primaryStreamUrl = "/v1/media/f/pub1.mp4",
+      rawDownloadUrl = "/v1/feeds/owner_pub_1/download",
+      thumbnailUrl = "",
+      renditions = emptyList(),
+      width = 1080,
+      height = 1920,
+      durationMs = 15_000L,
+      muteOriginalAudio = false,
+      contentId = "c_pub_1",
+      likesCount = 3L,
+      commentsCount = 0L,
+      sharesCount = 0L,
+      favouritesCount = 0L,
+      repostsCount = 0L,
+      viewsCount = 120L,
+      isLiked = false,
+      isFavourited = false,
+      isReposted = false,
+      repostedByUsername = "",
+      recommendationLabel = "",
+      createdAtMs = 5_000L,
+    )
+    val privatePost = publicPost.copy(
+      postId = "owner_priv_1",
+      caption = "Private post",
+      privacy = PostPrivacy.PRIVATE,
+      createdAtMs = 4_000L,
+    )
+
+    val ownerState = UserProfileScreenState(
+      userId = "caller_1",
+      fullName = "Felistar",
+      username = "colloh",
+      location = "Konoin, Kenya",
+      followingCount = 1L,
+      followersCount = 1L,
+      likesCount = 5L,
+      isOwner = true,
+      backgrounds = listOf(ProfileBackgroundItem(mediaId = "bg1", url = "/v1/media/f/bg1.jpg")),
+      posts = listOf(publicPost),
+      lockedPosts = listOf(privatePost),
+      activeOwnerTab = OwnerProfileTab.POSTS,
+      isLoading = false,
+    )
+
+    composeRule.setContent {
+      TelefamTheme(themeMode = ThemeMode.DARK) {
+        TelefamUserProfileScreen(
+          profile = ownerState,
+          isEmbeddedOwnProfileTab = true,
+          onBack = {},
+          onToggleFollow = {},
+          onMessageClick = {},
+          onSubscribeClick = {},
+          onOpenConnections = {},
+          onDismissConnections = {},
+          onLoadMoreConnections = {},
+          onToggleConnectionFollow = {},
+          onOpenUserProfile = {},
+          onSelectOwnerTab = { selectedTab = it },
+          onOpenEditProfile = { editClicked = true },
+          onOpenBackgrounds = { bgClicked = true },
+          onSelectFilter = {},
+          onSelectSort = {},
+          onOpenPostAtIndex = { _, _ -> },
+          onBlockUser = {},
+          onUnblockUser = {},
+          onReportUser = { _, _ -> },
+          onShowToast = {},
+        )
+      }
+    }
+
+    composeRule.onNodeWithTag("profile_hero_banner").assertIsDisplayed()
+    composeRule.onNodeWithTag("profile_edit_background_button").performClick()
+    composeRule.onNodeWithTag("profile_edit_button").performClick()
+    composeRule.onNodeWithTag("profile_tab_locked").performClick()
+
+    assertTrue(bgClicked)
+    assertTrue(editClicked)
+    assertEquals(OwnerProfileTab.LOCKED, selectedTab)
+    assertEquals(listOf("owner_priv_1"), ownerState.copy(activeOwnerTab = OwnerProfileTab.LOCKED).filteredAndSortedPosts.map { it.postId })
+  }
+
+  @Test
+  fun `owner settings sheet places logout button strictly first above theme`() {
+    var loggedOut = false
+    composeRule.setContent {
+      TelefamTheme(themeMode = ThemeMode.DARK) {
+        OwnerProfileSettingsSheet(
+          themeMode = ThemeMode.DARK,
+          username = "colloh",
+          email = "colloh@telefam.test",
+          onSignOut = { loggedOut = true },
+          onToggleTheme = {},
+          onDismiss = {},
+        )
+      }
+    }
+
+    composeRule.waitForIdle()
+    val logoutBounds = composeRule.onNodeWithTag("settings_logout_button").fetchSemanticsNode().boundsInRoot
+    val themeBounds = composeRule.onNodeWithTag("settings_theme_button").fetchSemanticsNode().boundsInRoot
+    assertTrue("Log out must appear before Theme in Settings", logoutBounds.top < themeBounds.top)
+
+    composeRule.onNodeWithTag("settings_logout_button").performClick()
+    assertTrue(loggedOut)
+  }
+
+  @Test
+  fun `backgrounds sheet enforces max 5 limit and displays fingerprints`() {
+    val fiveBgs = (1..5).map { idx ->
+      ProfileBackgroundItem(
+        mediaId = "bg_$idx",
+        url = "/v1/media/f/bg_$idx.jpg",
+        sha256Fingerprint = "abcdef1234567890",
+        dHashFingerprint = "1122334455667788",
+        width = 1080,
+        height = 1920,
+        byteSize = 64_000,
+      )
+    }
+
+    composeRule.setContent {
+      TelefamTheme(themeMode = ThemeMode.LIGHT) {
+        EditBackgroundsBottomSheet(
+          backgrounds = fiveBgs,
+          isUploading = false,
+          errorMessage = null,
+          onAddUris = {},
+          onDeleteBackground = {},
+          onReorderBackgrounds = {},
+          onDismiss = {},
+        )
+      }
+    }
+
+    composeRule.waitForIdle()
+    composeRule.onNodeWithTag("backgrounds_add_button").assertIsNotEnabled()
+    composeRule.onNodeWithTag("background_delete_bg_1").assertIsDisplayed()
+  }
+
+  @Test
+  fun `edit profile modal locks username when 14 day cooldown is active`() {
+    val futureUnlock = System.currentTimeMillis() + (7L * 24L * 60L * 60L * 1000L)
+    val lockedOwnerState = UserProfileScreenState(
+      userId = "caller_1",
+      fullName = "Felistar",
+      username = "colloh",
+      location = "Konoin, Kenya",
+      isOwner = true,
+      nextUsernameChangeMs = futureUnlock,
+    )
+
+    composeRule.setContent {
+      TelefamTheme(themeMode = ThemeMode.DARK) {
+        EditProfileModalSheet(
+          profile = lockedOwnerState,
+          formState = ProfileFormState(),
+          cropBitmap = null,
+          isSaving = false,
+          errorMessage = null,
+          onPhotoPicked = {},
+          onDismissCrop = {},
+          onConfirmCrop = { _, _, _, _ -> },
+          onSaveProfile = { _, _, _, _, _, _, _, _, _, _ -> },
+          onDismiss = {},
+        )
+      }
+    }
+
+    composeRule.waitForIdle()
+    composeRule.onNodeWithTag("edit_profile_modal").assertIsDisplayed()
+    composeRule.onNodeWithTag("edit_profile_username_input").assertIsNotEnabled()
+  }
+
+  @Test
+  fun `feed more options sheet exposes owner privacy submenu with public, friends, and private`() {
+    var changedPrivacy: PostPrivacy? = null
+    val ownerFeedItem = FeedUiItem(
+      postId = "p_owner_priv",
+      authorUserId = "caller_1",
+      authorUsername = "colloh",
+      authorFullName = "Felistar",
+      authorAvatarUrl = null,
+      isFollowingAuthor = false,
+      isOwner = true,
+      mode = PostMode.VIDEO,
+      textContent = "",
+      caption = "Privacy test",
+      themeId = "crimson",
+      fontOption = PostFontOption.CLASSIC,
+      song = null,
+      hashtags = emptyList(),
+      photoUrls = emptyList(),
+      primaryStreamUrl = "/v1/media/f/v1.mp4",
+      rawDownloadUrl = "/v1/feeds/p/download",
+      thumbnailUrl = "",
+      renditions = emptyList(),
+      width = 1080,
+      height = 1920,
+      durationMs = 12_000L,
+      muteOriginalAudio = false,
+      contentId = "c1",
+      likesCount = 1L,
+      commentsCount = 0L,
+      sharesCount = 0L,
+      favouritesCount = 0L,
+      repostsCount = 0L,
+      viewsCount = 10L,
+      isLiked = false,
+      isFavourited = false,
+      isReposted = false,
+      repostedByUsername = "",
+      recommendationLabel = "",
+      createdAtMs = 1_000L,
+      privacy = PostPrivacy.PUBLIC,
+    )
+
+    composeRule.setContent {
+      TelefamTheme(themeMode = ThemeMode.DARK) {
+        FeedMoreOptionsSheet(
+          item = ownerFeedItem,
+          onRepost = {},
+          onDownload = {},
+          onNotInterested = {},
+          onReport = {},
+          onBlock = {},
+          onEdit = {},
+          onChangePrivacy = { changedPrivacy = it },
+          onDelete = {},
+          onDismiss = {},
+        )
+      }
+    }
+
+    composeRule.onNodeWithTag("feed_menu_privacy").performClick()
+    composeRule.onNodeWithTag("feed_privacy_option_private").performClick()
+    assertEquals(PostPrivacy.PRIVATE, changedPrivacy)
+  }
+
   private fun setNetworkOnline(online: Boolean) {
     val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
     val active = cm.activeNetwork ?: return
@@ -388,6 +668,7 @@ class TelefamProfileNavigationRobolectricTest {
     val blockedIds = mutableSetOf<String>()
     val reports = mutableListOf<Pair<String, UserReportRequestDto>>()
     val interactions = mutableListOf<FeedInteractionRequestDto>()
+    val ownerBackgrounds = mutableListOf<ProfileBackgroundItemDto>()
 
     private val alexPosts = listOf(
       FeedItemDto(
@@ -581,6 +862,69 @@ class TelefamProfileNavigationRobolectricTest {
 
     override suspend fun syncContactActions(bearer: String, deviceFingerprint: String, body: ContactSyncBatchRequestDto): Response<SyncBatchResponseDto> =
       Response.success(SyncBatchResponseDto(success = true))
+
+    override suspend fun uploadProfileBackground(
+      bearer: String,
+      deviceFingerprint: String,
+      imageBody: RequestBody,
+    ): Response<ProfileBackgroundUploadResponseDto> {
+      val item = ProfileBackgroundItemDto(
+        mediaId = "bg_${ownerBackgrounds.size + 1}",
+        url = "/v1/media/f/bg_${ownerBackgrounds.size + 1}.jpg",
+      )
+      if (ownerBackgrounds.size < 5) ownerBackgrounds.add(item)
+      return Response.success(
+        ProfileBackgroundUploadResponseDto(
+          success = true,
+          mediaId = item.mediaId,
+          background = item,
+          backgrounds = ownerBackgrounds.toList(),
+        ),
+      )
+    }
+
+    override suspend fun attachProfileBackground(
+      bearer: String,
+      deviceFingerprint: String,
+      body: ProfileBackgroundAttachDto,
+    ): Response<ProfileBackgroundListResponseDto> =
+      Response.success(ProfileBackgroundListResponseDto(success = true, backgrounds = ownerBackgrounds.toList()))
+
+    override suspend fun reorderProfileBackgrounds(
+      bearer: String,
+      deviceFingerprint: String,
+      body: ProfileBackgroundReorderDto,
+    ): Response<ProfileBackgroundListResponseDto> {
+      val byId = ownerBackgrounds.associateBy { it.mediaId }
+      val reordered = body.mediaIds.mapNotNull { byId[it] }
+      ownerBackgrounds.clear()
+      ownerBackgrounds.addAll(reordered)
+      return Response.success(ProfileBackgroundListResponseDto(success = true, backgrounds = ownerBackgrounds.toList()))
+    }
+
+    override suspend fun deleteProfileBackground(
+      bearer: String,
+      deviceFingerprint: String,
+      mediaId: String,
+    ): Response<ProfileBackgroundListResponseDto> {
+      ownerBackgrounds.removeAll { it.mediaId == mediaId }
+      return Response.success(ProfileBackgroundListResponseDto(success = true, backgrounds = ownerBackgrounds.toList()))
+    }
+
+    override suspend fun updateProfile(
+      bearer: String,
+      deviceFingerprint: String,
+      body: ProfileUpdateRequestDto,
+    ): Response<ProfileUpdateResponseDto> =
+      Response.success(
+        ProfileUpdateResponseDto(
+          success = true,
+          username = body.username,
+          fullName = body.fullName,
+          usernameChangedAtMs = System.currentTimeMillis(),
+          nextUsernameChangeMs = System.currentTimeMillis() + (14L * 24L * 60L * 60L * 1000L),
+        ),
+      )
 
     override suspend fun downloadMedia(url: String): Response<ResponseBody> =
       Response.success(ByteArray(0).toResponseBody("application/octet-stream".toMediaType()))

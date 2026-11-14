@@ -38,6 +38,39 @@ enum class ProfilePostSort(val label: String) {
   MOST_LIKED("Most liked"),
 }
 
+enum class PostPrivacy(val apiValue: String, val label: String) {
+  PUBLIC("public", "Public"),
+  FRIENDS("friends", "Friends"),
+  PRIVATE("private", "Private");
+
+  companion object {
+    fun fromApi(raw: String?): PostPrivacy = when (raw?.trim()?.lowercase()) {
+      "friends" -> FRIENDS
+      "private" -> PRIVATE
+      else -> PUBLIC
+    }
+  }
+}
+
+enum class OwnerProfileTab(val label: String) {
+  POSTS("Posts"),
+  SAVED("Saved"),
+  REPOSTS("Reposts"),
+  LOCKED("Locked"),
+}
+
+data class ProfileBackgroundItem(
+  val mediaId: String,
+  val url: String,
+  val localFilePath: String = "",
+  val sha256Fingerprint: String = "",
+  val dHashFingerprint: String = "",
+  val width: Int = 0,
+  val height: Int = 0,
+  val byteSize: Int = 0,
+  val createdAtMs: Long = 0L,
+)
+
 data class ProfileReportCategory(
   val code: String,
   val label: String,
@@ -125,7 +158,8 @@ object AdaptiveStreamSelector {
         clean.startsWith("/sdcard/") ||
         (!clean.startsWith("/v1/") && !clean.startsWith("/media/") && runCatching { File(clean).exists() }.getOrDefault(false))
       if (isLocalFilesystemPath) {
-        return runCatching { File(clean).toURI().toString() }.getOrDefault("file://$clean")
+        val rawPath = runCatching { File(clean).toURI().rawPath }.getOrNull() ?: clean
+        return if (rawPath.startsWith("/")) "file://$rawPath" else "file:///$rawPath"
       }
       val cleanBase = baseUrl.trim().trimEnd('/')
       return if (cleanBase.isNotBlank()) "$cleanBase$clean" else clean

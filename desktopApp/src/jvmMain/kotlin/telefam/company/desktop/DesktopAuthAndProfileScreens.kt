@@ -88,7 +88,7 @@ import java.io.File
 import javax.imageio.ImageIO
 import org.jetbrains.skia.Image as SkiaImage
 
-private val AuthCrimson = Color(0xFFC80A0F)
+internal val AuthCrimson = Color(0xFFC80A0F)
 private val AuthCrimsonDeep = Color(0xFFA0070B)
 
 @Composable
@@ -827,7 +827,7 @@ fun DesktopProfileSetupScreen(
 }
 
 @Composable
-private fun DesktopAvatarCropDialog(
+internal fun DesktopAvatarCropDialog(
   imageFile: File,
   onCancel: () -> Unit,
   onConfirm: (ByteArray, ImageBitmap, Float, Float, Float) -> Unit,
@@ -909,7 +909,7 @@ private fun DesktopAvatarCropDialog(
 }
 
 @Composable
-private fun DesktopLabeledField(
+internal fun DesktopLabeledField(
   label: String,
   value: String,
   onValueChange: (String) -> Unit,
@@ -922,7 +922,7 @@ private fun DesktopLabeledField(
 }
 
 @Composable
-private fun DesktopCleanTextField(
+internal fun DesktopCleanTextField(
   value: String,
   onValueChange: (String) -> Unit,
   placeholder: String,
@@ -950,7 +950,7 @@ private fun DesktopCleanTextField(
 }
 
 @Composable
-private fun DesktopModalOverlay(
+internal fun DesktopModalOverlay(
   onDismiss: () -> Unit,
   content: @Composable () -> Unit,
 ) {

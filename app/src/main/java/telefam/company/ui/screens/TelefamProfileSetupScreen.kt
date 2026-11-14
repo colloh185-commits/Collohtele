@@ -755,7 +755,7 @@ private fun SelectorRowBox(
 }
 
 @Composable
-private fun CountrySearchDialog(
+internal fun CountrySearchDialog(
   onDismiss: () -> Unit,
   onSelect: (CountryDialOption) -> Unit,
 ) {

@@ -179,16 +179,38 @@ private struct TelefamIosSearchVideoCard: View {
             ZStack(alignment: .bottomLeading) {
                 Color(red: 0.06, green: 0.07, blue: 0.10)
 
-                if let p = mutedPlayer {
-                    TelefamIosVideoSurfaceView(player: p)
-                } else if !item.thumbnailUrl.isEmpty {
+                if !item.thumbnailUrl.isEmpty {
                     TelefamIosRemoteImage(
                         urlString: store.authorizedURLString(item.thumbnailUrl),
                         bearerToken: store.bearerToken,
                         deviceFingerprint: store.deviceFingerprint,
-                        fallbackInitials: String(item.authorFullName.prefix(1)).uppercased()
+                        fallbackInitials: ""
                     )
-                } else {
+                    .scaledToFill()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipped()
+                    .blur(radius: 18)
+                    .overlay(Color.black.opacity(0.40))
+
+                    TelefamIosRemoteImage(
+                        urlString: store.authorizedURLString(item.thumbnailUrl),
+                        bearerToken: store.bearerToken,
+                        deviceFingerprint: store.deviceFingerprint,
+                        fallbackInitials: String(item.authorFullName.prefix(1)).uppercased(),
+                        contentMode: .fit
+                    )
+                }
+                if let p = mutedPlayer {
+                    TelefamIosVideoSurfaceView(player: p)
+                } else if item.thumbnailUrl.isEmpty && item.mode == "photos", let firstPhoto = item.photoUrls.first {
+                    TelefamIosRemoteImage(
+                        urlString: store.authorizedURLString(firstPhoto),
+                        bearerToken: store.bearerToken,
+                        deviceFingerprint: store.deviceFingerprint,
+                        fallbackInitials: "",
+                        contentMode: .fit
+                    )
+                } else if item.thumbnailUrl.isEmpty {
                     Text(item.textContent)
                         .font(.system(size: 13, weight: .bold))
                         .foregroundColor(.white)

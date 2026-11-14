@@ -76,7 +76,9 @@ import androidx.compose.ui.unit.sp
 import com.telefam.company.app.R
 import telefam.company.core.ContactFilterTab
 import telefam.company.core.FeedTab
+import telefam.company.core.OwnerProfileTab
 import telefam.company.core.PostMode
+import telefam.company.core.PostPrivacy
 import telefam.company.core.PostSongTrack
 import telefam.company.core.ProfilePostFilter
 import telefam.company.core.ProfilePostSort
@@ -120,6 +122,7 @@ fun TelefamHomeScreen(
   onReportFeedPost: (String, String) -> Unit = { _, _ -> },
   onBlockFeedAuthor: (String, String) -> Unit = { _, _ -> },
   onEditOwnerFeedPost: (FeedUiItem) -> Unit = {},
+  onChangeFeedPostPrivacy: (String, PostPrivacy) -> Unit = { _, _ -> },
   onDeleteOwnerFeedPost: (String) -> Unit = {},
   onTapFeedHashtag: (String, PostMode) -> Unit = { _, _ -> },
   onTapFeedAudio: (PostSongTrack, PostMode) -> Unit = { _, _ -> },
@@ -132,6 +135,11 @@ fun TelefamHomeScreen(
   onDismissProfileConnections: (String) -> Unit = {},
   onLoadMoreProfileConnections: (String) -> Unit = {},
   onToggleProfileConnectionFollow: (String, String) -> Unit = { _, _ -> },
+  onSelectOwnerProfileTab: (String, OwnerProfileTab) -> Unit = { _, _ -> },
+  onOpenEditProfile: () -> Unit = {},
+  onOpenProfileBackgrounds: () -> Unit = {},
+  onOpenProfileSettings: () -> Unit = {},
+  onMenuClick: () -> Unit = {},
   onSelectProfileFilter: (String, ProfilePostFilter) -> Unit = { _, _ -> },
   onSelectProfileSort: (String, ProfilePostSort) -> Unit = { _, _ -> },
   onOpenProfilePostViewer: (List<FeedUiItem>, Int) -> Unit = { _, _ -> },
@@ -327,6 +335,7 @@ fun TelefamHomeScreen(
                   onReportFeedPost = onReportFeedPost,
                   onBlockFeedAuthor = onBlockFeedAuthor,
                   onEditOwnerFeedPost = onEditOwnerFeedPost,
+                  onChangeFeedPostPrivacy = onChangeFeedPostPrivacy,
                   onDeleteOwnerFeedPost = onDeleteOwnerFeedPost,
                   onTapFeedHashtag = onTapFeedHashtag,
                   onTapFeedAudio = onTapFeedAudio,
@@ -338,6 +347,11 @@ fun TelefamHomeScreen(
                   onDismissProfileConnections = onDismissProfileConnections,
                   onLoadMoreProfileConnections = onLoadMoreProfileConnections,
                   onToggleProfileConnectionFollow = onToggleProfileConnectionFollow,
+                  onSelectOwnerProfileTab = onSelectOwnerProfileTab,
+                  onOpenEditProfile = onOpenEditProfile,
+                  onOpenProfileBackgrounds = onOpenProfileBackgrounds,
+                  onOpenProfileSettings = onOpenProfileSettings,
+                  onMenuClick = onMenuClick,
                   onSelectProfileFilter = onSelectProfileFilter,
                   onSelectProfileSort = onSelectProfileSort,
                   onOpenProfilePostViewer = onOpenProfilePostViewer,
@@ -382,6 +396,7 @@ fun TelefamHomeScreen(
                   onReportFeedPost = onReportFeedPost,
                   onBlockFeedAuthor = onBlockFeedAuthor,
                   onEditOwnerFeedPost = onEditOwnerFeedPost,
+                  onChangeFeedPostPrivacy = onChangeFeedPostPrivacy,
                   onDeleteOwnerFeedPost = onDeleteOwnerFeedPost,
                   onTapFeedHashtag = onTapFeedHashtag,
                   onTapFeedAudio = onTapFeedAudio,
@@ -393,6 +408,11 @@ fun TelefamHomeScreen(
                   onDismissProfileConnections = onDismissProfileConnections,
                   onLoadMoreProfileConnections = onLoadMoreProfileConnections,
                   onToggleProfileConnectionFollow = onToggleProfileConnectionFollow,
+                  onSelectOwnerProfileTab = onSelectOwnerProfileTab,
+                  onOpenEditProfile = onOpenEditProfile,
+                  onOpenProfileBackgrounds = onOpenProfileBackgrounds,
+                  onOpenProfileSettings = onOpenProfileSettings,
+                  onMenuClick = onMenuClick,
                   onSelectProfileFilter = onSelectProfileFilter,
                   onSelectProfileSort = onSelectProfileSort,
                   onOpenProfilePostViewer = onOpenProfilePostViewer,
@@ -460,6 +480,7 @@ private fun HomeTabContent(
   onReportFeedPost: (String, String) -> Unit,
   onBlockFeedAuthor: (String, String) -> Unit,
   onEditOwnerFeedPost: (FeedUiItem) -> Unit,
+  onChangeFeedPostPrivacy: (String, PostPrivacy) -> Unit,
   onDeleteOwnerFeedPost: (String) -> Unit,
   onTapFeedHashtag: (String, PostMode) -> Unit,
   onTapFeedAudio: (PostSongTrack, PostMode) -> Unit,
@@ -471,6 +492,11 @@ private fun HomeTabContent(
   onDismissProfileConnections: (String) -> Unit,
   onLoadMoreProfileConnections: (String) -> Unit,
   onToggleProfileConnectionFollow: (String, String) -> Unit,
+  onSelectOwnerProfileTab: (String, OwnerProfileTab) -> Unit,
+  onOpenEditProfile: () -> Unit,
+  onOpenProfileBackgrounds: () -> Unit,
+  onOpenProfileSettings: () -> Unit,
+  onMenuClick: () -> Unit,
   onSelectProfileFilter: (String, ProfilePostFilter) -> Unit,
   onSelectProfileSort: (String, ProfilePostSort) -> Unit,
   onOpenProfilePostViewer: (List<FeedUiItem>, Int) -> Unit,
@@ -591,6 +617,11 @@ private fun HomeTabContent(
         initialIndex = 0,
         activeTab = feeds.activeTab,
         isStandaloneViewer = false,
+        isHostActive = activeTab == HomeTab.FEEDS &&
+          !feeds.isSearchOpen &&
+          uiState.activeUserProfile == null &&
+          uiState.profileViewerItems == null &&
+          !uiState.postComposer.isOpen,
         isLoading = feeds.isLoading,
         hasMore = feeds.hasMoreActive,
         networkTier = uiState.networkTier,
@@ -614,6 +645,7 @@ private fun HomeTabContent(
         onReportPost = onReportFeedPost,
         onBlockAuthor = onBlockFeedAuthor,
         onEditOwnerPost = onEditOwnerFeedPost,
+        onChangePostPrivacy = onChangeFeedPostPrivacy,
         onDeleteOwnerPost = onDeleteOwnerFeedPost,
         onTapHashtag = onTapFeedHashtag,
         onTapAudio = onTapFeedAudio,
@@ -652,6 +684,11 @@ private fun HomeTabContent(
       onLoadMoreConnections = { onLoadMoreProfileConnections(ownProfile.userId) },
       onToggleConnectionFollow = { targetId -> onToggleProfileConnectionFollow(ownProfile.userId, targetId) },
       onOpenUserProfile = onOpenUserProfile,
+      onSelectOwnerTab = { tab -> onSelectOwnerProfileTab(ownProfile.userId, tab) },
+      onOpenEditProfile = onOpenEditProfile,
+      onOpenBackgrounds = onOpenProfileBackgrounds,
+      onOpenSettings = onOpenProfileSettings,
+      onOpenMenu = onMenuClick,
       onSelectFilter = { filter -> onSelectProfileFilter(ownProfile.userId, filter) },
       onSelectSort = { sort -> onSelectProfileSort(ownProfile.userId, sort) },
       onOpenPostAtIndex = onOpenProfilePostViewer,

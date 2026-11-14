@@ -44,9 +44,13 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -68,6 +72,7 @@ import com.telefam.company.app.R
 import telefam.company.core.AdaptiveStreamSelector
 import telefam.company.core.NetworkTier
 import telefam.company.core.PostMode
+import telefam.company.core.PostPrivacy
 import telefam.company.core.PostSongTrack
 import telefam.company.core.TelefamPostRules
 import telefam.company.core.formatCompactCount
@@ -88,6 +93,7 @@ import telefam.company.ui.viewmodel.FeedsUiState
 fun TelefamSearchScreen(
   feedsState: FeedsUiState,
   networkTier: NetworkTier,
+  isHostActive: Boolean = true,
   onQueryChanged: (String) -> Unit,
   onShortcutSelected: (String) -> Unit,
   onOpenCardAtIndex: (Int) -> Unit,
@@ -105,6 +111,7 @@ fun TelefamSearchScreen(
   onReportPost: (String, String) -> Unit,
   onBlockAuthor: (String, String) -> Unit,
   onEditOwnerPost: (FeedUiItem) -> Unit,
+  onChangePostPrivacy: (String, PostPrivacy) -> Unit = { _, _ -> },
   onDeleteOwnerPost: (String) -> Unit,
   onTapHashtag: (String, PostMode) -> Unit,
   onTapAudio: (PostSongTrack, PostMode) -> Unit,
@@ -126,6 +133,7 @@ fun TelefamSearchScreen(
       items = viewerItems,
       initialIndex = feedsState.searchViewerInitialIndex,
       isStandaloneViewer = true,
+      isHostActive = isHostActive,
       networkTier = networkTier,
       streamAccessToken = feedsState.streamAccessToken,
       streamDeviceFp = feedsState.streamDeviceFp,
@@ -144,6 +152,7 @@ fun TelefamSearchScreen(
       onReportPost = onReportPost,
       onBlockAuthor = onBlockAuthor,
       onEditOwnerPost = onEditOwnerPost,
+      onChangePostPrivacy = onChangePostPrivacy,
       onDeleteOwnerPost = onDeleteOwnerPost,
       onTapHashtag = onTapHashtag,
       onTapAudio = onTapAudio,
@@ -393,8 +402,15 @@ private fun SearchMutedAutoplayCard(
           if (item.thumbnailUrl.isNotBlank()) {
             AsyncImage(
               model = item.thumbnailUrl,
-              contentDescription = item.caption,
+              contentDescription = null,
               contentScale = ContentScale.Crop,
+              modifier = Modifier.fillMaxSize().blur(18.dp),
+            )
+            Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.42f)))
+            AsyncImage(
+              model = item.thumbnailUrl,
+              contentDescription = item.caption,
+              contentScale = ContentScale.Fit,
               modifier = Modifier.fillMaxSize(),
             )
           }
@@ -434,8 +450,10 @@ private fun SearchMutedAutoplayCard(
               AndroidView(
                 factory = { ctx ->
                   (LayoutInflater.from(ctx).inflate(R.layout.view_feed_player, null) as PlayerView).apply {
-                    resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                    resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
                     useController = false
+                    setShutterBackgroundColor(android.graphics.Color.TRANSPARENT)
+                    setBackgroundColor(android.graphics.Color.TRANSPARENT)
                     player = previewPlayer
                   }
                 },
@@ -450,8 +468,15 @@ private fun SearchMutedAutoplayCard(
           if (first.isNotBlank()) {
             AsyncImage(
               model = first,
-              contentDescription = item.caption,
+              contentDescription = null,
               contentScale = ContentScale.Crop,
+              modifier = Modifier.fillMaxSize().blur(18.dp),
+            )
+            Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.42f)))
+            AsyncImage(
+              model = first,
+              contentDescription = item.caption,
+              contentScale = ContentScale.Fit,
               modifier = Modifier.fillMaxSize(),
             )
           }

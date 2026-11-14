@@ -59,6 +59,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -87,6 +90,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.telefam.company.app.R
+import telefam.company.core.PostPrivacy
 import telefam.company.ui.theme.TelefamCrimson
 import telefam.company.ui.viewmodel.FeedUiItem
 import kotlin.math.cos
@@ -561,10 +565,13 @@ fun FeedMoreOptionsSheet(
   onReport: () -> Unit,
   onBlock: () -> Unit,
   onEdit: () -> Unit,
+  onChangePrivacy: (PostPrivacy) -> Unit = {},
   onDelete: () -> Unit,
   onDismiss: () -> Unit,
 ) {
   val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+  var showPrivacySubmenu by remember(item.postId) { mutableStateOf(false) }
+
   ModalBottomSheet(
     onDismissRequest = onDismiss,
     sheetState = sheetState,
@@ -586,6 +593,100 @@ fun FeedMoreOptionsSheet(
           },
           testTag = "feed_menu_edit",
         )
+
+        // Expandable Privacy Submenu: Public / Friends / Private
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .clickable { showPrivacySubmenu = !showPrivacySubmenu }
+            .padding(horizontal = 12.dp, vertical = 12.dp)
+            .testTag("feed_menu_privacy"),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          FeedPrivacySvgIcon(
+            privacy = item.privacy,
+            tint = MaterialTheme.colorScheme.onSurface,
+            size = 21.dp,
+          )
+          Spacer(modifier = Modifier.width(14.dp))
+          Text(
+            text = stringResource(R.string.feed_action_privacy),
+            style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.weight(1f),
+          )
+          Surface(
+            color = TelefamCrimson.copy(alpha = 0.14f),
+            shape = RoundedCornerShape(10.dp),
+          ) {
+            Text(
+              text = when (item.privacy) {
+                PostPrivacy.PUBLIC -> stringResource(R.string.feed_privacy_public)
+                PostPrivacy.FRIENDS -> stringResource(R.string.feed_privacy_friends)
+                PostPrivacy.PRIVATE -> stringResource(R.string.feed_privacy_private)
+              },
+              color = TelefamCrimson,
+              style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+              modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            )
+          }
+        }
+
+        AnimatedVisibility(visible = showPrivacySubmenu) {
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(start = 18.dp, end = 4.dp, bottom = 4.dp)
+              .clip(RoundedCornerShape(14.dp))
+              .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
+              .padding(vertical = 4.dp),
+          ) {
+            PostPrivacy.entries.forEach { option ->
+              val selected = item.privacy == option
+              val optionLabel = when (option) {
+                PostPrivacy.PUBLIC -> stringResource(R.string.feed_privacy_public)
+                PostPrivacy.FRIENDS -> stringResource(R.string.feed_privacy_friends)
+                PostPrivacy.PRIVATE -> stringResource(R.string.feed_privacy_private)
+              }
+              Row(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .clickable {
+                    onChangePrivacy(option)
+                    onDismiss()
+                  }
+                  .padding(horizontal = 14.dp, vertical = 10.dp)
+                  .testTag("feed_privacy_option_${option.apiValue}"),
+                verticalAlignment = Alignment.CenterVertically,
+              ) {
+                FeedPrivacySvgIcon(
+                  privacy = option,
+                  tint = if (selected) TelefamCrimson else MaterialTheme.colorScheme.onSurfaceVariant,
+                  size = 18.dp,
+                )
+                Spacer(modifier = Modifier.width(12.dp))
+                Text(
+                  text = optionLabel,
+                  style = MaterialTheme.typography.bodyMedium.copy(
+                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                  ),
+                  color = if (selected) TelefamCrimson else MaterialTheme.colorScheme.onSurface,
+                  modifier = Modifier.weight(1f),
+                )
+                if (selected) {
+                  Icon(
+                    imageVector = Icons.Filled.Check,
+                    contentDescription = null,
+                    tint = TelefamCrimson,
+                    modifier = Modifier.size(18.dp),
+                  )
+                }
+              }
+            }
+          }
+        }
+
         SheetActionRow(
           icon = Icons.Filled.DeleteOutline,
           label = stringResource(R.string.feed_action_delete_video),
@@ -733,5 +834,62 @@ private fun SheetActionRow(
       style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
       color = tint,
     )
+  }
+}
+
+@Composable
+private fun FeedPrivacySvgIcon(
+  privacy: PostPrivacy,
+  tint: Color,
+  size: Dp = 20.dp,
+) {
+  Canvas(modifier = Modifier.size(size)) {
+    val w = this.size.width
+    val h = this.size.height
+    val strokeW = w * 0.095f
+    val stroke = Stroke(width = strokeW, cap = StrokeCap.Round, join = StrokeJoin.Round)
+    when (privacy) {
+      PostPrivacy.PUBLIC -> {
+        drawCircle(color = tint, radius = w * 0.38f, center = Offset(w * 0.5f, h * 0.5f), style = stroke)
+        drawOval(
+          color = tint,
+          topLeft = Offset(w * 0.30f, h * 0.12f),
+          size = Size(w * 0.40f, h * 0.76f),
+          style = Stroke(width = strokeW * 0.85f),
+        )
+        drawLine(tint, Offset(w * 0.13f, h * 0.50f), Offset(w * 0.87f, h * 0.50f), strokeWidth = strokeW * 0.85f)
+      }
+      PostPrivacy.FRIENDS -> {
+        drawCircle(color = tint, radius = w * 0.14f, center = Offset(w * 0.36f, h * 0.34f), style = stroke)
+        val p1 = Path().apply {
+          moveTo(w * 0.12f, h * 0.82f)
+          quadraticTo(w * 0.16f, h * 0.58f, w * 0.36f, h * 0.58f)
+          quadraticTo(w * 0.56f, h * 0.58f, w * 0.60f, h * 0.82f)
+        }
+        drawPath(p1, color = tint, style = stroke)
+        drawCircle(color = tint, radius = w * 0.11f, center = Offset(w * 0.70f, h * 0.38f), style = stroke)
+        val p2 = Path().apply {
+          moveTo(w * 0.62f, h * 0.60f)
+          quadraticTo(w * 0.82f, h * 0.60f, w * 0.88f, h * 0.82f)
+        }
+        drawPath(p2, color = tint, style = stroke)
+      }
+      PostPrivacy.PRIVATE -> {
+        drawRoundRect(
+          color = tint,
+          topLeft = Offset(w * 0.20f, h * 0.44f),
+          size = Size(w * 0.60f, h * 0.44f),
+          cornerRadius = CornerRadius(w * 0.10f, w * 0.10f),
+          style = stroke,
+        )
+        val shackle = Path().apply {
+          moveTo(w * 0.32f, h * 0.44f)
+          lineTo(w * 0.32f, h * 0.30f)
+          cubicTo(w * 0.32f, h * 0.12f, w * 0.68f, h * 0.12f, w * 0.68f, h * 0.30f)
+          lineTo(w * 0.68f, h * 0.44f)
+        }
+        drawPath(shackle, color = tint, style = stroke)
+      }
+    }
   }
 }

@@ -31,6 +31,17 @@ data class ProcessedAvatarMedia(
   val previewBitmap: Bitmap,
 )
 
+data class ProcessedProfileBackground(
+  val mediaId: String,
+  val storageObjectKey: String,
+  val localFilePath: String,
+  val width: Int,
+  val height: Int,
+  val byteSize: Int,
+  val sha256Fingerprint: String,
+  val dHashFingerprint: String,
+)
+
 data class ProcessedPostPhoto(
   val localId: String,
   val localFilePath: String,
@@ -149,6 +160,91 @@ object MediaUploadProcessor {
       dHashFingerprint = dHash,
       byteSize = compressedBytes.size,
       previewBitmap = cleanBitmap,
+    )
+  }
+
+  /**
+   * Decodes a profile hero background photo cleanly, strips EXIF/XMP metadata onto an opaque canvas,
+   * bounds longest edge to 1600px, compresses to <= 520 KB JPEG, computes SHA-256 + 64-bit dHash
+   * fingerprints, and stores under a pure UUID path.
+   */
+  fun compressProfileBackground(context: Context, uri: Uri): ProcessedProfileBackground? {
+    val rawBytes = readBoundedBytes(context, uri, MAX_POST_PHOTO_INPUT_BYTES) ?: return null
+    if (!isSupportedImageMagicBytes(rawBytes)) return null
+
+    val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, boundsOpts)
+    if (boundsOpts.outWidth < 32 || boundsOpts.outHeight < 32) return null
+
+    val maxEdge = 1600
+    var sampleSize = 1
+    while ((boundsOpts.outWidth / sampleSize) > maxEdge ||
+      (boundsOpts.outHeight / sampleSize) > maxEdge
+    ) {
+      sampleSize *= 2
+    }
+    val decoded = BitmapFactory.decodeByteArray(
+      rawBytes,
+      0,
+      rawBytes.size,
+      BitmapFactory.Options().apply {
+        inSampleSize = sampleSize
+        inPreferredConfig = Bitmap.Config.ARGB_8888
+      },
+    ) ?: return null
+
+    val w = decoded.width.coerceAtLeast(32)
+    val h = decoded.height.coerceAtLeast(32)
+    val maxDim = max(w, h)
+    val targetW: Int
+    val targetH: Int
+    if (maxDim > maxEdge) {
+      val ratio = maxEdge.toFloat() / maxDim.toFloat()
+      targetW = (w * ratio).roundToInt().coerceAtLeast(32)
+      targetH = (h * ratio).roundToInt().coerceAtLeast(32)
+    } else {
+      targetW = w
+      targetH = h
+    }
+
+    val cleanBitmap = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(cleanBitmap)
+    canvas.drawColor(Color.BLACK)
+    canvas.drawBitmap(
+      decoded,
+      Rect(0, 0, decoded.width, decoded.height),
+      Rect(0, 0, targetW, targetH),
+      null,
+    )
+    decoded.recycle()
+
+    var encoded = ByteArray(0)
+    val maxBytes = 520 * 1024
+    for (q in intArrayOf(86, 78, 70, 62)) {
+      val out = ByteArrayOutputStream()
+      cleanBitmap.compress(Bitmap.CompressFormat.JPEG, q, out)
+      encoded = out.toByteArray()
+      if (encoded.size <= maxBytes) break
+    }
+
+    val sha256 = sha256Hex(encoded)
+    val dHash = computeDHashHex(cleanBitmap)
+    cleanBitmap.recycle()
+
+    val mediaId = UUID.randomUUID().toString()
+    val bgDir = File(context.filesDir, "media/bg").apply { mkdirs() }
+    val outFile = File(bgDir, "$mediaId.jpg")
+    outFile.writeBytes(encoded)
+
+    return ProcessedProfileBackground(
+      mediaId = mediaId,
+      storageObjectKey = "media/bg/$mediaId.jpg",
+      localFilePath = outFile.absolutePath,
+      width = targetW,
+      height = targetH,
+      byteSize = encoded.size,
+      sha256Fingerprint = sha256,
+      dHashFingerprint = dHash,
     )
   }
 

@@ -23,6 +23,24 @@ enum class SharedFeedAction(val apiValue: String) {
   VIEW("view"),
 }
 
+enum class SharedPostPrivacy(val apiValue: String, val label: String) {
+  PUBLIC("public", "Public"),
+  FRIENDS("friends", "Friends"),
+  PRIVATE("private", "Private");
+
+  companion object {
+    fun fromApi(raw: String): SharedPostPrivacy =
+      entries.firstOrNull { it.apiValue.equals(raw.trim(), ignoreCase = true) } ?: PUBLIC
+  }
+}
+
+enum class SharedOwnerProfileTab(val label: String) {
+  POSTS("Posts"),
+  SAVED("Saved"),
+  REPOSTS("Reposts"),
+  LOCKED("Locked"),
+}
+
 data class SharedFeedVideoRendition(
   val qualityLabel: String,
   val width: Int,

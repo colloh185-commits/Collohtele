@@ -28,6 +28,9 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
 import android.widget.Toast
+import telefam.company.ui.components.EditBackgroundsBottomSheet
+import telefam.company.ui.components.EditProfileModalSheet
+import telefam.company.ui.components.OwnerProfileSettingsSheet
 import telefam.company.ui.components.TelefamAnimatedSplashOverlay
 import telefam.company.ui.screens.ReusableVideoFeedScreen
 import telefam.company.ui.screens.TelefamAuthScreen
@@ -95,12 +98,19 @@ class TelefamMainActivity : ComponentActivity() {
         val statusBarIsDark = when {
           uiState.postComposer.isOpen -> true
           route == AppRootRoute.HOME && uiState.profileViewerItems != null -> true
-          route == AppRootRoute.HOME && uiState.activeUserProfile != null -> useDarkBars
+          route == AppRootRoute.HOME && uiState.activeUserProfile != null -> {
+            val activeProf = uiState.activeUserProfile
+            if (activeProf != null && !activeProf.isBlocked && (activeProf.isOwner || activeProf.backgrounds.isNotEmpty())) {
+              true
+            } else {
+              useDarkBars
+            }
+          }
           route == AppRootRoute.HOME && uiState.feedsState.isSearchOpen -> {
             if (uiState.feedsState.searchViewerItems != null) true else useDarkBars
           }
           route == AppRootRoute.HOME && uiState.activeHomeTab == HomeTab.FEEDS -> true
-          route == AppRootRoute.HOME && uiState.activeHomeTab == HomeTab.PROFILE -> useDarkBars
+          route == AppRootRoute.HOME && uiState.activeHomeTab == HomeTab.PROFILE -> true
           route == AppRootRoute.AUTH -> useDarkBars
           else -> true
         }
@@ -210,6 +220,7 @@ class TelefamMainActivity : ComponentActivity() {
                   onReportFeedPost = { postId, reason -> viewModel.onReportFeedPost(postId, reason) },
                   onBlockFeedAuthor = viewModel::onBlockFeedAuthor,
                   onEditOwnerFeedPost = viewModel::openPostForEdit,
+                  onChangeFeedPostPrivacy = viewModel::onChangeFeedPostPrivacy,
                   onDeleteOwnerFeedPost = viewModel::onDeleteOwnerFeedPost,
                   onTapFeedHashtag = viewModel::openPostWithHashtag,
                   onTapFeedAudio = viewModel::openPostWithSong,
@@ -222,6 +233,11 @@ class TelefamMainActivity : ComponentActivity() {
                   onDismissProfileConnections = viewModel::dismissProfileConnections,
                   onLoadMoreProfileConnections = viewModel::loadMoreProfileConnections,
                   onToggleProfileConnectionFollow = viewModel::toggleFollowInConnections,
+                  onSelectOwnerProfileTab = viewModel::selectOwnerProfileTab,
+                  onOpenEditProfile = viewModel::openEditProfileModal,
+                  onOpenProfileBackgrounds = viewModel::openOwnerBackgroundsModal,
+                  onOpenProfileSettings = viewModel::openOwnerSettingsModal,
+                  onMenuClick = { viewModel.triggerComingSoon("Menu", "profile_menu_tapped") },
                   onSelectProfileFilter = viewModel::selectProfilePostFilter,
                   onSelectProfileSort = viewModel::selectProfileSortOrder,
                   onOpenProfilePostViewer = viewModel::openProfilePostViewer,
@@ -244,6 +260,7 @@ class TelefamMainActivity : ComponentActivity() {
             TelefamSearchScreen(
               feedsState = uiState.feedsState,
               networkTier = uiState.networkTier,
+              isHostActive = uiState.activeUserProfile == null && !uiState.postComposer.isOpen,
               onQueryChanged = viewModel::onFeedSearchQueryChanged,
               onShortcutSelected = viewModel::onFeedSearchShortcutSelected,
               onOpenCardAtIndex = viewModel::openSearchResultViewer,
@@ -261,6 +278,7 @@ class TelefamMainActivity : ComponentActivity() {
               onReportPost = { postId, reason -> viewModel.onReportFeedPost(postId, reason) },
               onBlockAuthor = viewModel::onBlockFeedAuthor,
               onEditOwnerPost = viewModel::openPostForEdit,
+              onChangePostPrivacy = viewModel::onChangeFeedPostPrivacy,
               onDeleteOwnerPost = viewModel::onDeleteOwnerFeedPost,
               onTapHashtag = viewModel::openPostWithHashtag,
               onTapAudio = viewModel::openPostWithSong,
@@ -300,6 +318,11 @@ class TelefamMainActivity : ComponentActivity() {
                 onLoadMoreConnections = { viewModel.loadMoreProfileConnections(activeProfile.userId) },
                 onToggleConnectionFollow = { targetId -> viewModel.toggleFollowInConnections(activeProfile.userId, targetId) },
                 onOpenUserProfile = viewModel::openUserProfile,
+                onSelectOwnerTab = { tab -> viewModel.selectOwnerProfileTab(activeProfile.userId, tab) },
+                onOpenEditProfile = viewModel::openEditProfileModal,
+                onOpenBackgrounds = viewModel::openOwnerBackgroundsModal,
+                onOpenSettings = viewModel::openOwnerSettingsModal,
+                onOpenMenu = { viewModel.triggerComingSoon("Menu", "profile_menu_tapped") },
                 onSelectFilter = { filter -> viewModel.selectProfilePostFilter(activeProfile.userId, filter) },
                 onSelectSort = { sort -> viewModel.selectProfileSortOrder(activeProfile.userId, sort) },
                 onOpenPostAtIndex = viewModel::openProfilePostViewer,
@@ -327,6 +350,7 @@ class TelefamMainActivity : ComponentActivity() {
                 items = viewerList,
                 initialIndex = uiState.profileViewerInitialIndex,
                 isStandaloneViewer = true,
+                isHostActive = !uiState.postComposer.isOpen,
                 networkTier = uiState.networkTier,
                 streamAccessToken = uiState.feedsState.streamAccessToken,
                 streamDeviceFp = uiState.feedsState.streamDeviceFp,
@@ -351,6 +375,7 @@ class TelefamMainActivity : ComponentActivity() {
                   viewModel.closeProfilePostViewer()
                   viewModel.openPostForEdit(item)
                 },
+                onChangePostPrivacy = viewModel::onChangeFeedPostPrivacy,
                 onDeleteOwnerPost = { postId ->
                   viewModel.onDeleteOwnerFeedPost(postId)
                   viewModel.closeProfilePostViewer()
@@ -409,6 +434,46 @@ class TelefamMainActivity : ComponentActivity() {
               onHashtagQueryChanged = viewModel::onHashtagSearchChanged,
               onToggleHashtag = viewModel::toggleHashtagSelection,
               onShare = viewModel::sharePost,
+            )
+          }
+
+          val activeOwnerProfileForModals = uiState.activeUserProfile?.takeIf { it.isOwner } ?: uiState.ownProfileState
+
+          if (route == AppRootRoute.HOME && uiState.showSettingsModal) {
+            OwnerProfileSettingsSheet(
+              themeMode = uiState.themeMode,
+              username = activeOwnerProfileForModals?.username ?: uiState.profileForm.username,
+              email = uiState.emailInput,
+              onSignOut = viewModel::signOut,
+              onToggleTheme = viewModel::cycleThemeMode,
+              onDismiss = viewModel::dismissOwnerSettingsModal,
+            )
+          }
+
+          if (route == AppRootRoute.HOME && uiState.showBackgroundsModal) {
+            EditBackgroundsBottomSheet(
+              backgrounds = activeOwnerProfileForModals?.backgrounds ?: emptyList(),
+              isUploading = uiState.isUploadingBackground,
+              errorMessage = uiState.backgroundError,
+              onAddUris = viewModel::uploadOwnerBackgrounds,
+              onDeleteBackground = viewModel::deleteOwnerBackground,
+              onReorderBackgrounds = viewModel::reorderOwnerBackgrounds,
+              onDismiss = viewModel::dismissOwnerBackgroundsModal,
+            )
+          }
+
+          if (route == AppRootRoute.HOME && uiState.showEditProfileModal && activeOwnerProfileForModals != null) {
+            EditProfileModalSheet(
+              profile = activeOwnerProfileForModals,
+              formState = uiState.profileForm,
+              cropBitmap = uiState.editProfileCropBitmap,
+              isSaving = uiState.isSavingEditedProfile,
+              errorMessage = uiState.editProfileError,
+              onPhotoPicked = viewModel::onEditProfilePhotoPicked,
+              onDismissCrop = viewModel::dismissEditProfileCropper,
+              onConfirmCrop = viewModel::confirmEditProfileCroppedPhoto,
+              onSaveProfile = viewModel::saveEditedProfile,
+              onDismiss = viewModel::dismissEditProfileModal,
             )
           }
 

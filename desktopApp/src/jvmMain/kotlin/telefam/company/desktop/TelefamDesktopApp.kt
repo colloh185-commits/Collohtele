@@ -1,5 +1,6 @@
 package telefam.company.desktop
 
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -9,6 +10,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -66,8 +68,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -76,6 +80,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.rotate
@@ -110,6 +115,7 @@ import androidx.compose.ui.window.WindowState
 import androidx.compose.ui.window.application
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.jetbrains.skia.Image as SkiaImage
@@ -119,8 +125,10 @@ import telefam.company.shared.SharedFeedAction
 import telefam.company.shared.SharedFeedMath
 import telefam.company.shared.SharedFeedTab
 import telefam.company.shared.SharedHashtagItem
+import telefam.company.shared.SharedOwnerProfileTab
 import telefam.company.shared.SharedPostFont
 import telefam.company.shared.SharedPostMode
+import telefam.company.shared.SharedPostPrivacy
 import telefam.company.shared.SharedPostRules
 import telefam.company.shared.SharedPostTheme
 import telefam.company.shared.SharedPostThemeKind
@@ -198,8 +206,10 @@ data class DesktopFeedPost(
   val authorUserId: String,
   val authorUsername: String,
   val authorFullName: String,
+  val authorAvatarUrl: String = "",
   val isFollowingAuthor: Boolean,
   val isOwner: Boolean,
+  val privacy: String = "public",
   val mode: SharedPostMode,
   val textContent: String,
   val caption: String,
@@ -207,6 +217,8 @@ data class DesktopFeedPost(
   val fontOption: SharedPostFont,
   val song: SharedSongTrack?,
   val hashtags: List<String>,
+  val photoUrls: List<String> = emptyList(),
+  val videoUrl: String = "",
   val thumbnailUrl: String = "",
   val mediaWidth: Int = 1080,
   val mediaHeight: Int = 1920,
@@ -696,10 +708,12 @@ fun main() = application {
                     }
 
                     DesktopReusableFeedStage(
+                      apiClient = apiClient,
                       items = feedPosts,
                       initialIndex = 0,
                       activeTab = activeFeedTab,
                       isStandaloneViewer = false,
+                      isHostActive = !showFeedSearch && profileBackStack.isEmpty() && profileViewerState == null && postLaunchTarget == null,
                       onSelectTab = { activeFeedTab = it },
                       onLiveClick = { toastMessage = "LIVE — Coming soon" },
                       onSearchClick = { showFeedSearch = true },
@@ -777,6 +791,25 @@ fun main() = application {
                         onInteractFeed(pid, SharedFeedAction.BLOCK, "")
                       },
                       onEditOwnerPost = { item -> postLaunchTarget = DesktopPostLaunchTarget.EditPost(item) },
+                      onChangePostPrivacy = { pid, priv ->
+                        for (i in feedPosts.indices) {
+                          if (feedPosts[i].postId == pid) {
+                            if (priv == SharedPostPrivacy.PRIVATE.apiValue) {
+                              feedPosts.removeAt(i)
+                              break
+                            } else {
+                              feedPosts[i] = feedPosts[i].copy(privacy = priv)
+                            }
+                          }
+                        }
+                        scope.launch {
+                          val res = withContext(Dispatchers.IO) { apiClient.updatePostPrivacy(pid, priv) }
+                          toastMessage = when (res) {
+                            is DesktopApiOutcome.Ok -> if (priv == "private") "Moved to Locked" else "Privacy updated to ${SharedPostPrivacy.fromApi(priv).label}"
+                            is DesktopApiOutcome.Fail -> res.message
+                          }
+                        }
+                      },
                       onDeleteOwnerPost = { pid ->
                         feedPosts.removeAll { it.postId == pid }
                         scope.launch { withContext(Dispatchers.IO) { apiClient.deletePost(pid) } }
@@ -853,6 +886,7 @@ fun main() = application {
 
           if (showFeedSearch) {
             DesktopFeedSearchOverlay(
+              apiClient = apiClient,
               results = feedSearchResults,
               shortcuts = feedSearchShortcuts,
               query = feedSearchQuery,
@@ -936,6 +970,20 @@ fun main() = application {
                 showFeedSearch = false
                 postLaunchTarget = DesktopPostLaunchTarget.EditPost(item)
               },
+              onChangePostPrivacy = { pid, priv ->
+                feedSearchResults = if (priv == SharedPostPrivacy.PRIVATE.apiValue) {
+                  feedSearchResults.filterNot { it.postId == pid }
+                } else {
+                  feedSearchResults.map { if (it.postId == pid) it.copy(privacy = priv) else it }
+                }
+                scope.launch {
+                  val res = withContext(Dispatchers.IO) { apiClient.updatePostPrivacy(pid, priv) }
+                  toastMessage = when (res) {
+                    is DesktopApiOutcome.Ok -> if (priv == "private") "Moved to Locked" else "Privacy updated to ${SharedPostPrivacy.fromApi(priv).label}"
+                    is DesktopApiOutcome.Fail -> res.message
+                  }
+                }
+              },
               onDeleteOwnerPost = { pid ->
                 feedSearchResults = feedSearchResults.filterNot { it.postId == pid }
                 scope.launch { withContext(Dispatchers.IO) { apiClient.deletePost(pid) } }
@@ -990,10 +1038,12 @@ fun main() = application {
           val viewerState = profileViewerState
           if (viewerState != null) {
             DesktopReusableFeedStage(
+              apiClient = apiClient,
               items = viewerState.items,
               initialIndex = viewerState.initialIndex,
               activeTab = SharedFeedTab.FOR_YOU,
               isStandaloneViewer = true,
+              isHostActive = postLaunchTarget == null,
               onSelectTab = {},
               onLiveClick = {},
               onSearchClick = { profileViewerState = null; showFeedSearch = true },
@@ -1072,6 +1122,18 @@ fun main() = application {
               onEditOwnerPost = { item ->
                 profileViewerState = null
                 postLaunchTarget = DesktopPostLaunchTarget.EditPost(item)
+              },
+              onChangePostPrivacy = { pid, priv ->
+                profileViewerState = viewerState.copy(
+                  items = viewerState.items.map { if (it.postId == pid) it.copy(privacy = priv) else it },
+                )
+                scope.launch {
+                  val res = withContext(Dispatchers.IO) { apiClient.updatePostPrivacy(pid, priv) }
+                  toastMessage = when (res) {
+                    is DesktopApiOutcome.Ok -> if (priv == "private") "Moved to Locked" else "Privacy updated to ${SharedPostPrivacy.fromApi(priv).label}"
+                    is DesktopApiOutcome.Fail -> res.message
+                  }
+                }
               },
               onDeleteOwnerPost = { pid ->
                 val remaining = viewerState.items.filterNot { it.postId == pid }
@@ -1172,7 +1234,8 @@ private enum class DesktopIconKind {
   MUTE, UNMUTE, CHECK, CHEVRON_RIGHT, HEART, HEART_FILLED, COMMENT, SHARE_ARROW,
   BOOKMARK, BOOKMARK_FILLED, MORE_DOTS, CHEVRON_UP, CHEVRON_DOWN, BACK_ARROW,
   SEARCH, LIVE_TV, SPARKLE, CHATS, CONTACTS, FEEDS, PROFILE,
-  INVITE_T_BADGE, LOCATION_PIN, GRID_2X2, FILTER_SLIDERS, PLAY_OUTLINE, CROWN, PERSON_ADD
+  INVITE_T_BADGE, LOCATION_PIN, GRID_2X2, FILTER_SLIDERS, PLAY_OUTLINE, CROWN, PERSON_ADD,
+  GEAR, THREE_DASHES, CAMERA, EDIT_PENCIL, SHARE_NODES, LOCK, REPOST, FRIENDS_GROUP
 }
 
 @Composable
@@ -1474,6 +1537,91 @@ private fun DesktopSvgIcon(
         drawPath(arc, tint, style = stroke)
         drawLine(tint, Offset(w * 0.78f, h * 0.34f), Offset(w * 0.78f, h * 0.56f), stroke.width, StrokeCap.Round)
         drawLine(tint, Offset(w * 0.67f, h * 0.45f), Offset(w * 0.89f, h * 0.45f), stroke.width, StrokeCap.Round)
+      }
+      DesktopIconKind.GEAR -> {
+        drawCircle(tint, radius = w * 0.16f, center = Offset(w * 0.50f, h * 0.50f), style = stroke)
+        for (i in 0 until 8) {
+          val ang = i * (PI / 4.0)
+          val x1 = w * 0.50f + (w * 0.25f * cos(ang)).toFloat()
+          val y1 = h * 0.50f + (h * 0.25f * sin(ang)).toFloat()
+          val x2 = w * 0.50f + (w * 0.38f * cos(ang)).toFloat()
+          val y2 = h * 0.50f + (h * 0.38f * sin(ang)).toFloat()
+          drawLine(tint, Offset(x1, y1), Offset(x2, y2), stroke.width * 1.1f, StrokeCap.Round)
+        }
+      }
+      DesktopIconKind.THREE_DASHES -> {
+        listOf(0.28f, 0.50f, 0.72f).forEach { y ->
+          drawLine(tint, Offset(w * 0.16f, h * y), Offset(w * 0.84f, h * y), stroke.width * 1.05f, StrokeCap.Round)
+        }
+      }
+      DesktopIconKind.CAMERA -> {
+        drawRoundRect(tint, Offset(w * 0.14f, h * 0.28f), Size(w * 0.72f, h * 0.52f), CornerRadius(w * 0.12f), style = stroke)
+        val top = Path().apply {
+          moveTo(w * 0.32f, h * 0.28f)
+          lineTo(w * 0.40f, h * 0.16f)
+          lineTo(w * 0.60f, h * 0.16f)
+          lineTo(w * 0.68f, h * 0.28f)
+        }
+        drawPath(top, tint, style = stroke)
+        drawCircle(tint, radius = w * 0.14f, center = Offset(w * 0.50f, h * 0.54f), style = stroke)
+      }
+      DesktopIconKind.EDIT_PENCIL -> {
+        val body = Path().apply {
+          moveTo(w * 0.18f, h * 0.82f)
+          lineTo(w * 0.24f, h * 0.58f)
+          lineTo(w * 0.68f, h * 0.14f)
+          lineTo(w * 0.86f, h * 0.32f)
+          lineTo(w * 0.42f, h * 0.76f)
+          close()
+        }
+        drawPath(body, tint, style = stroke)
+      }
+      DesktopIconKind.SHARE_NODES -> {
+        val c1 = Offset(w * 0.74f, h * 0.24f)
+        val c2 = Offset(w * 0.24f, h * 0.50f)
+        val c3 = Offset(w * 0.74f, h * 0.76f)
+        drawLine(tint, c2, c1, stroke.width, StrokeCap.Round)
+        drawLine(tint, c2, c3, stroke.width, StrokeCap.Round)
+        drawCircle(tint, radius = w * 0.11f, center = c1, style = stroke)
+        drawCircle(tint, radius = w * 0.11f, center = c2, style = stroke)
+        drawCircle(tint, radius = w * 0.11f, center = c3, style = stroke)
+      }
+      DesktopIconKind.LOCK -> {
+        drawRoundRect(tint, Offset(w * 0.22f, h * 0.44f), Size(w * 0.56f, h * 0.42f), CornerRadius(w * 0.10f), style = stroke)
+        val shackle = Path().apply {
+          moveTo(w * 0.34f, h * 0.44f)
+          lineTo(w * 0.34f, h * 0.30f)
+          cubicTo(w * 0.34f, h * 0.12f, w * 0.66f, h * 0.12f, w * 0.66f, h * 0.30f)
+          lineTo(w * 0.66f, h * 0.44f)
+        }
+        drawPath(shackle, tint, style = stroke)
+      }
+      DesktopIconKind.REPOST -> {
+        val top = Path().apply {
+          moveTo(w * 0.20f, h * 0.46f)
+          lineTo(w * 0.20f, h * 0.28f)
+          lineTo(w * 0.78f, h * 0.28f)
+        }
+        drawPath(top, tint, style = stroke)
+        drawLine(tint, Offset(w * 0.66f, h * 0.16f), Offset(w * 0.80f, h * 0.28f), stroke.width, StrokeCap.Round)
+        drawLine(tint, Offset(w * 0.66f, h * 0.40f), Offset(w * 0.80f, h * 0.28f), stroke.width, StrokeCap.Round)
+        val bot = Path().apply {
+          moveTo(w * 0.80f, h * 0.54f)
+          lineTo(w * 0.80f, h * 0.72f)
+          lineTo(w * 0.22f, h * 0.72f)
+        }
+        drawPath(bot, tint, style = stroke)
+        drawLine(tint, Offset(w * 0.34f, h * 0.60f), Offset(w * 0.20f, h * 0.72f), stroke.width, StrokeCap.Round)
+        drawLine(tint, Offset(w * 0.34f, h * 0.84f), Offset(w * 0.20f, h * 0.72f), stroke.width, StrokeCap.Round)
+      }
+      DesktopIconKind.FRIENDS_GROUP -> {
+        drawCircle(tint, radius = w * 0.14f, center = Offset(w * 0.36f, h * 0.34f), style = stroke)
+        drawCircle(tint, radius = w * 0.12f, center = Offset(w * 0.68f, h * 0.38f), style = stroke)
+        val leftArc = Path().apply {
+          moveTo(w * 0.14f, h * 0.78f)
+          cubicTo(w * 0.14f, h * 0.56f, w * 0.58f, h * 0.56f, w * 0.58f, h * 0.78f)
+        }
+        drawPath(leftArc, tint, style = stroke)
       }
     }
   }
@@ -2371,6 +2519,11 @@ private fun DesktopPostComposerOverlay(
                 }
               }
               "song" -> {
+                var playingTrackId by remember { mutableStateOf<String?>(null) }
+                val songPreviewPlayer = remember { DesktopAudioPlayer() }
+                DisposableEffect(Unit) {
+                  onDispose { songPreviewPlayer.stop() }
+                }
                 DesktopSheetSearchBar(songQuery, { songQuery = it }, "Search songs", isDark)
                 if (isSearchingSongs) {
                   LinearProgressIndicator(color = DesktopCrimson, modifier = Modifier.fillMaxWidth().height(2.dp))
@@ -2378,11 +2531,14 @@ private fun DesktopPostComposerOverlay(
                 LazyColumn(modifier = Modifier.heightIn(min = 120.dp, max = 260.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                   items(songResults, key = { it.trackId }) { track ->
                     val chosen = selectedSong?.trackId == track.trackId
+                    val isPreviewing = playingTrackId == track.trackId
                     Row(
                       modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(10.dp))
                         .clickable {
+                          songPreviewPlayer.stop()
+                          playingTrackId = null
                           selectedSong = if (chosen) null else track
                           activeSheet = null
                         }
@@ -2393,19 +2549,37 @@ private fun DesktopPostComposerOverlay(
                         Text(track.title, fontWeight = FontWeight.Bold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(track.artist, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                       }
-                      if (track.previewUrl.startsWith("https://")) {
+                      if (track.previewUrl.startsWith("https://") || track.previewUrl.startsWith("http://")) {
                         Surface(
                           onClick = {
-                            runCatching {
-                              if (Desktop.isDesktopSupported()) {
-                                Desktop.getDesktop().browse(URI(track.previewUrl))
+                            if (isPreviewing) {
+                              songPreviewPlayer.stop()
+                              playingTrackId = null
+                            } else {
+                              playingTrackId = track.trackId
+                              scope.launch {
+                                val cached = withContext(Dispatchers.IO) { apiClient.fetchCachedMediaFile(track.previewUrl) }
+                                if (cached != null) {
+                                  val started = withContext(Dispatchers.IO) { songPreviewPlayer.playFile(cached, loop = false) }
+                                  if (!started) {
+                                    playingTrackId = null
+                                  }
+                                } else {
+                                  playingTrackId = null
+                                }
                               }
                             }
                           },
                           shape = RoundedCornerShape(12.dp),
                           color = blushBg,
                         ) {
-                          Text("Preview", color = DesktopCrimson, fontSize = 11.5.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
+                          Text(
+                            if (isPreviewing) "Stop" else "Preview",
+                            color = DesktopCrimson,
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                          )
                         }
                         Spacer(modifier = Modifier.width(6.dp))
                       }
@@ -2615,13 +2789,190 @@ private fun DesktopAudioBars(isPlaying: Boolean) {
   }
 }
 
+private class DesktopAudioPlayer {
+  @Volatile
+  private var process: Process? = null
+
+  fun playFile(file: File, loop: Boolean = true): Boolean {
+    stop()
+    val commands = buildList {
+      val loopArgs = if (loop) listOf("-loop", "0") else emptyList()
+      add(listOf("ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet") + loopArgs + listOf(file.absolutePath))
+      val os = System.getProperty("os.name").orEmpty().lowercase()
+      if (os.contains("mac")) {
+        add(listOf("afplay", file.absolutePath))
+      } else if (os.contains("linux")) {
+        add(listOf("mpv", "--no-video", "--really-quiet", file.absolutePath))
+      }
+    }
+    for (cmd in commands) {
+      val proc = runCatching {
+        ProcessBuilder(cmd)
+          .redirectErrorStream(true)
+          .start()
+      }.getOrNull()
+      if (proc != null) {
+        process = proc
+        return true
+      }
+    }
+    return false
+  }
+
+  fun stop() {
+    runCatching { process?.destroyForcibly() }
+    process = null
+  }
+}
+
+@Composable
+private fun DesktopVideoPlaybackStage(
+  apiClient: DesktopApiClient,
+  videoUrl: String,
+  thumbnailUrl: String,
+  isActiveAndPlaying: Boolean,
+  isFast2x: Boolean,
+  isMuted: Boolean,
+  modifier: Modifier = Modifier,
+) {
+  var currentFrame by remember(videoUrl) { mutableStateOf<ImageBitmap?>(null) }
+  var cachedVideoFile by remember(videoUrl) { mutableStateOf<File?>(null) }
+  var isBuffering by remember(videoUrl) { mutableStateOf(false) }
+
+  LaunchedEffect(videoUrl) {
+    currentFrame = null
+    cachedVideoFile = null
+    if (videoUrl.isBlank()) return@LaunchedEffect
+    isBuffering = true
+    cachedVideoFile = withContext(Dispatchers.IO) { apiClient.fetchCachedMediaFile(videoUrl) }
+    isBuffering = false
+  }
+
+  // Video audio track playback (respecting muteOriginalAudio / attached song)
+  val videoAudioPlayer = remember { DesktopAudioPlayer() }
+  DisposableEffect(videoAudioPlayer) {
+    onDispose { videoAudioPlayer.stop() }
+  }
+  LaunchedEffect(cachedVideoFile, isActiveAndPlaying, isMuted) {
+    val vf = cachedVideoFile
+    if (vf != null && isActiveAndPlaying && !isMuted) {
+      withContext(Dispatchers.IO) { videoAudioPlayer.playFile(vf, loop = true) }
+    } else {
+      videoAudioPlayer.stop()
+    }
+  }
+
+  // Decode video frames via ffmpeg MJPEG pipe into Compose ImageBitmap preserving original aspect ratio via ContentScale.Fit
+  LaunchedEffect(cachedVideoFile, isActiveAndPlaying, isFast2x) {
+    val vf = cachedVideoFile ?: return@LaunchedEffect
+    if (!isActiveAndPlaying) return@LaunchedEffect
+    withContext(Dispatchers.IO) {
+      val fpsFilter = if (isFast2x) "fps=40,setpts=0.5*PTS" else "fps=24"
+      while (isActive) {
+        val proc = runCatching {
+          ProcessBuilder(
+            "ffmpeg",
+            "-re",
+            "-i",
+            vf.absolutePath,
+            "-vf",
+            "scale='min(960,iw)':-2,$fpsFilter",
+            "-f",
+            "image2pipe",
+            "-vcodec",
+            "mjpeg",
+            "-q:v",
+            "5",
+            "-",
+          ).start()
+        }.getOrNull() ?: break
+        try {
+          val stream = proc.inputStream
+          val buf = ByteArray(4096)
+          val frameBuf = ByteArrayOutputStream()
+          var prevByte = -1
+          var inFrame = false
+          while (isActive) {
+            val n = stream.read(buf)
+            if (n <= 0) break
+            for (i in 0 until n) {
+              val b = buf[i].toInt() and 0xFF
+              if (!inFrame) {
+                if (prevByte == 0xFF && b == 0xD8) {
+                  inFrame = true
+                  frameBuf.reset()
+                  frameBuf.write(0xFF)
+                  frameBuf.write(0xD8)
+                }
+              } else {
+                frameBuf.write(b)
+                if (prevByte == 0xFF && b == 0xD9) {
+                  val bytes = frameBuf.toByteArray()
+                  val img = runCatching { SkiaImage.makeFromEncoded(bytes).toComposeImageBitmap() }.getOrNull()
+                  if (img != null) {
+                    currentFrame = img
+                  }
+                  inFrame = false
+                }
+              }
+              prevByte = b
+            }
+          }
+        } finally {
+          runCatching { proc.destroyForcibly() }
+        }
+        delay(80L)
+      }
+    }
+  }
+
+  Box(modifier = modifier.background(Color(0xFF07080B)), contentAlignment = Alignment.Center) {
+    // 1) Full-screen blurred ambient background behind FIT video bars
+    if (thumbnailUrl.isNotBlank()) {
+      DesktopRemoteCachedImage(
+        apiClient = apiClient,
+        pathOrUrl = thumbnailUrl,
+        modifier = Modifier.fillMaxSize().blur(28.dp),
+        contentScale = ContentScale.Crop,
+        fallback = {},
+      )
+      Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.44f)))
+    }
+
+    // 2) Full-screen FIT decoded video or crisp FIT thumbnail fallback (never cropped, never stretched)
+    val frame = currentFrame
+    if (frame != null) {
+      Image(
+        bitmap = frame,
+        contentDescription = null,
+        contentScale = ContentScale.Fit,
+        modifier = Modifier.fillMaxSize(),
+      )
+    } else if (thumbnailUrl.isNotBlank()) {
+      DesktopRemoteCachedImage(
+        apiClient = apiClient,
+        pathOrUrl = thumbnailUrl,
+        modifier = Modifier.fillMaxSize(),
+        contentScale = ContentScale.Fit,
+        fallback = {},
+      )
+    }
+
+    if (isBuffering && isActiveAndPlaying) {
+      DesktopTricolorSpinner(size = 38.dp)
+    }
+  }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun DesktopReusableFeedStage(
+  apiClient: DesktopApiClient,
   items: List<DesktopFeedPost>,
   initialIndex: Int,
   activeTab: SharedFeedTab,
   isStandaloneViewer: Boolean,
+  isHostActive: Boolean = true,
   onSelectTab: (SharedFeedTab) -> Unit,
   onLiveClick: () -> Unit,
   onSearchClick: () -> Unit,
@@ -2637,6 +2988,7 @@ private fun DesktopReusableFeedStage(
   onReport: (String, String) -> Unit,
   onBlock: (String, String) -> Unit,
   onEditOwnerPost: (DesktopFeedPost) -> Unit,
+  onChangePostPrivacy: (String, String) -> Unit = { _, _ -> },
   onDeleteOwnerPost: (String) -> Unit,
   onTapHashtag: (String, SharedPostMode) -> Unit,
   onTapAudio: (SharedSongTrack, SharedPostMode) -> Unit,
@@ -2653,9 +3005,29 @@ private fun DesktopReusableFeedStage(
   var showDoubleHeart by remember { mutableStateOf(false) }
   var activeDialog by remember { mutableStateOf<String?>(null) }
 
+  val songPlayer = remember { DesktopAudioPlayer() }
+  DisposableEffect(songPlayer) {
+    onDispose { songPlayer.stop() }
+  }
+
   LaunchedEffect(currentIndex, items.size) {
     if (items.isNotEmpty() && currentIndex >= items.size - 3) {
       onLoadMore()
+    }
+  }
+
+  val activePost = items.getOrNull(currentIndex)
+  LaunchedEffect(activePost?.postId, activePost?.song?.previewUrl, isHostActive, isPaused) {
+    val songUrl = activePost?.song?.previewUrl?.trim().orEmpty()
+    if (songUrl.isNotBlank() && isHostActive && !isPaused) {
+      val file = withContext(Dispatchers.IO) { apiClient.fetchCachedMediaFile(songUrl) }
+      if (file != null) {
+        withContext(Dispatchers.IO) { songPlayer.playFile(file, loop = true) }
+      } else {
+        songPlayer.stop()
+      }
+    } else {
+      songPlayer.stop()
     }
   }
 
@@ -2755,18 +3127,25 @@ private fun DesktopReusableFeedStage(
       return@Box
     }
 
-    BoxWithConstraints(
+    val hasSongAudio = !current.song?.previewUrl.isNullOrBlank()
+    Box(
       modifier = Modifier
         .fillMaxSize()
-        .padding(top = 64.dp, bottom = 18.dp, start = 18.dp, end = 18.dp)
-        .pointerInput(current.postId) {
+        .padding(top = 60.dp, bottom = 12.dp, start = 14.dp, end = 14.dp)
+        .pointerInput(current.postId, hasSongAudio) {
           detectTapGestures(
-            onTap = { isPaused = !isPaused },
+            onTap = {
+              if (current.mode == SharedPostMode.VIDEO || hasSongAudio) {
+                isPaused = !isPaused
+              }
+            },
             onDoubleTap = {
               showDoubleHeart = true
               if (!current.isLiked) onToggleLike(current.postId)
             },
-            onLongPress = { isFast2x = true },
+            onLongPress = {
+              if (current.mode == SharedPostMode.VIDEO) isFast2x = true
+            },
             onPress = {
               try {
                 awaitRelease()
@@ -2777,41 +3156,107 @@ private fun DesktopReusableFeedStage(
           )
         },
     ) {
-      val density = LocalDensity.current
-      val fitted = SharedFeedMath.computeFittedMediaSize(
-        containerWidth = with(density) { maxWidth.toPx() },
-        containerHeight = with(density) { maxHeight.toPx() },
-        mediaWidth = current.mediaWidth,
-        mediaHeight = current.mediaHeight,
-      )
-      val cardW = with(density) { fitted.width.toDp() }
-      val cardH = with(density) { fitted.height.toDp() }
-      val theme = SharedPostRules.themes.firstOrNull { it.id == current.themeId } ?: SharedPostRules.themes.first()
-
-      DesktopPostThemeCanvas(
-        theme = theme,
-        modifier = Modifier.size(cardW, cardH).align(Alignment.Center).clip(RoundedCornerShape(18.dp)),
-      ) {
-        Box(modifier = Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
-          val ink = if (theme.isLightInk) Color.White else Color(0xFF1A1C1E)
-          Text(
-            text = current.textContent.ifBlank { current.caption.ifBlank { "@${current.authorUsername}" } },
-            style = desktopPostTextStyle(current.fontOption, ink).copy(textAlign = TextAlign.Center),
+      when (current.mode) {
+        SharedPostMode.VIDEO -> {
+          DesktopVideoPlaybackStage(
+            apiClient = apiClient,
+            videoUrl = current.videoUrl,
+            thumbnailUrl = current.thumbnailUrl,
+            isActiveAndPlaying = isHostActive && !isPaused,
+            isFast2x = isFast2x,
+            isMuted = current.muteOriginalAudio || hasSongAudio,
+            modifier = Modifier.fillMaxSize(),
           )
-          if (current.mode == SharedPostMode.VIDEO && !isPaused) {
-            Box(modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 10.dp)) {
-              DesktopTricolorSpinner(size = 34.dp)
+        }
+
+        SharedPostMode.PHOTOS -> {
+          var photoIdx by remember(current.postId) { mutableStateOf(0) }
+          val activePhotoUrl = current.photoUrls.getOrNull(photoIdx) ?: current.thumbnailUrl
+          Box(modifier = Modifier.fillMaxSize().background(Color(0xFF07080B)), contentAlignment = Alignment.Center) {
+            if (activePhotoUrl.isNotBlank()) {
+              DesktopRemoteCachedImage(
+                apiClient = apiClient,
+                pathOrUrl = activePhotoUrl,
+                modifier = Modifier.fillMaxSize().blur(28.dp),
+                contentScale = ContentScale.Crop,
+                fallback = {},
+              )
+              Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.44f)))
+              DesktopRemoteCachedImage(
+                apiClient = apiClient,
+                pathOrUrl = activePhotoUrl,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Fit,
+                fallback = {},
+              )
+            }
+            if (current.photoUrls.size > 1) {
+              Row(
+                modifier = Modifier.align(Alignment.CenterStart).padding(16.dp),
+              ) {
+                if (photoIdx > 0) {
+                  Surface(onClick = { photoIdx-- }, shape = CircleShape, color = Color.Black.copy(alpha = 0.5f)) {
+                    Box(modifier = Modifier.size(36.dp), contentAlignment = Alignment.Center) {
+                      DesktopSvgIcon(DesktopIconKind.BACK_ARROW, Color.White, 18.dp)
+                    }
+                  }
+                }
+              }
+              Row(
+                modifier = Modifier.align(Alignment.CenterEnd).padding(end = 82.dp),
+              ) {
+                if (photoIdx < current.photoUrls.lastIndex) {
+                  Surface(onClick = { photoIdx++ }, shape = CircleShape, color = Color.Black.copy(alpha = 0.5f)) {
+                    Box(modifier = Modifier.size(36.dp).rotate(180f), contentAlignment = Alignment.Center) {
+                      DesktopSvgIcon(DesktopIconKind.BACK_ARROW, Color.White, 18.dp)
+                    }
+                  }
+                }
+              }
+              Row(
+                modifier = Modifier
+                  .align(Alignment.BottomCenter)
+                  .padding(bottom = 14.dp)
+                  .background(Color.Black.copy(alpha = 0.48f), RoundedCornerShape(10.dp))
+                  .padding(horizontal = 8.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+              ) {
+                repeat(current.photoUrls.size) { d ->
+                  Box(
+                    modifier = Modifier
+                      .size(6.dp)
+                      .clip(CircleShape)
+                      .background(if (photoIdx == d) Color.White else Color.White.copy(alpha = 0.4f)),
+                  )
+                }
+              }
+            }
+          }
+        }
+
+        SharedPostMode.TEXT -> {
+          val theme = SharedPostRules.themes.firstOrNull { it.id == current.themeId } ?: SharedPostRules.themes.first()
+          DesktopPostThemeCanvas(
+            theme = theme,
+            modifier = Modifier.widthIn(max = 520.dp).fillMaxWidth().height(360.dp).align(Alignment.Center).clip(RoundedCornerShape(22.dp)),
+          ) {
+            Box(modifier = Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
+              val ink = if (theme.isLightInk) Color.White else Color(0xFF1A1C1E)
+              Text(
+                text = current.textContent.ifBlank { current.caption.ifBlank { "@${current.authorUsername}" } },
+                style = desktopPostTextStyle(current.fontOption, ink).copy(textAlign = TextAlign.Center),
+              )
             }
           }
         }
       }
 
-      if (isPaused) {
+      if (isPaused && (current.mode == SharedPostMode.VIDEO || hasSongAudio)) {
         Surface(color = Color.Black.copy(alpha = 0.6f), shape = CircleShape, modifier = Modifier.align(Alignment.Center)) {
           Text("Paused", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp))
         }
       }
-      if (isFast2x) {
+      if (isFast2x && current.mode == SharedPostMode.VIDEO) {
         Surface(color = Color.Black.copy(alpha = 0.65f), shape = RoundedCornerShape(14.dp), modifier = Modifier.align(Alignment.TopCenter).padding(top = 14.dp)) {
           Text(">> 2x", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp))
         }
@@ -2854,8 +3299,42 @@ private fun DesktopReusableFeedStage(
           fontSize = 17.sp,
           modifier = Modifier.clickable { onOpenAuthorProfile(current.authorUserId) },
         )
-        if (current.caption.isNotEmpty()) {
-          Text(current.caption, color = Color.White.copy(alpha = 0.92f), fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        val captionText = current.caption.ifBlank {
+          if (current.mode != SharedPostMode.TEXT) current.textContent else ""
+        }
+        if (captionText.isNotEmpty()) {
+          var isCaptionExpanded by remember(current.postId) { mutableStateOf(false) }
+          var hasOverflow by remember(current.postId) { mutableStateOf(false) }
+          val showToggle = hasOverflow || isCaptionExpanded || captionText.length > 85 || captionText.contains('\n')
+          Column(modifier = Modifier.fillMaxWidth()) {
+            if (isCaptionExpanded) {
+              Column(modifier = Modifier.fillMaxWidth().heightIn(max = 160.dp).verticalScroll(rememberScrollState())) {
+                Text(captionText, color = Color.White.copy(alpha = 0.94f), fontSize = 14.sp, lineHeight = 18.5.sp)
+              }
+            } else {
+              Text(
+                text = captionText,
+                color = Color.White.copy(alpha = 0.94f),
+                fontSize = 14.sp,
+                lineHeight = 18.5.sp,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                onTextLayout = { res -> if (res.hasVisualOverflow) hasOverflow = true },
+              )
+            }
+            if (showToggle) {
+              Text(
+                text = if (isCaptionExpanded) "Read less" else "Read more",
+                color = Color.White,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier
+                  .clip(RoundedCornerShape(6.dp))
+                  .clickable { isCaptionExpanded = !isCaptionExpanded }
+                  .padding(top = 3.dp, bottom = 2.dp, end = 8.dp),
+              )
+            }
+          }
         }
         if (current.hashtags.isNotEmpty()) {
           FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -2884,7 +3363,7 @@ private fun DesktopReusableFeedStage(
             color = Color.White,
             fontSize = 13.5.sp,
           )
-          DesktopAudioBars(isPlaying = !isPaused)
+          DesktopAudioBars(isPlaying = isHostActive && !isPaused)
         }
       }
 
@@ -2926,6 +3405,15 @@ private fun DesktopReusableFeedStage(
               fontWeight = FontWeight.Bold,
               fontSize = 14.sp,
             )
+            if (current.authorAvatarUrl.isNotBlank()) {
+              DesktopRemoteCachedImage(
+                apiClient = apiClient,
+                pathOrUrl = current.authorAvatarUrl,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop,
+                fallback = {},
+              )
+            }
           }
           if (!current.isOwner && !current.isFollowingAuthor) {
             Box(
@@ -2997,6 +3485,17 @@ private fun DesktopReusableFeedStage(
                   DesktopDialogButton(reason) { onReport(current.postId, reason); activeDialog = null }
                 }
               }
+              "privacy" -> {
+                Text("Post privacy", fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                val activePriv = SharedPostPrivacy.fromApi(current.privacy)
+                SharedPostPrivacy.entries.forEach { privOpt ->
+                  val mark = if (privOpt == activePriv) " ✓" else ""
+                  DesktopDialogButton("${privOpt.label}$mark") {
+                    activeDialog = null
+                    onChangePostPrivacy(current.postId, privOpt.apiValue)
+                  }
+                }
+              }
               else -> {
                 Text("Options", fontWeight = FontWeight.Bold, fontSize = 17.sp)
                 DesktopDialogButton(if (current.isReposted) "Remove repost" else "Repost") { onToggleRepost(current.postId); activeDialog = null }
@@ -3004,6 +3503,8 @@ private fun DesktopReusableFeedStage(
                 DesktopDialogButton("Not interested") { onNotInterested(current.postId); activeDialog = null }
                 DesktopDialogButton("Report") { activeDialog = "report" }
                 if (current.isOwner) {
+                  val activePriv = SharedPostPrivacy.fromApi(current.privacy)
+                  DesktopDialogButton("Privacy (${activePriv.label})") { activeDialog = "privacy" }
                   DesktopDialogButton("Edit video") { activeDialog = null; onEditOwnerPost(current) }
                   DesktopDialogButton("Delete video") { onDeleteOwnerPost(current.postId); activeDialog = null }
                 } else {
@@ -3054,6 +3555,7 @@ private fun DesktopDialogButton(label: String, onClick: () -> Unit) {
 
 @Composable
 private fun DesktopFeedSearchOverlay(
+  apiClient: DesktopApiClient,
   results: List<DesktopFeedPost>,
   shortcuts: List<DesktopSearchShortcut>,
   query: String,
@@ -3072,6 +3574,7 @@ private fun DesktopFeedSearchOverlay(
   onReport: (String, String) -> Unit,
   onBlock: (String, String) -> Unit,
   onEditOwnerPost: (DesktopFeedPost) -> Unit,
+  onChangePostPrivacy: (String, String) -> Unit = { _, _ -> },
   onDeleteOwnerPost: (String) -> Unit,
   onTapHashtag: (String, SharedPostMode) -> Unit,
   onTapAudio: (SharedSongTrack, SharedPostMode) -> Unit,
@@ -3083,10 +3586,12 @@ private fun DesktopFeedSearchOverlay(
   val openViewerIdx = viewerStartIndex
   if (openViewerIdx != null) {
     DesktopReusableFeedStage(
+      apiClient = apiClient,
       items = results,
       initialIndex = openViewerIdx,
       activeTab = SharedFeedTab.FOR_YOU,
       isStandaloneViewer = true,
+      isHostActive = true,
       onSelectTab = {},
       onLiveClick = {},
       onSearchClick = { viewerStartIndex = null },
@@ -3102,6 +3607,7 @@ private fun DesktopFeedSearchOverlay(
       onReport = onReport,
       onBlock = onBlock,
       onEditOwnerPost = onEditOwnerPost,
+      onChangePostPrivacy = onChangePostPrivacy,
       onDeleteOwnerPost = onDeleteOwnerPost,
       onTapHashtag = onTapHashtag,
       onTapAudio = onTapAudio,
@@ -3181,22 +3687,52 @@ private fun DesktopFeedSearchOverlay(
         ) {
           itemsIndexed(results, key = { _, it -> it.postId }) { idx, item ->
             val theme = SharedPostRules.themes.firstOrNull { it.id == item.themeId } ?: SharedPostRules.themes.first()
+            val previewImage = item.thumbnailUrl.ifBlank { item.photoUrls.firstOrNull().orEmpty() }
             Surface(
               onClick = { viewerStartIndex = idx },
               shape = RoundedCornerShape(14.dp),
               color = Color(0xFF0E121A),
               modifier = Modifier.fillMaxWidth().aspectRatio(9f / 16f),
             ) {
-              DesktopPostThemeCanvas(theme = theme, modifier = Modifier.fillMaxSize()) {
-                Box(modifier = Modifier.fillMaxSize().padding(12.dp)) {
-                  val ink = if (theme.isLightInk) Color.White else Color(0xFF1A1C1E)
-                  Text(
-                    text = item.textContent.ifBlank { item.caption },
-                    color = ink,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 4,
-                    modifier = Modifier.align(Alignment.Center),
+              Box(modifier = Modifier.fillMaxSize()) {
+                if (previewImage.isNotBlank() && item.mode != SharedPostMode.TEXT) {
+                  DesktopRemoteCachedImage(
+                    apiClient = apiClient,
+                    pathOrUrl = previewImage,
+                    modifier = Modifier.fillMaxSize().blur(18.dp),
+                    contentScale = ContentScale.Crop,
+                    fallback = {},
                   )
+                  Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.40f)))
+                  DesktopRemoteCachedImage(
+                    apiClient = apiClient,
+                    pathOrUrl = previewImage,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Fit,
+                    fallback = {},
+                  )
+                } else {
+                  DesktopPostThemeCanvas(theme = theme, modifier = Modifier.fillMaxSize()) {
+                    val ink = if (theme.isLightInk) Color.White else Color(0xFF1A1C1E)
+                    Box(modifier = Modifier.fillMaxSize().padding(12.dp)) {
+                      Text(
+                        text = item.textContent.ifBlank { item.caption },
+                        color = ink,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 4,
+                        modifier = Modifier.align(Alignment.Center),
+                      )
+                    }
+                  }
+                }
+                Box(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .height(64.dp)
+                    .align(Alignment.BottomCenter)
+                    .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.72f)))),
+                )
+                Box(modifier = Modifier.fillMaxSize().padding(12.dp)) {
                   Text(
                     text = "@${item.authorUsername}",
                     color = Color.White,
@@ -3317,11 +3853,16 @@ private fun DesktopUserProfileScreen(
   val accentCrimson = DesktopCrimson
   var profile by remember(targetUserId) { mutableStateOf<DesktopUserProfile?>(null) }
   var isLoading by remember(targetUserId) { mutableStateOf(true) }
+  var selectedOwnerTab by remember(targetUserId) { mutableStateOf(SharedOwnerProfileTab.POSTS) }
   var postFilter by remember(targetUserId) { mutableStateOf(DesktopProfileFilter.ALL) }
   var postSort by remember(targetUserId) { mutableStateOf(DesktopProfileSort.LATEST) }
   var showFilterPopup by remember { mutableStateOf(false) }
   var showSortPopup by remember { mutableStateOf(false) }
   var showMoreDialog by remember { mutableStateOf(false) }
+  var showSettingsDialog by remember { mutableStateOf(false) }
+  var showBackgroundsDialog by remember { mutableStateOf(false) }
+  var isUploadingBg by remember { mutableStateOf(false) }
+  var showEditProfileDialog by remember { mutableStateOf(false) }
   var showReportCategories by remember { mutableStateOf(false) }
   var pendingReportReason by remember { mutableStateOf<String?>(null) }
   var reportDetails by remember { mutableStateOf("") }
@@ -3331,6 +3872,15 @@ private fun DesktopUserProfileScreen(
   var connectionsPage by remember { mutableStateOf(1) }
   var connectionsHasMore by remember { mutableStateOf(false) }
   var connectionsLoading by remember { mutableStateOf(false) }
+
+  val reloadProfile: () -> Unit = {
+    scope.launch {
+      val res = withContext(Dispatchers.IO) { apiClient.getUserProfile(targetUserId) }
+      if (res is DesktopApiOutcome.Ok) {
+        profile = res.data
+      }
+    }
+  }
 
   LaunchedEffect(targetUserId) {
     isLoading = true
@@ -3364,6 +3914,20 @@ private fun DesktopUserProfileScreen(
   }
 
   val p = profile
+  val showHeroBanner = p != null && !p.isBlocked && (p.isOwner || p.backgrounds.isNotEmpty())
+  val heroBackgrounds = p?.backgrounds.orEmpty()
+  var heroSlideIndex by remember(heroBackgrounds.size) { mutableIntStateOf(0) }
+  LaunchedEffect(heroBackgrounds) {
+    if (heroBackgrounds.size > 1) {
+      while (true) {
+        delay(5_000L)
+        heroSlideIndex = (heroSlideIndex + 1) % heroBackgrounds.size
+      }
+    } else {
+      heroSlideIndex = 0
+    }
+  }
+
   val profileLink = apiClient.shareUrlForProfile(p?.username?.ifBlank { p.userId } ?: targetUserId)
   val copyLinkAction: () -> Unit = {
     runCatching { Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(profileLink), null) }
@@ -3375,8 +3939,22 @@ private fun DesktopUserProfileScreen(
     onToast("Invite link copied")
   }
 
-  val filteredPosts = remember(p?.posts, postFilter, postSort) {
-    val raw = p?.posts.orEmpty().filter { item ->
+  val filteredPosts = remember(p?.posts, p?.savedPosts, p?.repostedPosts, p?.lockedPosts, p?.isOwner, selectedOwnerTab, postFilter, postSort) {
+    val source = if (p?.isOwner == true) {
+      when (selectedOwnerTab) {
+        SharedOwnerProfileTab.POSTS -> p.posts.filterNot { it.privacy.equals("private", ignoreCase = true) }
+        SharedOwnerProfileTab.SAVED -> p.savedPosts
+        SharedOwnerProfileTab.REPOSTS -> p.repostedPosts
+        SharedOwnerProfileTab.LOCKED -> {
+          val explicit = p.lockedPosts
+          val fallback = p.posts.filter { it.privacy.equals("private", ignoreCase = true) }
+          (explicit + fallback.filter { fb -> explicit.none { it.postId == fb.postId } })
+        }
+      }
+    } else {
+      p?.posts.orEmpty()
+    }
+    val raw = source.filter { item ->
       when (postFilter) {
         DesktopProfileFilter.ALL -> true
         DesktopProfileFilter.VIDEOS -> item.mode == SharedPostMode.VIDEO
@@ -3394,45 +3972,47 @@ private fun DesktopUserProfileScreen(
   Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
     Box(modifier = Modifier.fillMaxSize()) {
       Column(modifier = Modifier.fillMaxSize()) {
-        // Top Header Bar matching uploaded Alex Mwangi reference
-        Row(
-          modifier = Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 12.dp),
-          verticalAlignment = Alignment.CenterVertically,
-        ) {
-          if (!isEmbeddedOwnProfileTab) {
+        if (!showHeroBanner) {
+          // Flat Top Header Bar when visitor has no hero background or blocked
+          Row(
+            modifier = Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            if (!isEmbeddedOwnProfileTab) {
+              Box(
+                modifier = Modifier.size(44.dp).clip(CircleShape).clickable(onClick = onBack),
+                contentAlignment = Alignment.Center,
+              ) {
+                DesktopSvgIcon(DesktopIconKind.BACK_ARROW, MaterialTheme.colorScheme.onBackground, 20.dp)
+              }
+            } else {
+              Spacer(modifier = Modifier.width(44.dp))
+            }
+
+            Text(
+              text = p?.fullName?.ifBlank { "@${p.username.ifBlank { p.userId }}" } ?: "Profile",
+              fontSize = 18.sp,
+              fontWeight = FontWeight.Bold,
+              color = MaterialTheme.colorScheme.onBackground,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+              textAlign = TextAlign.Center,
+              modifier = Modifier.weight(1f),
+            )
+
             Box(
-              modifier = Modifier.size(44.dp).clip(CircleShape).clickable(onClick = onBack),
+              modifier = Modifier.size(44.dp).clip(RoundedCornerShape(10.dp)).clickable(onClick = inviteAction),
               contentAlignment = Alignment.Center,
             ) {
-              DesktopSvgIcon(DesktopIconKind.BACK_ARROW, MaterialTheme.colorScheme.onBackground, 20.dp)
+              DesktopSvgIcon(DesktopIconKind.INVITE_T_BADGE, accentCrimson, 26.dp)
             }
-          } else {
-            Spacer(modifier = Modifier.width(44.dp))
-          }
 
-          Text(
-            text = p?.fullName?.ifBlank { "@${p.username.ifBlank { p.userId }}" } ?: "Profile",
-            fontSize = 18.sp,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onBackground,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.weight(1f),
-          )
-
-          Box(
-            modifier = Modifier.size(44.dp).clip(RoundedCornerShape(10.dp)).clickable(onClick = inviteAction),
-            contentAlignment = Alignment.Center,
-          ) {
-            DesktopSvgIcon(DesktopIconKind.INVITE_T_BADGE, accentCrimson, 26.dp)
-          }
-
-          Box(
-            modifier = Modifier.size(44.dp).clip(CircleShape).clickable { showMoreDialog = true },
-            contentAlignment = Alignment.Center,
-          ) {
-            DesktopSvgIcon(DesktopIconKind.MORE_DOTS, MaterialTheme.colorScheme.onBackground, 22.dp)
+            Box(
+              modifier = Modifier.size(44.dp).clip(CircleShape).clickable { showMoreDialog = true },
+              contentAlignment = Alignment.Center,
+            ) {
+              DesktopSvgIcon(DesktopIconKind.MORE_DOTS, MaterialTheme.colorScheme.onBackground, 22.dp)
+            }
           }
         }
 
@@ -3452,29 +4032,226 @@ private fun DesktopUserProfileScreen(
           ) {
             item(key = "header", span = { GridItemSpan(maxLineSpan) }) {
               Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-                Spacer(modifier = Modifier.height(6.dp))
-                val ringBrush = Brush.linearGradient(
-                  listOf(Color(0xFFD946EF), DesktopCrimson, Color(0xFFF97316)),
-                )
-                Box(
-                  modifier = Modifier.size(94.dp).clip(CircleShape).border(2.6.dp, ringBrush, CircleShape).padding(4.dp),
-                  contentAlignment = Alignment.Center,
-                ) {
-                  DesktopRemoteCachedImage(
-                    apiClient = apiClient,
-                    pathOrUrl = p?.avatarUrl.orEmpty(),
-                    modifier = Modifier.fillMaxSize().clip(CircleShape),
-                  ) {
+                if (showHeroBanner && p != null) {
+                  Box(modifier = Modifier.fillMaxWidth().height(268.dp)) {
+                    Box(modifier = Modifier.fillMaxWidth().height(232.dp)) {
+                      val currentBg = heroBackgrounds.getOrNull(heroSlideIndex % heroBackgrounds.size.coerceAtLeast(1))
+                      AnimatedContent(
+                        targetState = currentBg,
+                        transitionSpec = { fadeIn(tween(800)) togetherWith fadeOut(tween(800)) },
+                      ) { bg ->
+                        if (bg != null) {
+                          DesktopRemoteCachedImage(
+                            apiClient = apiClient,
+                            pathOrUrl = bg.url,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop,
+                          ) {
+                            Box(
+                              modifier = Modifier
+                                .fillMaxSize()
+                                .background(Brush.linearGradient(listOf(Color(0xFF28121B), Color(0xFF141824)))),
+                            )
+                          }
+                        } else {
+                          Box(
+                            modifier = Modifier
+                              .fillMaxSize()
+                              .background(Brush.linearGradient(listOf(Color(0xFF26121A), Color(0xFF10131C), Color(0xFF1B1F2C)))),
+                          )
+                        }
+                      }
+
+                      // Top dark legibility scrim + bottom fade into screen background
+                      Box(
+                        modifier = Modifier
+                          .fillMaxSize()
+                          .background(
+                            Brush.verticalGradient(
+                              0.0f to Color.Black.copy(alpha = 0.48f),
+                              0.36f to Color.Transparent,
+                              0.68f to MaterialTheme.colorScheme.background.copy(alpha = 0.50f),
+                              1.0f to MaterialTheme.colorScheme.background,
+                            ),
+                          ),
+                      )
+
+                      // Hero overlay top bar matching screenshot
+                      Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                      ) {
+                        if (!isEmbeddedOwnProfileTab) {
+                          Box(
+                            modifier = Modifier
+                              .size(40.dp)
+                              .clip(CircleShape)
+                              .background(Color.Black.copy(alpha = 0.42f))
+                              .clickable(onClick = onBack),
+                            contentAlignment = Alignment.Center,
+                          ) {
+                            DesktopSvgIcon(DesktopIconKind.BACK_ARROW, Color.White, 19.dp)
+                          }
+                        } else {
+                          Spacer(modifier = Modifier.width(40.dp))
+                        }
+
+                        Text(
+                          text = p.fullName.ifBlank { "@${p.username.ifBlank { p.userId }}" },
+                          fontSize = 18.sp,
+                          fontWeight = FontWeight.Bold,
+                          color = Color.White,
+                          maxLines = 1,
+                          overflow = TextOverflow.Ellipsis,
+                          textAlign = TextAlign.Center,
+                          modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                        )
+
+                        if (p.isOwner) {
+                          Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Box(
+                              modifier = Modifier
+                                .size(38.dp)
+                                .clip(CircleShape)
+                                .background(Color.Black.copy(alpha = 0.42f))
+                                .clickable { onToast("Subscribers — Coming soon") },
+                              contentAlignment = Alignment.Center,
+                            ) {
+                              DesktopSvgIcon(DesktopIconKind.CROWN, Color.White, 18.dp)
+                            }
+                            Box(
+                              modifier = Modifier
+                                .size(38.dp)
+                                .clip(CircleShape)
+                                .background(Color.Black.copy(alpha = 0.42f))
+                                .clickable { showSettingsDialog = true },
+                              contentAlignment = Alignment.Center,
+                            ) {
+                              DesktopSvgIcon(DesktopIconKind.GEAR, Color.White, 18.dp)
+                            }
+                            Box(
+                              modifier = Modifier
+                                .size(38.dp)
+                                .clip(CircleShape)
+                                .background(Color.Black.copy(alpha = 0.42f))
+                                .clickable { onToast("Menu — Coming soon") },
+                              contentAlignment = Alignment.Center,
+                            ) {
+                              DesktopSvgIcon(DesktopIconKind.THREE_DASHES, Color.White, 18.dp)
+                            }
+                          }
+                        } else {
+                          Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Box(
+                              modifier = Modifier
+                                .size(38.dp)
+                                .clip(CircleShape)
+                                .background(Color.Black.copy(alpha = 0.42f))
+                                .clickable(onClick = inviteAction),
+                              contentAlignment = Alignment.Center,
+                            ) {
+                              DesktopSvgIcon(DesktopIconKind.INVITE_T_BADGE, accentCrimson, 22.dp)
+                            }
+                            Box(
+                              modifier = Modifier
+                                .size(38.dp)
+                                .clip(CircleShape)
+                                .background(Color.Black.copy(alpha = 0.42f))
+                                .clickable { showMoreDialog = true },
+                              contentAlignment = Alignment.Center,
+                            ) {
+                              DesktopSvgIcon(DesktopIconKind.MORE_DOTS, Color.White, 18.dp)
+                            }
+                          }
+                        }
+                      }
+
+                      if (p.isOwner) {
+                        Surface(
+                          onClick = { showBackgroundsDialog = true },
+                          shape = RoundedCornerShape(20.dp),
+                          color = Color.Black.copy(alpha = 0.62f),
+                          border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f)),
+                          modifier = Modifier.align(Alignment.BottomEnd).padding(end = 14.dp, bottom = 52.dp),
+                        ) {
+                          Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                          ) {
+                            DesktopSvgIcon(DesktopIconKind.CAMERA, Color.White, 15.dp)
+                            Text(
+                              text = if (heroBackgrounds.isEmpty()) "Edit background" else "Edit background (${heroBackgrounds.size}/5)",
+                              color = Color.White,
+                              fontSize = 12.sp,
+                              fontWeight = FontWeight.SemiBold,
+                            )
+                          }
+                        }
+                      }
+                    }
+
+                    // Overlapping circular avatar centered along bottom of hero
+                    val ringBrush = Brush.linearGradient(
+                      listOf(accentCrimson, Color(0xFFE11D48), Color(0xFF991B1B)),
+                    )
                     Box(
-                      modifier = Modifier.fillMaxSize().clip(CircleShape).background(if (isDark) DesktopDarkBlush else DesktopBlush),
+                      modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .size(96.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.background)
+                        .border(2.6.dp, ringBrush, CircleShape)
+                        .padding(4.dp)
+                        .let { mod ->
+                          if (p.isOwner) mod.clickable { showEditProfileDialog = true } else mod
+                        },
                       contentAlignment = Alignment.Center,
                     ) {
-                      Text(
-                        text = TelefamContactsRules.initialsFor(p?.fullName.orEmpty(), p?.username.orEmpty()),
-                        color = accentCrimson,
-                        fontSize = 26.sp,
-                        fontWeight = FontWeight.Bold,
-                      )
+                      DesktopRemoteCachedImage(
+                        apiClient = apiClient,
+                        pathOrUrl = p.avatarUrl,
+                        modifier = Modifier.fillMaxSize().clip(CircleShape),
+                      ) {
+                        Box(
+                          modifier = Modifier.fillMaxSize().clip(CircleShape).background(if (isDark) DesktopDarkBlush else DesktopBlush),
+                          contentAlignment = Alignment.Center,
+                        ) {
+                          Text(
+                            text = TelefamContactsRules.initialsFor(p.fullName, p.username),
+                            color = accentCrimson,
+                            fontSize = 26.sp,
+                            fontWeight = FontWeight.Bold,
+                          )
+                        }
+                      }
+                    }
+                  }
+                } else {
+                  Spacer(modifier = Modifier.height(6.dp))
+                  val ringBrush = Brush.linearGradient(
+                    listOf(Color(0xFFD946EF), DesktopCrimson, Color(0xFFF97316)),
+                  )
+                  Box(
+                    modifier = Modifier.size(94.dp).clip(CircleShape).border(2.6.dp, ringBrush, CircleShape).padding(4.dp),
+                    contentAlignment = Alignment.Center,
+                  ) {
+                    DesktopRemoteCachedImage(
+                      apiClient = apiClient,
+                      pathOrUrl = p?.avatarUrl.orEmpty(),
+                      modifier = Modifier.fillMaxSize().clip(CircleShape),
+                    ) {
+                      Box(
+                        modifier = Modifier.fillMaxSize().clip(CircleShape).background(if (isDark) DesktopDarkBlush else DesktopBlush),
+                        contentAlignment = Alignment.Center,
+                      ) {
+                        Text(
+                          text = TelefamContactsRules.initialsFor(p?.fullName.orEmpty(), p?.username.orEmpty()),
+                          color = accentCrimson,
+                          fontSize = 26.sp,
+                          fontWeight = FontWeight.Bold,
+                        )
+                      }
                     }
                   }
                 }
@@ -3634,25 +4411,43 @@ private fun DesktopUserProfileScreen(
                       }
                     }
                   }
-                } else {
+                } else if (p != null) {
+                  // Owner profile actions matching screenshot: crimson Edit profile + dark/surface Share profile
                   Row(
-                    modifier = Modifier.widthIn(max = 380.dp).fillMaxWidth().padding(horizontal = 24.dp),
+                    modifier = Modifier.widthIn(max = 400.dp).fillMaxWidth().padding(horizontal = 24.dp),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                   ) {
-                    Surface(onClick = inviteAction, shape = RoundedCornerShape(8.dp), color = accentCrimson, modifier = Modifier.weight(1f).height(40.dp)) {
-                      Box(contentAlignment = Alignment.Center) {
-                        Text("Invite friends", color = Color.White, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold)
+                    Surface(
+                      onClick = { showEditProfileDialog = true },
+                      shape = RoundedCornerShape(22.dp),
+                      color = accentCrimson,
+                      modifier = Modifier.weight(1f).height(42.dp),
+                    ) {
+                      Row(
+                        modifier = Modifier.fillMaxSize(),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically,
+                      ) {
+                        DesktopSvgIcon(DesktopIconKind.EDIT_PENCIL, Color.White, 15.dp)
+                        Spacer(modifier = Modifier.width(7.dp))
+                        Text("Edit profile", color = Color.White, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold)
                       }
                     }
                     Surface(
                       onClick = copyLinkAction,
-                      shape = RoundedCornerShape(8.dp),
+                      shape = RoundedCornerShape(22.dp),
                       color = MaterialTheme.colorScheme.surface,
                       border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                      modifier = Modifier.weight(1f).height(40.dp),
+                      modifier = Modifier.weight(1f).height(42.dp),
                     ) {
-                      Box(contentAlignment = Alignment.Center) {
-                        Text("Copy link", fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold)
+                      Row(
+                        modifier = Modifier.fillMaxSize(),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically,
+                      ) {
+                        DesktopSvgIcon(DesktopIconKind.SHARE_NODES, MaterialTheme.colorScheme.onSurface, 15.dp)
+                        Spacer(modifier = Modifier.width(7.dp))
+                        Text("Share profile", fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold)
                       }
                     }
                   }
@@ -3680,22 +4475,68 @@ private fun DesktopUserProfileScreen(
                 }
 
                 Spacer(modifier = Modifier.height(14.dp))
-                Column(modifier = Modifier.fillMaxWidth()) {
-                  Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Column(modifier = Modifier.weight(0.45f), horizontalAlignment = Alignment.CenterHorizontally) {
-                      Row(
-                        modifier = Modifier.padding(vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                      ) {
-                        DesktopSvgIcon(DesktopIconKind.GRID_2X2, MaterialTheme.colorScheme.onBackground, 17.dp)
-                        Text("Posts", fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                if (p?.isOwner == true) {
+                  val publicCount = p.posts.count { !it.privacy.equals("private", ignoreCase = true) }
+                  Column(modifier = Modifier.fillMaxWidth()) {
+                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                      SharedOwnerProfileTab.entries.forEach { tab ->
+                        val selected = selectedOwnerTab == tab
+                        val iconKind = when (tab) {
+                          SharedOwnerProfileTab.POSTS -> DesktopIconKind.GRID_2X2
+                          SharedOwnerProfileTab.SAVED -> DesktopIconKind.BOOKMARK
+                          SharedOwnerProfileTab.REPOSTS -> DesktopIconKind.REPOST
+                          SharedOwnerProfileTab.LOCKED -> DesktopIconKind.LOCK
+                        }
+                        val tint = if (selected) MaterialTheme.colorScheme.onBackground else MaterialTheme.colorScheme.onSurfaceVariant
+                        Column(
+                          modifier = Modifier
+                            .weight(1f)
+                            .clickable { selectedOwnerTab = tab },
+                          horizontalAlignment = Alignment.CenterHorizontally,
+                        ) {
+                          Row(
+                            modifier = Modifier.padding(vertical = 10.dp, horizontal = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                          ) {
+                            DesktopSvgIcon(iconKind, tint, 15.dp)
+                            Text(
+                              text = if (tab == SharedOwnerProfileTab.POSTS) "Posts $publicCount" else tab.label,
+                              fontSize = 13.sp,
+                              fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                              color = tint,
+                              maxLines = 1,
+                            )
+                          }
+                          Box(
+                            modifier = Modifier
+                              .fillMaxWidth(0.75f)
+                              .height(2.5.dp)
+                              .background(if (selected) accentCrimson else Color.Transparent),
+                          )
+                        }
                       }
-                      Box(modifier = Modifier.fillMaxWidth().height(2.5.dp).background(accentCrimson))
                     }
-                    Box(modifier = Modifier.weight(0.55f))
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
                   }
-                  HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
+                } else {
+                  Column(modifier = Modifier.fillMaxWidth()) {
+                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                      Column(modifier = Modifier.weight(0.45f), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Row(
+                          modifier = Modifier.padding(vertical = 10.dp),
+                          verticalAlignment = Alignment.CenterVertically,
+                          horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                          DesktopSvgIcon(DesktopIconKind.GRID_2X2, MaterialTheme.colorScheme.onBackground, 17.dp)
+                          Text("Posts", fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                        }
+                        Box(modifier = Modifier.fillMaxWidth().height(2.5.dp).background(accentCrimson))
+                      }
+                      Box(modifier = Modifier.weight(0.55f))
+                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
+                  }
                 }
 
                 Row(
@@ -3729,8 +4570,14 @@ private fun DesktopUserProfileScreen(
               }
             } else if (p != null && !p.isBlocked && filteredPosts.isEmpty()) {
               item(key = "empty", span = { GridItemSpan(maxLineSpan) }) {
+                val emptyText = when (selectedOwnerTab) {
+                  SharedOwnerProfileTab.POSTS -> "No posts yet"
+                  SharedOwnerProfileTab.SAVED -> "No saved posts yet"
+                  SharedOwnerProfileTab.REPOSTS -> "No reposts yet"
+                  SharedOwnerProfileTab.LOCKED -> "No private posts locked"
+                }
                 Box(modifier = Modifier.fillMaxWidth().padding(vertical = 42.dp), contentAlignment = Alignment.Center) {
-                  Text("No posts yet", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
+                  Text(emptyText, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
                 }
               }
             } else if (p != null && !p.isBlocked) {
@@ -3773,6 +4620,24 @@ private fun DesktopUserProfileScreen(
                           )
                         }
                       }
+                    }
+                  }
+
+                  if (p.isOwner && !post.privacy.equals("public", ignoreCase = true)) {
+                    Box(
+                      modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(6.dp)
+                        .clip(CircleShape)
+                        .background(Color.Black.copy(alpha = 0.62f))
+                        .padding(5.dp),
+                    ) {
+                      val privKind = if (post.privacy.equals("friends", ignoreCase = true)) {
+                        DesktopIconKind.FRIENDS_GROUP
+                      } else {
+                        DesktopIconKind.LOCK
+                      }
+                      DesktopSvgIcon(privKind, Color.White, 12.dp)
                     }
                   }
 
@@ -3834,6 +4699,231 @@ private fun DesktopUserProfileScreen(
             }
           }
         }
+      }
+
+      // Owner Settings Dialog (Logout STRICTLY FIRST!)
+      if (showSettingsDialog && p != null) {
+        DesktopModalOverlay(onDismiss = { showSettingsDialog = false }) {
+          Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+              Text("Settings", fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+              Box(modifier = Modifier.size(32.dp).clip(CircleShape).clickable { showSettingsDialog = false }, contentAlignment = Alignment.Center) {
+                DesktopSvgIcon(DesktopIconKind.CLOSE, MaterialTheme.colorScheme.onSurfaceVariant, 16.dp)
+              }
+            }
+
+            // 1. Log out FIRST in settings
+            Button(
+              onClick = { showSettingsDialog = false; onSignOut() },
+              shape = RoundedCornerShape(12.dp),
+              colors = ButtonDefaults.buttonColors(containerColor = accentCrimson),
+              modifier = Modifier.fillMaxWidth().height(46.dp),
+            ) {
+              Text("Log out", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.5.sp)
+            }
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            DesktopDialogButton("Switch theme (${apiClient.session.themeMode.name.lowercase().replaceFirstChar { it.uppercase() }})") {
+              onToggleTheme()
+            }
+            if (p.username.isNotBlank() || apiClient.session.email.isNotBlank()) {
+              Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.background,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                modifier = Modifier.fillMaxWidth(),
+              ) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                  Text("Account", fontSize = 11.5.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                  Text("@${p.username}", fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold)
+                  if (apiClient.session.email.isNotBlank()) {
+                    Text(apiClient.session.email, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Multi-background Upload & Reorder Manager Modal (up to 5 photos)
+      if (showBackgroundsDialog && p != null) {
+        DesktopModalOverlay(onDismiss = { showBackgroundsDialog = false }) {
+          val remainingSlots = (5 - heroBackgrounds.size).coerceAtLeast(0)
+          Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+              Column(modifier = Modifier.weight(1f)) {
+                Text("Profile backgrounds (${heroBackgrounds.size}/5)", fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                Text("Auto-fades every 5 seconds for all visitors", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+              }
+              Box(modifier = Modifier.size(32.dp).clip(CircleShape).clickable { showBackgroundsDialog = false }, contentAlignment = Alignment.Center) {
+                DesktopSvgIcon(DesktopIconKind.CLOSE, MaterialTheme.colorScheme.onSurfaceVariant, 16.dp)
+              }
+            }
+
+            if (isUploadingBg) {
+              LinearProgressIndicator(color = accentCrimson, modifier = Modifier.fillMaxWidth())
+            }
+
+            Button(
+              enabled = !isUploadingBg && remainingSlots > 0,
+              onClick = {
+                val dlg = FileDialog(null as Frame?, "Select background photo", FileDialog.LOAD).apply {
+                  isMultipleMode = remainingSlots > 1
+                  setFilenameFilter { _, name ->
+                    val low = name.lowercase()
+                    low.endsWith(".jpg") || low.endsWith(".jpeg") || low.endsWith(".png") || low.endsWith(".webp")
+                  }
+                  isVisible = true
+                }
+                val chosen = dlg.files?.take(remainingSlots).orEmpty()
+                if (chosen.isNotEmpty()) {
+                  isUploadingBg = true
+                  scope.launch {
+                    var latestList: List<DesktopProfileBackgroundItem>? = null
+                    for (file in chosen) {
+                      val bytes = withContext(Dispatchers.IO) {
+                        val img = ImageIO.read(file)
+                        if (img != null) {
+                          val scale = minOf(1f, 1600f / maxOf(img.width, img.height).coerceAtLeast(1))
+                          val tw = (img.width * scale).toInt().coerceAtLeast(1)
+                          val th = (img.height * scale).toInt().coerceAtLeast(1)
+                          val out = BufferedImage(tw, th, BufferedImage.TYPE_INT_RGB)
+                          val g = out.createGraphics()
+                          g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR)
+                          g.drawImage(img, 0, 0, tw, th, null)
+                          g.dispose()
+                          ByteArrayOutputStream().also { ImageIO.write(out, "jpg", it) }.toByteArray()
+                        } else {
+                          file.readBytes()
+                        }
+                      }
+                      val res = withContext(Dispatchers.IO) { apiClient.uploadProfileBackground(bytes) }
+                      when (res) {
+                        is DesktopApiOutcome.Ok -> latestList = res.data
+                        is DesktopApiOutcome.Fail -> {
+                          onToast(res.message)
+                          break
+                        }
+                      }
+                    }
+                    isUploadingBg = false
+                    if (latestList != null) {
+                      profile = profile?.copy(backgrounds = latestList!!)
+                      reloadProfile()
+                      onToast("Backgrounds updated")
+                    }
+                  }
+                }
+              },
+              shape = RoundedCornerShape(12.dp),
+              colors = ButtonDefaults.buttonColors(containerColor = accentCrimson),
+              modifier = Modifier.fillMaxWidth().height(44.dp),
+            ) {
+              Text("Add background photo ($remainingSlots left)", color = Color.White, fontWeight = FontWeight.SemiBold)
+            }
+
+            if (heroBackgrounds.isEmpty()) {
+              Box(modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp), contentAlignment = Alignment.Center) {
+                Text("No backgrounds uploaded yet", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.5.sp)
+              }
+            } else {
+              LazyColumn(modifier = Modifier.heightIn(max = 320.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                itemsIndexed(heroBackgrounds, key = { _, bg -> bg.mediaId }) { idx, bg ->
+                  Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.background,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                  ) {
+                    Row(
+                      modifier = Modifier.fillMaxWidth().padding(10.dp),
+                      verticalAlignment = Alignment.CenterVertically,
+                      horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                      DesktopRemoteCachedImage(
+                        apiClient = apiClient,
+                        pathOrUrl = bg.url,
+                        modifier = Modifier.size(width = 72.dp, height = 48.dp).clip(RoundedCornerShape(8.dp)),
+                        contentScale = ContentScale.Crop,
+                      ) {}
+                      Column(modifier = Modifier.weight(1f)) {
+                        Text("Slide #${idx + 1}", fontWeight = FontWeight.Bold, fontSize = 13.5.sp)
+                        if (bg.width > 0 && bg.height > 0) {
+                          Text("${bg.width}×${bg.height} · ${(bg.byteSize / 1024).coerceAtLeast(1)} KB", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        if (bg.sha256Fingerprint.isNotBlank()) {
+                          Text(
+                            text = "SHA:${bg.sha256Fingerprint.take(10)}",
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                          )
+                        }
+                      }
+                      if (idx > 0) {
+                        Box(
+                          modifier = Modifier.size(30.dp).clip(CircleShape).clickable(enabled = !isUploadingBg) {
+                            val ids = heroBackgrounds.map { it.mediaId }.toMutableList()
+                            val tmp = ids[idx - 1]; ids[idx - 1] = ids[idx]; ids[idx] = tmp
+                            scope.launch {
+                              val res = withContext(Dispatchers.IO) { apiClient.reorderProfileBackgrounds(ids) }
+                              if (res is DesktopApiOutcome.Ok) profile = profile?.copy(backgrounds = res.data)
+                            }
+                          },
+                          contentAlignment = Alignment.Center,
+                        ) { DesktopSvgIcon(DesktopIconKind.CHEVRON_UP, MaterialTheme.colorScheme.onSurface, 14.dp) }
+                      }
+                      if (idx < heroBackgrounds.lastIndex) {
+                        Box(
+                          modifier = Modifier.size(30.dp).clip(CircleShape).clickable(enabled = !isUploadingBg) {
+                            val ids = heroBackgrounds.map { it.mediaId }.toMutableList()
+                            val tmp = ids[idx + 1]; ids[idx + 1] = ids[idx]; ids[idx] = tmp
+                            scope.launch {
+                              val res = withContext(Dispatchers.IO) { apiClient.reorderProfileBackgrounds(ids) }
+                              if (res is DesktopApiOutcome.Ok) profile = profile?.copy(backgrounds = res.data)
+                            }
+                          },
+                          contentAlignment = Alignment.Center,
+                        ) { DesktopSvgIcon(DesktopIconKind.CHEVRON_DOWN, MaterialTheme.colorScheme.onSurface, 14.dp) }
+                      }
+                      Box(
+                        modifier = Modifier.size(30.dp).clip(CircleShape).clickable(enabled = !isUploadingBg) {
+                          scope.launch {
+                            val res = withContext(Dispatchers.IO) { apiClient.deleteProfileBackground(bg.mediaId) }
+                            if (res is DesktopApiOutcome.Ok) {
+                              profile = profile?.copy(backgrounds = res.data)
+                              onToast("Background deleted")
+                            } else if (res is DesktopApiOutcome.Fail) {
+                              onToast(res.message)
+                            }
+                          }
+                        },
+                        contentAlignment = Alignment.Center,
+                      ) {
+                        DesktopSvgIcon(DesktopIconKind.CLOSE, accentCrimson, 14.dp)
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Full Profile Edit Modal (Name, 14-day Username lock, Country, Phone, Gender, DOB, Location, Bio, DP)
+      if (showEditProfileDialog && p != null) {
+        DesktopEditProfileModal(
+          apiClient = apiClient,
+          profile = p,
+          onSaved = {
+            showEditProfileDialog = false
+            onToast("Profile updated")
+            reloadProfile()
+          },
+          onDismiss = { showEditProfileDialog = false },
+          onToast = onToast,
+        )
       }
 
       if (showMoreDialog && p != null) {
@@ -4033,6 +5123,308 @@ private fun DesktopUserProfileScreen(
                   }
                 }
               }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun DesktopEditProfileModal(
+  apiClient: DesktopApiClient,
+  profile: DesktopUserProfile,
+  onSaved: () -> Unit,
+  onDismiss: () -> Unit,
+  onToast: (String) -> Unit,
+) {
+  val scope = rememberCoroutineScope()
+  val initialCountry = remember(profile.countryIso) {
+    DesktopCountryCatalog.allCountries.firstOrNull { it.iso.equals(profile.countryIso, ignoreCase = true) }
+      ?: DesktopCountryCatalog.defaultCountry
+  }
+  val initialPhoneDigits = remember(profile.phoneNumber, initialCountry) {
+    val cleanDial = initialCountry.dialCode.filter { it.isDigit() }
+    val digits = profile.phoneNumber.filter { it.isDigit() }
+    if (cleanDial.isNotBlank() && digits.startsWith(cleanDial) && digits.length > cleanDial.length) {
+      digits.removePrefix(cleanDial)
+    } else {
+      digits
+    }
+  }
+
+  var fullName by remember(profile.userId) { mutableStateOf(profile.fullName) }
+  var username by remember(profile.userId) { mutableStateOf(profile.username) }
+  var selectedCountry by remember(profile.userId) { mutableStateOf(initialCountry) }
+  var phoneDigits by remember(profile.userId) { mutableStateOf(initialPhoneDigits) }
+  var gender by remember(profile.userId) { mutableStateOf(profile.gender.ifBlank { "Prefer not to say" }) }
+  var dob by remember(profile.userId) { mutableStateOf(profile.dateOfBirth.ifBlank { "2000-01-01" }) }
+  var location by remember(profile.userId) { mutableStateOf(profile.location) }
+  var bio by remember(profile.userId) { mutableStateOf(profile.bio) }
+
+  var pendingRawAvatarFile by remember { mutableStateOf<File?>(null) }
+  var avatarPreviewBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
+  var uploadedAvatarMediaId by remember { mutableStateOf<String?>(null) }
+  var showCountryPicker by remember { mutableStateOf(false) }
+  var countrySearch by remember { mutableStateOf("") }
+  var isSaving by remember { mutableStateOf(false) }
+
+  val twoWeeksMs = 14L * 24L * 60L * 60L * 1000L
+  val nextAllowedMs = when {
+    profile.nextUsernameChangeMs > 0L -> profile.nextUsernameChangeMs
+    profile.usernameChangedAtMs > 0L -> profile.usernameChangedAtMs + twoWeeksMs
+    else -> 0L
+  }
+  val nowMs = System.currentTimeMillis()
+  val isUsernameLocked = nextAllowedMs > nowMs
+  val remainingLockLabel = if (!isUsernameLocked) "" else {
+    val rem = (nextAllowedMs - nowMs).coerceAtLeast(0L)
+    val days = rem / (24L * 60L * 60L * 1000L)
+    val hrs = (rem % (24L * 60L * 60L * 1000L)) / (60L * 60L * 1000L)
+    if (days > 0) "Locked for ${days}d ${hrs}h (once per 2 weeks)" else "Locked for ${hrs.coerceAtLeast(1)}h (once per 2 weeks)"
+  }
+
+  DesktopModalOverlay(onDismiss = onDismiss) {
+    Column(
+      modifier = Modifier
+        .fillMaxWidth()
+        .heightIn(max = 660.dp)
+        .padding(20.dp),
+      verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+      Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text("Edit profile", fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+        Box(modifier = Modifier.size(32.dp).clip(CircleShape).clickable(onClick = onDismiss), contentAlignment = Alignment.Center) {
+          DesktopSvgIcon(DesktopIconKind.CLOSE, MaterialTheme.colorScheme.onSurfaceVariant, 16.dp)
+        }
+      }
+
+      Column(
+        modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+      ) {
+        // Avatar DP picker & crop
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+          Box(
+            modifier = Modifier
+              .size(72.dp)
+              .clip(CircleShape)
+              .border(2.dp, DesktopCrimson, CircleShape)
+              .clickable {
+                val dlg = FileDialog(null as Frame?, "Select profile photo", FileDialog.LOAD).apply {
+                  setFilenameFilter { _, name ->
+                    val low = name.lowercase()
+                    low.endsWith(".jpg") || low.endsWith(".jpeg") || low.endsWith(".png")
+                  }
+                  isVisible = true
+                }
+                dlg.files?.firstOrNull()?.let { pendingRawAvatarFile = it }
+              },
+            contentAlignment = Alignment.Center,
+          ) {
+            val preview = avatarPreviewBitmap
+            if (preview != null) {
+              Image(preview, contentDescription = "Profile photo", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+            } else {
+              DesktopRemoteCachedImage(
+                apiClient = apiClient,
+                pathOrUrl = profile.avatarUrl,
+                modifier = Modifier.fillMaxSize(),
+              ) {
+                Box(modifier = Modifier.fillMaxSize().background(DesktopBlush), contentAlignment = Alignment.Center) {
+                  Text(TelefamContactsRules.initialsFor(fullName, username), color = DesktopCrimson, fontWeight = FontWeight.Bold, fontSize = 20.sp)
+                }
+              }
+            }
+          }
+          Column {
+            Text("Change profile photo (DP)", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+            Text(
+              text = if (uploadedAvatarMediaId != null) "New photo ready" else "Click avatar to upload & crop",
+              fontSize = 12.sp,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+          }
+        }
+
+        DesktopLabeledField("Full name", fullName, { fullName = it.take(64) }, "Full name")
+
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+          Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Username", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            if (isUsernameLocked) {
+              DesktopSvgIcon(DesktopIconKind.LOCK, DesktopCrimson, 13.dp)
+            }
+          }
+          if (isUsernameLocked) {
+            Surface(
+              shape = RoundedCornerShape(12.dp),
+              color = MaterialTheme.colorScheme.background.copy(alpha = 0.7f),
+              border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+              modifier = Modifier.fillMaxWidth().height(44.dp),
+            ) {
+              Box(modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp), contentAlignment = Alignment.CenterStart) {
+                Text("@$username", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
+              }
+            }
+            Text(remainingLockLabel, color = DesktopCrimson, fontSize = 11.5.sp, fontWeight = FontWeight.Medium)
+          } else {
+            DesktopCleanTextField(
+              value = username,
+              onValueChange = { username = it.lowercase().filter { c -> c.isLetterOrDigit() || c == '_' || c == '.' }.take(32) },
+              placeholder = "username",
+            )
+            Text("Username can only be changed once every 2 weeks.", fontSize = 11.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+          }
+        }
+
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+          Text("Phone & Country", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+          Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Surface(
+              onClick = { showCountryPicker = true },
+              shape = RoundedCornerShape(12.dp),
+              color = MaterialTheme.colorScheme.background,
+              border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+              modifier = Modifier.height(44.dp),
+            ) {
+              Box(modifier = Modifier.padding(horizontal = 12.dp), contentAlignment = Alignment.Center) {
+                Text("${selectedCountry.flagEmoji} ${selectedCountry.dialCode}", fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold)
+              }
+            }
+            Box(modifier = Modifier.weight(1f)) {
+              DesktopCleanTextField(
+                value = phoneDigits,
+                onValueChange = { phoneDigits = it.filter { c -> c.isDigit() }.take(15) },
+                placeholder = "Phone number",
+              )
+            }
+          }
+        }
+
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+          Text("Gender", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+          FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("Female", "Male", "Non-binary", "Prefer not to say").forEach { opt ->
+              val sel = gender == opt
+              Surface(
+                onClick = { gender = opt },
+                shape = RoundedCornerShape(18.dp),
+                color = if (sel) DesktopCrimson else MaterialTheme.colorScheme.background,
+                border = BorderStroke(1.dp, if (sel) DesktopCrimson else MaterialTheme.colorScheme.outlineVariant),
+              ) {
+                Text(
+                  text = opt,
+                  color = if (sel) Color.White else MaterialTheme.colorScheme.onSurface,
+                  fontSize = 12.5.sp,
+                  fontWeight = FontWeight.Medium,
+                  modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                )
+              }
+            }
+          }
+        }
+
+        DesktopLabeledField("Date of birth (YYYY-MM-DD)", dob, { dob = it.take(10) }, "2000-05-15")
+        DesktopLabeledField("Location", location, { location = it.take(80) }, "City, Country")
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+          DesktopLabeledField("Bio", bio, { bio = it.take(150) }, "About you...")
+          Text("${bio.length}/150", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.align(Alignment.End))
+        }
+      }
+
+      Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+        OutlinedButton(onClick = onDismiss, modifier = Modifier.weight(1f)) {
+          Text("Cancel")
+        }
+        Button(
+          enabled = !isSaving,
+          onClick = {
+            if (fullName.isBlank() || location.isBlank()) {
+              onToast("Full name and location are required.")
+              return@Button
+            }
+            if (!DesktopCountryCatalog.isAtLeast13(dob)) {
+              onToast("You must be at least 13 years old.")
+              return@Button
+            }
+            isSaving = true
+            scope.launch {
+              val finalUser = if (isUsernameLocked) profile.username else username.trim().lowercase()
+              val phoneE164 = if (phoneDigits.isBlank()) profile.phoneNumber else "${selectedCountry.dialCode}$phoneDigits"
+              val res = withContext(Dispatchers.IO) {
+                apiClient.updateProfile(
+                  fullName = fullName.trim(),
+                  username = finalUser,
+                  phoneNumber = phoneE164,
+                  countryIso = selectedCountry.iso,
+                  gender = gender,
+                  dateOfBirth = dob.trim(),
+                  location = location.trim(),
+                  bio = bio.trim(),
+                  avatarMediaId = uploadedAvatarMediaId,
+                )
+              }
+              isSaving = false
+              when (res) {
+                is DesktopApiOutcome.Ok -> onSaved()
+                is DesktopApiOutcome.Fail -> onToast(res.message)
+              }
+            }
+          },
+          colors = ButtonDefaults.buttonColors(containerColor = DesktopCrimson),
+          modifier = Modifier.weight(1f),
+        ) {
+          Text(if (isSaving) "Saving..." else "Save", color = Color.White, fontWeight = FontWeight.Bold)
+        }
+      }
+    }
+  }
+
+  pendingRawAvatarFile?.let { file ->
+    DesktopAvatarCropDialog(
+      imageFile = file,
+      onCancel = { pendingRawAvatarFile = null },
+      onConfirm = { croppedBytes, previewBmp, cx, cy, scale ->
+        pendingRawAvatarFile = null
+        avatarPreviewBitmap = previewBmp
+        scope.launch {
+          val res = withContext(Dispatchers.IO) { apiClient.uploadAvatar(croppedBytes, cx, cy, scale) }
+          when (res) {
+            is DesktopApiOutcome.Ok -> uploadedAvatarMediaId = res.data.mediaId
+            is DesktopApiOutcome.Fail -> onToast(res.message)
+          }
+        }
+      },
+    )
+  }
+
+  if (showCountryPicker) {
+    DesktopModalOverlay(onDismiss = { showCountryPicker = false }) {
+      Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text("Select country", fontSize = 17.sp, fontWeight = FontWeight.Bold)
+        DesktopCleanTextField(countrySearch, { countrySearch = it }, "Search country or dial code")
+        val q = countrySearch.trim().lowercase()
+        val list = DesktopCountryCatalog.allCountries.filter {
+          q.isEmpty() || it.name.lowercase().contains(q) || it.dialCode.contains(q) || it.iso.lowercase().contains(q)
+        }
+        LazyColumn(modifier = Modifier.heightIn(max = 300.dp)) {
+          items(list, key = { it.iso }) { opt ->
+            Row(
+              modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .clickable {
+                  selectedCountry = opt
+                  showCountryPicker = false
+                }
+                .padding(horizontal = 10.dp, vertical = 9.dp),
+              verticalAlignment = Alignment.CenterVertically,
+            ) {
+              Text("${opt.flagEmoji}  ${opt.name}", fontSize = 14.sp, modifier = Modifier.weight(1f))
+              Text(opt.dialCode, color = DesktopCrimson, fontWeight = FontWeight.SemiBold, fontSize = 13.5.sp)
             }
           }
         }

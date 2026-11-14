@@ -18,6 +18,7 @@ import retrofit2.http.Header
 import retrofit2.http.Multipart
 import retrofit2.http.PATCH
 import retrofit2.http.POST
+import retrofit2.http.PUT
 import retrofit2.http.Part
 import retrofit2.http.Path
 import retrofit2.http.Query
@@ -139,6 +140,7 @@ data class HashtagsSearchResponseDto(
 data class CreatePostRequestDto(
   @Json(name = "client_op_id") val clientOpId: String,
   val mode: String,
+  val privacy: String = "public",
   @Json(name = "text_content") val textContent: String = "",
   val caption: String = "",
   @Json(name = "theme_id") val themeId: String = "crimson",
@@ -260,6 +262,67 @@ data class UserProfileVideoDto(
 )
 
 @JsonClass(generateAdapter = true)
+data class ProfileBackgroundItemDto(
+  @Json(name = "media_id") val mediaId: String = "",
+  val url: String = "",
+  @Json(name = "sha256_fingerprint") val sha256Fingerprint: String = "",
+  @Json(name = "dhash_fingerprint") val dHashFingerprint: String = "",
+  val width: Int = 0,
+  val height: Int = 0,
+  @Json(name = "byte_size") val byteSize: Int = 0,
+  @Json(name = "created_at_ms") val createdAtMs: Long = 0L,
+)
+
+@JsonClass(generateAdapter = true)
+data class ProfileBackgroundUploadResponseDto(
+  val success: Boolean = false,
+  @Json(name = "media_id") val mediaId: String = "",
+  @Json(name = "sha256_fingerprint") val sha256Fingerprint: String = "",
+  @Json(name = "dhash_fingerprint") val dHashFingerprint: String = "",
+  val background: ProfileBackgroundItemDto? = null,
+  val backgrounds: List<ProfileBackgroundItemDto> = emptyList(),
+)
+
+@JsonClass(generateAdapter = true)
+data class ProfileBackgroundListResponseDto(
+  val success: Boolean = false,
+  val backgrounds: List<ProfileBackgroundItemDto> = emptyList(),
+)
+
+@JsonClass(generateAdapter = true)
+data class ProfileBackgroundAttachDto(
+  @Json(name = "media_id") val mediaId: String,
+)
+
+@JsonClass(generateAdapter = true)
+data class ProfileBackgroundReorderDto(
+  @Json(name = "media_ids") val mediaIds: List<String>,
+)
+
+@JsonClass(generateAdapter = true)
+data class ProfileUpdateRequestDto(
+  @Json(name = "full_name") val fullName: String,
+  val username: String,
+  @Json(name = "phone_number") val phoneNumber: String = "",
+  @Json(name = "country_iso") val countryIso: String = "",
+  val gender: String = "",
+  @Json(name = "date_of_birth") val dateOfBirth: String = "",
+  val location: String,
+  val bio: String,
+  @Json(name = "avatar_media_id") val avatarMediaId: String? = null,
+)
+
+@JsonClass(generateAdapter = true)
+data class ProfileUpdateResponseDto(
+  val success: Boolean = false,
+  val error: String = "",
+  val username: String = "",
+  @Json(name = "full_name") val fullName: String = "",
+  @Json(name = "username_changed_at_ms") val usernameChangedAtMs: Long = 0L,
+  @Json(name = "next_username_change_ms") val nextUsernameChangeMs: Long = 0L,
+)
+
+@JsonClass(generateAdapter = true)
 data class UserProfileResponseDto(
   val success: Boolean = false,
   @Json(name = "user_id") val userId: String = "",
@@ -269,6 +332,13 @@ data class UserProfileResponseDto(
   val bio: String = "",
   val location: String = "",
   @Json(name = "country_iso") val countryIso: String = "",
+  val gender: String = "",
+  @Json(name = "date_of_birth") val dateOfBirth: String = "",
+  @Json(name = "phone_number") val phoneNumber: String = "",
+  @Json(name = "username_changed_at_ms") val usernameChangedAtMs: Long = 0L,
+  @Json(name = "next_username_change_ms") val nextUsernameChangeMs: Long = 0L,
+  @Json(name = "background_urls") val backgroundUrls: List<String> = emptyList(),
+  val backgrounds: List<ProfileBackgroundItemDto> = emptyList(),
   @Json(name = "following_count") val followingCount: Long = 0L,
   @Json(name = "followers_count") val followersCount: Long = 0L,
   @Json(name = "likes_count") val likesCount: Long = 0L,
@@ -280,6 +350,9 @@ data class UserProfileResponseDto(
   @Json(name = "risk_score") val riskScore: Double = 0.0,
   val videos: List<UserProfileVideoDto> = emptyList(),
   val posts: List<FeedItemDto> = emptyList(),
+  @Json(name = "saved_posts") val savedPosts: List<FeedItemDto> = emptyList(),
+  @Json(name = "reposted_posts") val repostedPosts: List<FeedItemDto> = emptyList(),
+  @Json(name = "locked_posts") val lockedPosts: List<FeedItemDto> = emptyList(),
 )
 
 @JsonClass(generateAdapter = true)
@@ -318,14 +391,15 @@ data class ContactSyncBatchRequestDto(
 
 @JsonClass(generateAdapter = true)
 data class UpdatePostRequestDto(
-  @Json(name = "text_content") val textContent: String = "",
-  val caption: String = "",
-  @Json(name = "theme_id") val themeId: String = "crimson",
-  @Json(name = "font_id") val fontId: String = "classic",
+  @Json(name = "text_content") val textContent: String? = null,
+  val caption: String? = null,
+  val privacy: String? = null,
+  @Json(name = "theme_id") val themeId: String? = null,
+  @Json(name = "font_id") val fontId: String? = null,
   val song: SongTrackDto? = null,
-  @Json(name = "tagged_user_ids") val taggedUserIds: List<String> = emptyList(),
-  val hashtags: List<String> = emptyList(),
-  @Json(name = "mute_original_audio") val muteOriginalAudio: Boolean = false,
+  @Json(name = "tagged_user_ids") val taggedUserIds: List<String>? = null,
+  val hashtags: List<String>? = null,
+  @Json(name = "mute_original_audio") val muteOriginalAudio: Boolean? = null,
 )
 
 @JsonClass(generateAdapter = true)
@@ -347,6 +421,7 @@ data class FeedItemDto(
   @Json(name = "author_avatar_url") val authorAvatarUrl: String = "",
   @Json(name = "is_following_author") val isFollowingAuthor: Boolean = false,
   @Json(name = "is_owner") val isOwner: Boolean = false,
+  val privacy: String = "public",
   val mode: String = "video",
   @Json(name = "text_content") val textContent: String = "",
   val caption: String = "",
@@ -490,6 +565,13 @@ interface TelefamApiService {
     @Body imageBody: RequestBody,
   ): Response<MediaUploadResponseDto>
 
+  @POST("v1/media/background")
+  suspend fun uploadProfileBackground(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Body imageBody: RequestBody,
+  ): Response<ProfileBackgroundUploadResponseDto>
+
   @POST("v1/media/photo")
   suspend fun uploadPostPhoto(
     @Header("Authorization") bearer: String,
@@ -587,6 +669,34 @@ interface TelefamApiService {
     @Header("X-Telefam-Device-FP") deviceFingerprint: String,
     @Body body: ProfileSetupDto,
   ): Response<GenericSuccessDto>
+
+  @PATCH("v1/profile")
+  suspend fun updateProfile(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Body body: ProfileUpdateRequestDto,
+  ): Response<ProfileUpdateResponseDto>
+
+  @POST("v1/profile/backgrounds")
+  suspend fun attachProfileBackground(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Body body: ProfileBackgroundAttachDto,
+  ): Response<ProfileBackgroundListResponseDto>
+
+  @PUT("v1/profile/backgrounds")
+  suspend fun reorderProfileBackgrounds(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Body body: ProfileBackgroundReorderDto,
+  ): Response<ProfileBackgroundListResponseDto>
+
+  @DELETE("v1/profile/backgrounds/{id}")
+  suspend fun deleteProfileBackground(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Path("id") mediaId: String,
+  ): Response<ProfileBackgroundListResponseDto>
 
   @POST("v1/audit/event")
   suspend fun recordAuditEvent(

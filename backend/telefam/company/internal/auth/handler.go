@@ -115,17 +115,45 @@ type SyncBatchResponse struct {
 	ServerEpochMs int64    `json:"server_epoch_ms"`
 }
 
+type ProfileBackgroundItem struct {
+	MediaID           string `json:"media_id"`
+	URL               string `json:"url"`
+	Sha256Fingerprint string `json:"sha256_fingerprint"`
+	DHashFingerprint  string `json:"dhash_fingerprint"`
+	Width             int    `json:"width"`
+	Height            int    `json:"height"`
+	ByteSize          int    `json:"byte_size"`
+	CreatedAtMs       int64  `json:"created_at_ms"`
+}
+
+type ProfileUpdatePayload struct {
+	FullName      string `json:"full_name"`
+	Username      string `json:"username"`
+	PhoneNumber   string `json:"phone_number"`
+	CountryISO    string `json:"country_iso"`
+	Gender        string `json:"gender"`
+	DateOfBirth   string `json:"date_of_birth"`
+	Location      string `json:"location"`
+	Bio           string `json:"bio"`
+	AvatarMediaID string `json:"avatar_media_id,omitempty"`
+}
+
+type BackgroundOrderPayload struct {
+	MediaIDs []string `json:"media_ids"`
+}
+
 type storedProfile struct {
-	UserID        string
-	FullName      string
-	Username      string
-	PhoneE164     string
-	CountryISO    string
-	Gender        string
-	DateOfBirth   string
-	Location      string
-	Bio           string
-	AvatarMediaID string
+	UserID              string
+	FullName            string
+	Username            string
+	PhoneE164           string
+	CountryISO          string
+	Gender              string
+	DateOfBirth         string
+	Location            string
+	Bio                 string
+	AvatarMediaID       string
+	UsernameChangedAtMs int64
 }
 
 type ContactActionPayload struct {
@@ -143,21 +171,25 @@ type ContactSyncBatchRequest struct {
 	Actions []ContactSyncActionPayload `json:"actions"`
 }
 
+const usernameChangeCooldownMs int64 = 14 * 24 * 60 * 60 * 1000
+const maxProfileBackgrounds = 5
+
 type Handler struct {
-	fp        *fingerprint.Service
-	limiter   *ratelimit.Limiter
-	otp       *OtpService
-	tokens    *TokenService
-	audit     *audit.Logger
-	mailer    *mailer.ResendClient
-	contacts  *contacts.Service
-	posts     *posts.Service
-	feeds     *feeds.Engine
-	mu        sync.Mutex
-	profiles  map[string]storedProfile
-	usernames map[string]string
-	mediaMeta map[string]*media.ProcessedMedia
-	ackedOps  map[string]struct{}
+	fp          *fingerprint.Service
+	limiter     *ratelimit.Limiter
+	otp         *OtpService
+	tokens      *TokenService
+	audit       *audit.Logger
+	mailer      *mailer.ResendClient
+	contacts    *contacts.Service
+	posts       *posts.Service
+	feeds       *feeds.Engine
+	mu          sync.Mutex
+	profiles    map[string]storedProfile
+	usernames   map[string]string
+	mediaMeta   map[string]*media.ProcessedMedia
+	backgrounds map[string][]ProfileBackgroundItem
+	ackedOps    map[string]struct{}
 }
 
 func NewHandler(
@@ -173,19 +205,20 @@ func NewHandler(
 		contactsSvc = contacts.NewService()
 	}
 	return &Handler{
-		fp:        fp,
-		limiter:   limiter,
-		otp:       otp,
-		tokens:    tokens,
-		audit:     auditLogger,
-		mailer:    resendMailer,
-		contacts:  contactsSvc,
-		posts:     posts.NewService(),
-		feeds:     feeds.NewEngine(),
-		profiles:  make(map[string]storedProfile),
-		usernames: make(map[string]string),
-		mediaMeta: make(map[string]*media.ProcessedMedia),
-		ackedOps:  make(map[string]struct{}),
+		fp:          fp,
+		limiter:     limiter,
+		otp:         otp,
+		tokens:      tokens,
+		audit:       auditLogger,
+		mailer:      resendMailer,
+		contacts:    contactsSvc,
+		posts:       posts.NewService(),
+		feeds:       feeds.NewEngine(),
+		profiles:    make(map[string]storedProfile),
+		usernames:   make(map[string]string),
+		mediaMeta:   make(map[string]*media.ProcessedMedia),
+		backgrounds: make(map[string][]ProfileBackgroundItem),
+		ackedOps:    make(map[string]struct{}),
 	}
 }
 
@@ -205,6 +238,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/auth/oauth/apple", h.handleAppleOAuth)
 	mux.HandleFunc("POST /v1/media/avatar", h.handleAvatarUpload)
 	mux.HandleFunc("GET /v1/media/avatar/{id}", h.handleAvatarDownload)
+	mux.HandleFunc("POST /v1/media/background", h.handleProfileBackgroundUpload)
 	mux.HandleFunc("POST /v1/media/photo", h.handlePostPhotoUpload)
 	mux.HandleFunc("POST /v1/media/video", h.handlePostVideoUpload)
 	mux.HandleFunc("GET /v1/media/asset/{id}", h.handleAvatarDownload)
@@ -220,6 +254,11 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/feeds/{id}/download", h.handleFeedDownload)
 	mux.HandleFunc("GET /v1/profile/check-username", h.handleCheckUsername)
 	mux.HandleFunc("POST /v1/profile/setup", h.handleProfileSetup)
+	mux.HandleFunc("PATCH /v1/profile", h.handleUpdateProfile)
+	mux.HandleFunc("POST /v1/profile/update", h.handleUpdateProfile)
+	mux.HandleFunc("POST /v1/profile/backgrounds", h.handleAttachProfileBackground)
+	mux.HandleFunc("PUT /v1/profile/backgrounds", h.handleReorderProfileBackgrounds)
+	mux.HandleFunc("DELETE /v1/profile/backgrounds/{id}", h.handleDeleteProfileBackground)
 	mux.HandleFunc("GET /v1/users/{id}/profile", h.handleGetUserProfile)
 	mux.HandleFunc("GET /v1/users/{id}/connections", h.handleGetUserConnections)
 	mux.HandleFunc("GET /v1/users/{id}/followers", h.handleGetUserFollowers)
@@ -523,24 +562,29 @@ func (h *Handler) handleProfileSetup(w http.ResponseWriter, r *http.Request) {
 	bio := security.SanitizeText(req.Bio, 150, true)
 
 	avatarID := security.SanitizeText(req.AvatarMediaID, 40, false)
+	nowMs := time.Now().UnixMilli()
 	h.mu.Lock()
 	if owner, taken := h.usernames[username]; taken && owner != claims.UserID {
 		h.mu.Unlock()
 		sanitizer.WriteSanitizedError(w, http.StatusConflict, "username_taken", nil, "This username is already taken.")
 		return
 	}
+	if prev, hasPrev := h.profiles[claims.UserID]; hasPrev && prev.Username != "" && !strings.EqualFold(prev.Username, username) {
+		delete(h.usernames, prev.Username)
+	}
 	h.usernames[username] = claims.UserID
 	h.profiles[claims.UserID] = storedProfile{
-		UserID:        claims.UserID,
-		FullName:      fullName,
-		Username:      username,
-		PhoneE164:     phoneE164,
-		CountryISO:    countryISO,
-		Gender:        gender,
-		DateOfBirth:   req.DateOfBirth,
-		Location:      location,
-		Bio:           bio,
-		AvatarMediaID: avatarID,
+		UserID:              claims.UserID,
+		FullName:            fullName,
+		Username:            username,
+		PhoneE164:           phoneE164,
+		CountryISO:          countryISO,
+		Gender:              gender,
+		DateOfBirth:         req.DateOfBirth,
+		Location:            location,
+		Bio:                 bio,
+		AvatarMediaID:       avatarID,
+		UsernameChangedAtMs: nowMs,
 	}
 	h.mu.Unlock()
 
@@ -562,6 +606,372 @@ func (h *Handler) handleProfileSetup(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"success": true})
 }
 
+func (h *Handler) handleProfileBackgroundUpload(w http.ResponseWriter, r *http.Request) {
+	claims, deviceFP, ipFP, ok := h.requireAuth(w, r)
+	if !ok {
+		return
+	}
+
+	h.mu.Lock()
+	currentCount := len(h.backgrounds[claims.UserID])
+	h.mu.Unlock()
+	if currentCount >= maxProfileBackgrounds {
+		sanitizer.WriteSanitizedError(w, http.StatusConflict, "background_limit_reached", nil, "You can upload up to 5 background photos.")
+		return
+	}
+
+	processed, err := media.SanitizeCompressAndFingerprintProfileBackground(r.Body)
+	if err != nil {
+		h.audit.Record(claims.UserID, "profile_background_rejected", deviceFP, ipFP, nil)
+		status := http.StatusBadRequest
+		if errors.Is(err, media.ErrPayloadTooLarge) {
+			status = http.StatusRequestEntityTooLarge
+		}
+		sanitizer.WriteSanitizedError(w, status, "profile_background_process", err, sanitizer.GenericErrorMessage)
+		return
+	}
+
+	bgItem := ProfileBackgroundItem{
+		MediaID:           processed.MediaID,
+		URL:               "/v1/media/asset/" + processed.MediaID,
+		Sha256Fingerprint: processed.Sha256Fingerprint,
+		DHashFingerprint:  processed.DHashFingerprint,
+		Width:             processed.Width,
+		Height:            processed.Height,
+		ByteSize:          len(processed.EncodedBytes),
+		CreatedAtMs:       time.Now().UnixMilli(),
+	}
+
+	h.mu.Lock()
+	if len(h.backgrounds[claims.UserID]) >= maxProfileBackgrounds {
+		h.mu.Unlock()
+		sanitizer.WriteSanitizedError(w, http.StatusConflict, "background_limit_reached", nil, "You can upload up to 5 background photos.")
+		return
+	}
+	h.mediaMeta[processed.MediaID] = processed
+	h.backgrounds[claims.UserID] = append(h.backgrounds[claims.UserID], bgItem)
+	updatedList := append([]ProfileBackgroundItem(nil), h.backgrounds[claims.UserID]...)
+	h.mu.Unlock()
+
+	h.audit.Record(claims.UserID, "profile_background_uploaded", deviceFP, ipFP, map[string]string{
+		"media_id": processed.MediaID,
+		"sha256":   processed.Sha256Fingerprint,
+		"dhash":    processed.DHashFingerprint,
+	})
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":            true,
+		"media_id":           processed.MediaID,
+		"sha256_fingerprint": processed.Sha256Fingerprint,
+		"dhash_fingerprint":  processed.DHashFingerprint,
+		"background":         bgItem,
+		"backgrounds":        updatedList,
+	})
+}
+
+func (h *Handler) handleAttachProfileBackground(w http.ResponseWriter, r *http.Request) {
+	claims, deviceFP, ipFP, ok := h.requireAuth(w, r)
+	if !ok {
+		return
+	}
+	var payload struct {
+		MediaID string `json:"media_id"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&payload); err != nil {
+		sanitizer.WriteSanitizedError(w, http.StatusBadRequest, "decode_attach_bg", err, sanitizer.GenericErrorMessage)
+		return
+	}
+	mediaID := security.SanitizeText(payload.MediaID, 48, false)
+	if mediaID == "" {
+		sanitizer.WriteSanitizedError(w, http.StatusBadRequest, "missing_bg_media_id", nil, sanitizer.GenericErrorMessage)
+		return
+	}
+
+	h.mu.Lock()
+	m, exists := h.mediaMeta[mediaID]
+	if !exists || m == nil {
+		h.mu.Unlock()
+		sanitizer.WriteSanitizedError(w, http.StatusNotFound, "bg_media_not_found", nil, "Background image not found.")
+		return
+	}
+	existing := h.backgrounds[claims.UserID]
+	for _, item := range existing {
+		if item.MediaID == mediaID {
+			snapshot := append([]ProfileBackgroundItem(nil), existing...)
+			h.mu.Unlock()
+			writeJSON(w, http.StatusOK, map[string]any{"success": true, "backgrounds": snapshot})
+			return
+		}
+	}
+	if len(existing) >= maxProfileBackgrounds {
+		h.mu.Unlock()
+		sanitizer.WriteSanitizedError(w, http.StatusConflict, "background_limit_reached", nil, "You can upload up to 5 background photos.")
+		return
+	}
+	bgItem := ProfileBackgroundItem{
+		MediaID:           m.MediaID,
+		URL:               "/v1/media/asset/" + m.MediaID,
+		Sha256Fingerprint: m.Sha256Fingerprint,
+		DHashFingerprint:  m.DHashFingerprint,
+		Width:             m.Width,
+		Height:            m.Height,
+		ByteSize:          len(m.EncodedBytes),
+		CreatedAtMs:       time.Now().UnixMilli(),
+	}
+	h.backgrounds[claims.UserID] = append(existing, bgItem)
+	updatedList := append([]ProfileBackgroundItem(nil), h.backgrounds[claims.UserID]...)
+	h.mu.Unlock()
+
+	h.audit.Record(claims.UserID, "profile_background_attached", deviceFP, ipFP, map[string]string{
+		"media_id": mediaID,
+		"sha256":   m.Sha256Fingerprint,
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "backgrounds": updatedList})
+}
+
+func (h *Handler) handleReorderProfileBackgrounds(w http.ResponseWriter, r *http.Request) {
+	claims, deviceFP, ipFP, ok := h.requireAuth(w, r)
+	if !ok {
+		return
+	}
+	var payload BackgroundOrderPayload
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&payload); err != nil {
+		sanitizer.WriteSanitizedError(w, http.StatusBadRequest, "decode_reorder_bg", err, sanitizer.GenericErrorMessage)
+		return
+	}
+	h.mu.Lock()
+	cur := h.backgrounds[claims.UserID]
+	byID := make(map[string]ProfileBackgroundItem, len(cur))
+	for _, b := range cur {
+		byID[b.MediaID] = b
+	}
+	reordered := make([]ProfileBackgroundItem, 0, len(cur))
+	seen := make(map[string]struct{}, len(cur))
+	for _, rawID := range payload.MediaIDs {
+		id := security.SanitizeText(rawID, 48, false)
+		if b, found := byID[id]; found {
+			if _, dup := seen[id]; !dup {
+				seen[id] = struct{}{}
+				reordered = append(reordered, b)
+			}
+		}
+	}
+	for _, b := range cur {
+		if _, dup := seen[b.MediaID]; !dup {
+			reordered = append(reordered, b)
+		}
+	}
+	h.backgrounds[claims.UserID] = reordered
+	updatedList := append([]ProfileBackgroundItem(nil), reordered...)
+	h.mu.Unlock()
+
+	h.audit.Record(claims.UserID, "profile_backgrounds_reordered", deviceFP, ipFP, map[string]string{"count": strconv.Itoa(len(updatedList))})
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "backgrounds": updatedList})
+}
+
+func (h *Handler) handleDeleteProfileBackground(w http.ResponseWriter, r *http.Request) {
+	claims, deviceFP, ipFP, ok := h.requireAuth(w, r)
+	if !ok {
+		return
+	}
+	targetMediaID := security.SanitizeText(r.PathValue("id"), 48, false)
+	if targetMediaID == "" {
+		sanitizer.WriteSanitizedError(w, http.StatusBadRequest, "missing_bg_id", nil, sanitizer.GenericErrorMessage)
+		return
+	}
+
+	h.mu.Lock()
+	cur := h.backgrounds[claims.UserID]
+	next := make([]ProfileBackgroundItem, 0, len(cur))
+	removed := false
+	for _, item := range cur {
+		if item.MediaID == targetMediaID {
+			removed = true
+			continue
+		}
+		next = append(next, item)
+	}
+	if !removed {
+		h.mu.Unlock()
+		sanitizer.WriteSanitizedError(w, http.StatusNotFound, "bg_not_found", nil, "Background photo not found.")
+		return
+	}
+	h.backgrounds[claims.UserID] = next
+	h.mu.Unlock()
+
+	h.audit.Record(claims.UserID, "profile_background_deleted", deviceFP, ipFP, map[string]string{"media_id": targetMediaID})
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "backgrounds": next})
+}
+
+func (h *Handler) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
+	claims, deviceFP, ipFP, ok := h.requireAuth(w, r)
+	if !ok {
+		return
+	}
+	var req ProfileUpdatePayload
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192)).Decode(&req); err != nil {
+		sanitizer.WriteSanitizedError(w, http.StatusBadRequest, "decode_profile_update", err, sanitizer.GenericErrorMessage)
+		return
+	}
+
+	fullName := security.SanitizeText(req.FullName, 64, false)
+	if fullName == "" {
+		sanitizer.WriteSanitizedError(w, http.StatusBadRequest, "invalid_full_name", nil, "Full name is required.")
+		return
+	}
+	username, err := security.SanitizeUsername(req.Username)
+	if err != nil {
+		sanitizer.WriteSanitizedError(w, http.StatusBadRequest, "invalid_username", err, "Invalid username format.")
+		return
+	}
+
+	location := security.SanitizeText(req.Location, 80, false)
+	if location == "" {
+		sanitizer.WriteSanitizedError(w, http.StatusBadRequest, "missing_location", nil, "Location is required.")
+		return
+	}
+	bio := security.SanitizeText(req.Bio, 150, true)
+
+	countryISO := strings.ToUpper(security.SanitizeText(req.CountryISO, 2, false))
+	var phoneE164 string
+	if strings.TrimSpace(req.PhoneNumber) != "" {
+		phoneE164, countryISO, err = security.SanitizePhoneE164(req.PhoneNumber, countryISO)
+		if err != nil {
+			sanitizer.WriteSanitizedError(w, http.StatusBadRequest, "invalid_phone", err, "Invalid phone number.")
+			return
+		}
+	}
+
+	var gender string
+	if strings.TrimSpace(req.Gender) != "" {
+		gender, err = security.ValidateGender(req.Gender)
+		if err != nil {
+			sanitizer.WriteSanitizedError(w, http.StatusBadRequest, "invalid_gender", err, "Invalid gender.")
+			return
+		}
+	}
+
+	dob := strings.TrimSpace(req.DateOfBirth)
+	if dob != "" {
+		if _, err := security.ValidateDateOfBirthAtLeast13(dob, time.Now()); err != nil {
+			h.audit.Record(claims.UserID, "profile_age_rejected", deviceFP, ipFP, nil)
+			sanitizer.WriteSanitizedError(w, http.StatusUnprocessableEntity, "under_13", err, "You must be at least 13 years old.")
+			return
+		}
+	}
+
+	avatarID := security.SanitizeText(req.AvatarMediaID, 40, false)
+	nowMs := time.Now().UnixMilli()
+
+	h.mu.Lock()
+	prev, hasPrev := h.profiles[claims.UserID]
+	dirUser, hasDirUser, _, _ := h.contacts.GetUserRelationshipForViewer(claims.UserID, claims.UserID)
+	oldUsername := prev.Username
+	if oldUsername == "" && hasDirUser {
+		oldUsername = dirUser.Username
+	}
+	if phoneE164 == "" {
+		phoneE164 = prev.PhoneE164
+	}
+	if countryISO == "" {
+		if prev.CountryISO != "" {
+			countryISO = prev.CountryISO
+		} else {
+			countryISO = dirUser.CountryISO
+		}
+	}
+	if gender == "" {
+		gender = prev.Gender
+	}
+	if dob == "" {
+		dob = prev.DateOfBirth
+	}
+	if avatarID == "" {
+		if prev.AvatarMediaID != "" {
+			avatarID = prev.AvatarMediaID
+		} else {
+			avatarID = dirUser.AvatarMediaID
+		}
+	}
+
+	usernameChangedAt := prev.UsernameChangedAtMs
+	isChangingUsername := oldUsername != "" && !strings.EqualFold(oldUsername, username)
+	if isChangingUsername {
+		if owner, taken := h.usernames[username]; taken && owner != claims.UserID {
+			h.mu.Unlock()
+			sanitizer.WriteSanitizedError(w, http.StatusConflict, "username_taken", nil, "This username is already taken.")
+			return
+		}
+		if usernameChangedAt > 0 && (nowMs-usernameChangedAt) < usernameChangeCooldownMs {
+			nextMs := usernameChangedAt + usernameChangeCooldownMs
+			h.mu.Unlock()
+			writeJSON(w, http.StatusTooManyRequests, map[string]any{
+				"success":                 false,
+				"error":                   "Username can only be changed once every 2 weeks.",
+				"username_changed_at_ms":  usernameChangedAt,
+				"next_username_change_ms": nextMs,
+			})
+			return
+		}
+		delete(h.usernames, oldUsername)
+		usernameChangedAt = nowMs
+	} else if usernameChangedAt == 0 {
+		usernameChangedAt = nowMs
+	}
+	if owner, taken := h.usernames[username]; taken && owner != claims.UserID {
+		h.mu.Unlock()
+		sanitizer.WriteSanitizedError(w, http.StatusConflict, "username_taken", nil, "This username is already taken.")
+		return
+	}
+	h.usernames[username] = claims.UserID
+
+	updated := storedProfile{
+		UserID:              claims.UserID,
+		FullName:            fullName,
+		Username:            username,
+		PhoneE164:           phoneE164,
+		CountryISO:          countryISO,
+		Gender:              gender,
+		DateOfBirth:         dob,
+		Location:            location,
+		Bio:                 bio,
+		AvatarMediaID:       avatarID,
+		UsernameChangedAtMs: usernameChangedAt,
+	}
+	if !hasPrev && updated.CountryISO == "" {
+		updated.CountryISO = "KE"
+	}
+	h.profiles[claims.UserID] = updated
+	h.mu.Unlock()
+
+	h.contacts.RegisterOrUpdateUser(contacts.DirectoryUser{
+		UserID:        claims.UserID,
+		FullName:      fullName,
+		Username:      username,
+		Country:       location,
+		CountryISO:    updated.CountryISO,
+		AvatarMediaID: avatarID,
+		CreatedAt:     time.Now().UTC(),
+	}, deviceFP)
+
+	h.audit.Record(claims.UserID, "profile_updated", deviceFP, ipFP, map[string]string{
+		"username": username,
+		"country":  updated.CountryISO,
+	})
+
+	nextChangeMs := int64(0)
+	if updated.UsernameChangedAtMs > 0 {
+		nextChangeMs = updated.UsernameChangedAtMs + usernameChangeCooldownMs
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":                 true,
+		"username":                updated.Username,
+		"full_name":               updated.FullName,
+		"username_changed_at_ms":  updated.UsernameChangedAtMs,
+		"next_username_change_ms": nextChangeMs,
+	})
+}
+
 type UserProfileVideoItem struct {
 	PostID       string `json:"post_id"`
 	ThumbnailURL string `json:"thumbnail_url"`
@@ -573,25 +983,35 @@ type UserProfileVideoItem struct {
 }
 
 type UserProfileResponse struct {
-	Success           bool                   `json:"success"`
-	UserID            string                 `json:"user_id"`
-	FullName          string                 `json:"full_name"`
-	Username          string                 `json:"username"`
-	AvatarURL         string                 `json:"avatar_url"`
-	Bio               string                 `json:"bio"`
-	Location          string                 `json:"location"`
-	CountryISO        string                 `json:"country_iso"`
-	FollowingCount    int64                  `json:"following_count"`
-	FollowersCount    int64                  `json:"followers_count"`
-	LikesCount        int64                  `json:"likes_count"`
-	IsFollowing       bool                   `json:"is_following"`
-	FollowsYou        bool                   `json:"follows_you"`
-	IsOwner           bool                   `json:"is_owner"`
-	IsBlocked         bool                   `json:"is_blocked"`
-	RiskScore         float64                `json:"risk_score"`
-	RelationshipState string                 `json:"relationship_state"`
-	Videos            []UserProfileVideoItem `json:"videos"`
-	Posts             []feeds.FeedItem       `json:"posts"`
+	Success              bool                    `json:"success"`
+	UserID               string                  `json:"user_id"`
+	FullName             string                  `json:"full_name"`
+	Username             string                  `json:"username"`
+	AvatarURL            string                  `json:"avatar_url"`
+	Bio                  string                  `json:"bio"`
+	Location             string                  `json:"location"`
+	CountryISO           string                  `json:"country_iso"`
+	Gender               string                  `json:"gender,omitempty"`
+	DateOfBirth          string                  `json:"date_of_birth,omitempty"`
+	PhoneNumber          string                  `json:"phone_number,omitempty"`
+	UsernameChangedAtMs  int64                   `json:"username_changed_at_ms"`
+	NextUsernameChangeMs int64                   `json:"next_username_change_ms"`
+	BackgroundURLs       []string                `json:"background_urls"`
+	Backgrounds          []ProfileBackgroundItem `json:"backgrounds"`
+	FollowingCount       int64                   `json:"following_count"`
+	FollowersCount       int64                   `json:"followers_count"`
+	LikesCount           int64                   `json:"likes_count"`
+	IsFollowing          bool                    `json:"is_following"`
+	FollowsYou           bool                    `json:"follows_you"`
+	IsOwner              bool                    `json:"is_owner"`
+	IsBlocked            bool                    `json:"is_blocked"`
+	RiskScore            float64                 `json:"risk_score"`
+	RelationshipState    string                  `json:"relationship_state"`
+	Videos               []UserProfileVideoItem  `json:"videos"`
+	Posts                []feeds.FeedItem        `json:"posts"`
+	SavedPosts           []feeds.FeedItem        `json:"saved_posts,omitempty"`
+	RepostedPosts        []feeds.FeedItem        `json:"reposted_posts,omitempty"`
+	LockedPosts          []feeds.FeedItem        `json:"locked_posts,omitempty"`
 }
 
 type UserReportPayload struct {
@@ -646,12 +1066,17 @@ func (h *Handler) handleGetUserProfile(w http.ResponseWriter, r *http.Request) {
 		avatarURL = "/v1/media/avatar/" + u.AvatarMediaID
 	}
 
-	bio := ""
+	var sp storedProfile
+	var bgItems []ProfileBackgroundItem
 	h.mu.Lock()
-	if sp, ok := h.profiles[targetID]; ok {
-		bio = sp.Bio
-	}
+	sp = h.profiles[targetID]
+	bgItems = append([]ProfileBackgroundItem(nil), h.backgrounds[targetID]...)
 	h.mu.Unlock()
+
+	bgURLs := make([]string, 0, len(bgItems))
+	for _, b := range bgItems {
+		bgURLs = append(bgURLs, b.URL)
+	}
 
 	authorPosts := h.posts.ListAuthorPosts(targetID)
 	authorSummary := feeds.AuthorSummary{
@@ -660,8 +1085,18 @@ func (h *Handler) handleGetUserProfile(w http.ResponseWriter, r *http.Request) {
 		FullName:    u.FullName,
 		AvatarURL:   avatarURL,
 		IsFollowing: isFollowing,
+		FollowsYou:  followsYou,
 	}
-	feedItems, likesCount := h.feeds.BuildAuthorFeedItems(claims.UserID, authorPosts, authorSummary)
+	feedItems, lockedItems, likesCount := h.feeds.BuildAuthorFeedItems(claims.UserID, authorPosts, authorSummary)
+
+	var savedItems []feeds.FeedItem
+	var repostedItems []feeds.FeedItem
+	if isOwner {
+		allPosts := h.posts.ListActivePosts()
+		savedItems, repostedItems = h.feeds.BuildOwnerSavedAndRepostedItems(claims.UserID, allPosts, func(uid string) feeds.AuthorSummary {
+			return h.resolveAuthorSummary(claims.UserID, uid)
+		})
+	}
 
 	videoItems := make([]UserProfileVideoItem, 0, len(feedItems))
 	for _, fi := range feedItems {
@@ -678,30 +1113,47 @@ func (h *Handler) handleGetUserProfile(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	var nextChangeMs int64
+	if sp.UsernameChangedAtMs > 0 {
+		nextChangeMs = sp.UsernameChangedAtMs + usernameChangeCooldownMs
+	}
+
 	h.audit.Record(claims.UserID, "user_profile_viewed", deviceFP, ipFP, map[string]string{
 		"target_user_id": targetID,
 	})
 
 	resp := UserProfileResponse{
-		Success:           true,
-		UserID:            u.UserID,
-		FullName:          u.FullName,
-		Username:          u.Username,
-		AvatarURL:         avatarURL,
-		Bio:               bio,
-		Location:          u.Country,
-		CountryISO:        u.CountryISO,
-		FollowingCount:    followingCount,
-		FollowersCount:    followersCount,
-		LikesCount:        likesCount,
-		IsFollowing:       isFollowing,
-		FollowsYou:        followsYou,
-		IsOwner:           isOwner,
-		IsBlocked:         isBlocked,
-		RiskScore:         h.contacts.GetRiskScore(targetID),
-		RelationshipState: string(contacts.ComputeRelationship(isFollowing, followsYou)),
-		Videos:            videoItems,
-		Posts:             feedItems,
+		Success:              true,
+		UserID:               u.UserID,
+		FullName:             u.FullName,
+		Username:             u.Username,
+		AvatarURL:            avatarURL,
+		Bio:                  sp.Bio,
+		Location:             u.Country,
+		CountryISO:           u.CountryISO,
+		BackgroundURLs:       bgURLs,
+		Backgrounds:          bgItems,
+		FollowingCount:       followingCount,
+		FollowersCount:       followersCount,
+		LikesCount:           likesCount,
+		IsFollowing:          isFollowing,
+		FollowsYou:           followsYou,
+		IsOwner:              isOwner,
+		IsBlocked:            isBlocked,
+		RiskScore:            h.contacts.GetRiskScore(targetID),
+		RelationshipState:    string(contacts.ComputeRelationship(isFollowing, followsYou)),
+		Videos:               videoItems,
+		Posts:                feedItems,
+	}
+	if isOwner {
+		resp.Gender = sp.Gender
+		resp.DateOfBirth = sp.DateOfBirth
+		resp.PhoneNumber = sp.PhoneE164
+		resp.UsernameChangedAtMs = sp.UsernameChangedAtMs
+		resp.NextUsernameChangeMs = nextChangeMs
+		resp.SavedPosts = savedItems
+		resp.RepostedPosts = repostedItems
+		resp.LockedPosts = lockedItems
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -1381,7 +1833,7 @@ func (h *Handler) handleFeedDownload(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) resolveAuthorSummary(viewerID, authorID string) feeds.AuthorSummary {
-	if u, ok, isFollowing := h.contacts.GetUserForViewer(viewerID, authorID); ok {
+	if u, ok, isFollowing, followsYou := h.contacts.GetUserRelationshipForViewer(viewerID, authorID); ok {
 		avatar := ""
 		if u.AvatarMediaID != "" {
 			avatar = "/v1/media/avatar/" + u.AvatarMediaID
@@ -1392,6 +1844,7 @@ func (h *Handler) resolveAuthorSummary(viewerID, authorID string) feeds.AuthorSu
 			FullName:    u.FullName,
 			AvatarURL:   avatar,
 			IsFollowing: isFollowing,
+			FollowsYou:  followsYou,
 		}
 	}
 	h.mu.Lock()

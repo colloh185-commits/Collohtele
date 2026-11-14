@@ -27,7 +27,9 @@ import telefam.company.core.FeedVideoRendition
 import telefam.company.core.HashtagItem
 import telefam.company.core.NetworkTier
 import telefam.company.core.PostMode
+import telefam.company.core.PostPrivacy
 import telefam.company.core.PostSongTrack
+import telefam.company.core.ProfileBackgroundItem
 import telefam.company.core.TelefamContactsRules
 import telefam.company.core.TelefamCoreEngine
 import telefam.company.core.TelefamPostRules
@@ -64,7 +66,10 @@ import telefam.company.data.network.FeedItemDto
 import telefam.company.data.network.FeedVideoRenditionDto
 import telefam.company.data.network.NetworkQualityMonitor
 import telefam.company.data.network.OAuthDto
+import telefam.company.data.network.ProfileBackgroundItemDto
+import telefam.company.data.network.ProfileBackgroundReorderDto
 import telefam.company.data.network.ProfileSetupDto
+import telefam.company.data.network.ProfileUpdateRequestDto
 import telefam.company.data.network.ProgressFileRequestBody
 import telefam.company.data.network.RefreshTokenDto
 import telefam.company.data.network.RequestOtpDto
@@ -108,7 +113,12 @@ sealed class AuthActionResult {
 
 sealed class ProfileActionResult {
   data object Saved : ProfileActionResult()
-  data class Error(val message: String) : ProfileActionResult()
+  data class Error(val message: String, val nextUsernameChangeMs: Long = 0L) : ProfileActionResult()
+}
+
+sealed class ProfileBackgroundResult {
+  data class Updated(val backgrounds: List<ProfileBackgroundItemDto>) : ProfileBackgroundResult()
+  data class Error(val message: String) : ProfileBackgroundResult()
 }
 
 data class ContactsPageFetchResult(
@@ -189,6 +199,9 @@ class TelefamRepository(
   )
   private val feedItemListAdapter = moshi.adapter<List<FeedItemDto>>(
     Types.newParameterizedType(List::class.java, FeedItemDto::class.java),
+  )
+  private val profileBgListAdapter = moshi.adapter<List<ProfileBackgroundItemDto>>(
+    Types.newParameterizedType(List::class.java, ProfileBackgroundItemDto::class.java),
   )
   private val songAdapter = moshi.adapter(SongTrackDto::class.java)
 
@@ -902,6 +915,7 @@ class TelefamRepository(
       }
     }
 
+    val nowMs = System.currentTimeMillis()
     dao.upsertProfile(
       UserProfileEntity(
         userId = userId,
@@ -919,12 +933,320 @@ class TelefamRepository(
         avatarLocalPath = avatar?.localFilePath,
         avatarSha256 = avatar?.sha256Fingerprint,
         avatarDHash = avatar?.dHashFingerprint,
-        updatedAtMs = System.currentTimeMillis(),
+        usernameChangedAtMs = nowMs,
+        updatedAtMs = nowMs,
       ),
     )
     identityStore.markProfileCompleted(true)
     logAudit(userId, "profile_completed", "{\"username\":\"$username\",\"country\":\"$countryIso\"}")
     return ProfileActionResult.Saved
+  }
+
+  suspend fun uploadProfileBackground(uri: Uri): ProfileBackgroundResult = withContext(Dispatchers.IO) {
+    val session = identityStore.sessionFlow.first()
+    val userId = session.userId.orEmpty()
+    val token = session.accessToken.orEmpty()
+    if (userId.isBlank()) return@withContext ProfileBackgroundResult.Error("Sign in required.")
+
+    val cachedOwner = dao.getCachedUserProfile(userId)
+    val localBgs = cachedOwner?.let {
+      runCatching { profileBgListAdapter.fromJson(it.backgroundsJson).orEmpty() }.getOrDefault(emptyList())
+    } ?: emptyList()
+    if (localBgs.size >= 5) {
+      return@withContext ProfileBackgroundResult.Error("You can upload up to 5 background photos.")
+    }
+
+    val processed = MediaUploadProcessor.compressProfileBackground(appContext, uri)
+      ?: return@withContext ProfileBackgroundResult.Error("Unsupported or invalid image.")
+
+    var resultingList = localBgs + ProfileBackgroundItemDto(
+      mediaId = processed.mediaId,
+      url = processed.localFilePath,
+      sha256Fingerprint = processed.sha256Fingerprint,
+      dHashFingerprint = processed.dHashFingerprint,
+      width = processed.width,
+      height = processed.height,
+      byteSize = processed.byteSize,
+      createdAtMs = System.currentTimeMillis(),
+    )
+
+    val api = apiService
+    var syncedMediaId = processed.mediaId
+    if (api != null && token.isNotBlank() && networkTier.value != NetworkTier.OFFLINE) {
+      val bytes = File(processed.localFilePath).readBytes()
+      val reqBody = bytes.toRequestBody("image/jpeg".toMediaType())
+      val resp = executeWithWeakNetworkRetry {
+        api.uploadProfileBackground("Bearer $token", buildDeviceFingerprint(), reqBody)
+      }
+      if (resp != null && !resp.isSuccessful) {
+        if (resp.code() == 409) {
+          return@withContext ProfileBackgroundResult.Error("Maximum 5 background photos allowed.")
+        }
+        return@withContext ProfileBackgroundResult.Error(TelefamCoreEngine.sanitizeServerError(resp.code()))
+      }
+      val body = resp?.body()
+      if (body != null && body.success) {
+        syncedMediaId = body.mediaId.ifBlank { processed.mediaId }
+        if (body.backgrounds.isNotEmpty()) {
+          resultingList = body.backgrounds
+        }
+      }
+    }
+
+    dao.insertMediaUpload(
+      MediaUploadEntity(
+        mediaId = syncedMediaId,
+        ownerUserId = userId,
+        storageObjectKey = "media/bg/$syncedMediaId.jpg",
+        mimeType = "image/jpeg",
+        sha256Fingerprint = processed.sha256Fingerprint,
+        dHashFingerprint = processed.dHashFingerprint,
+        byteSize = processed.byteSize,
+        localFilePath = processed.localFilePath,
+        createdAtMs = System.currentTimeMillis(),
+      ),
+    )
+
+    persistBackgroundListToCache(userId, resultingList)
+    logAudit(
+      userId,
+      "profile_background_uploaded",
+      "{\"media_id\":\"$syncedMediaId\",\"sha256\":\"${processed.sha256Fingerprint}\",\"dhash\":\"${processed.dHashFingerprint}\"}",
+    )
+    ProfileBackgroundResult.Updated(resultingList.take(5))
+  }
+
+  suspend fun deleteProfileBackground(mediaId: String): ProfileBackgroundResult = withContext(Dispatchers.IO) {
+    val cleanId = mediaId.trim()
+    val session = identityStore.sessionFlow.first()
+    val userId = session.userId.orEmpty()
+    val token = session.accessToken.orEmpty()
+    if (userId.isBlank() || cleanId.isBlank()) {
+      return@withContext ProfileBackgroundResult.Error("Invalid background selection.")
+    }
+
+    val api = apiService
+    var updatedList: List<ProfileBackgroundItemDto>? = null
+    if (api != null && token.isNotBlank() && networkTier.value != NetworkTier.OFFLINE) {
+      val resp = executeWithWeakNetworkRetry {
+        api.deleteProfileBackground("Bearer $token", buildDeviceFingerprint(), cleanId)
+      }
+      if (resp != null && !resp.isSuccessful) {
+        return@withContext ProfileBackgroundResult.Error(TelefamCoreEngine.sanitizeServerError(resp.code()))
+      }
+      val body = resp?.body()
+      if (body != null && body.success) {
+        updatedList = body.backgrounds
+      }
+    }
+
+    val resolvedList = updatedList ?: run {
+      val cached = dao.getCachedUserProfile(userId)
+      val cur = cached?.let {
+        runCatching { profileBgListAdapter.fromJson(it.backgroundsJson).orEmpty() }.getOrDefault(emptyList())
+      } ?: emptyList()
+      cur.filterNot { it.mediaId == cleanId }
+    }
+    persistBackgroundListToCache(userId, resolvedList)
+    logAudit(userId, "profile_background_deleted", "{\"media_id\":\"$cleanId\"}")
+    ProfileBackgroundResult.Updated(resolvedList)
+  }
+
+  suspend fun reorderProfileBackgrounds(mediaIds: List<String>): ProfileBackgroundResult = withContext(Dispatchers.IO) {
+    val session = identityStore.sessionFlow.first()
+    val userId = session.userId.orEmpty()
+    val token = session.accessToken.orEmpty()
+    if (userId.isBlank()) return@withContext ProfileBackgroundResult.Error("Sign in required.")
+
+    val api = apiService
+    var updatedList: List<ProfileBackgroundItemDto>? = null
+    if (api != null && token.isNotBlank() && networkTier.value != NetworkTier.OFFLINE) {
+      val resp = executeWithWeakNetworkRetry {
+        api.reorderProfileBackgrounds("Bearer $token", buildDeviceFingerprint(), ProfileBackgroundReorderDto(mediaIds))
+      }
+      if (resp != null && resp.isSuccessful && resp.body()?.success == true) {
+        updatedList = resp.body()!!.backgrounds
+      }
+    }
+
+    val resolved = updatedList ?: run {
+      val cached = dao.getCachedUserProfile(userId)
+      val cur = cached?.let {
+        runCatching { profileBgListAdapter.fromJson(it.backgroundsJson).orEmpty() }.getOrDefault(emptyList())
+      } ?: emptyList()
+      val byId = cur.associateBy { it.mediaId }
+      mediaIds.mapNotNull { byId[it] } + cur.filterNot { mediaIds.contains(it.mediaId) }
+    }
+    persistBackgroundListToCache(userId, resolved)
+    ProfileBackgroundResult.Updated(resolved)
+  }
+
+  suspend fun updateUserProfile(
+    fullNameRaw: String,
+    usernameRaw: String,
+    dialCode: String,
+    phoneDigitsRaw: String,
+    countryIso: String,
+    genderRaw: String,
+    dobYear: Int,
+    dobMonthZeroBased: Int,
+    dobDay: Int,
+    locationRaw: String,
+    bioRaw: String,
+    avatar: ProcessedAvatarMedia?,
+  ): ProfileActionResult = withContext(Dispatchers.IO) {
+    val session = identityStore.sessionFlow.first()
+    val userId = session.userId.orEmpty()
+    val token = session.accessToken.orEmpty()
+    if (userId.isBlank()) return@withContext ProfileActionResult.Error("Sign in required.")
+
+    val fullName = TelefamProfileSanitizer.sanitizePlainText(fullNameRaw, 64, singleLine = true)
+    val username = TelefamProfileSanitizer.sanitizeUsernameInput(usernameRaw)
+    val phoneDigits = phoneDigitsRaw.filter { it.isDigit() }
+    val phoneE164 = if (phoneDigits.isNotBlank()) "$dialCode$phoneDigits" else ""
+    val location = TelefamProfileSanitizer.sanitizePlainText(locationRaw, 80, singleLine = true)
+    val bio = TelefamProfileSanitizer.sanitizePlainText(bioRaw, 150, singleLine = false)
+    val gender = genderRaw.trim()
+
+    if (fullName.isBlank() || location.isBlank()) {
+      return@withContext ProfileActionResult.Error("Name and location are required.")
+    }
+    if (!TelefamProfileSanitizer.isValidUsername(username)) {
+      return@withContext ProfileActionResult.Error("Username must be 3 to 24 letters, numbers, or underscores.")
+    }
+    if (phoneDigits.isNotBlank() && phoneDigits.length < 5) {
+      return@withContext ProfileActionResult.Error("Enter a valid phone number.")
+    }
+    if (!TelefamProfileSanitizer.isAtLeast13YearsOld(dobYear, dobMonthZeroBased, dobDay)) {
+      return@withContext ProfileActionResult.Error("You must be at least 13 years old.")
+    }
+
+    val nowMs = System.currentTimeMillis()
+    val existingLocal = dao.getProfileByUserId(userId)
+    val existingCached = dao.getCachedUserProfile(userId)
+    val prevUsername = existingLocal?.username ?: existingCached?.username.orEmpty()
+    val prevChangedAt = maxOf(existingLocal?.usernameChangedAtMs ?: 0L, existingCached?.usernameChangedAtMs ?: 0L)
+    val twoWeeksMs = 14L * 24L * 60L * 60L * 1000L
+    val isChangingUsername = prevUsername.isNotBlank() && !prevUsername.equals(username, ignoreCase = true)
+
+    if (isChangingUsername && prevChangedAt > 0L && (nowMs - prevChangedAt) < twoWeeksMs) {
+      val nextAllowed = prevChangedAt + twoWeeksMs
+      return@withContext ProfileActionResult.Error(
+        message = "Username can only be changed once every 2 weeks.",
+        nextUsernameChangeMs = nextAllowed,
+      )
+    }
+
+    val dobIso = String.format("%04d-%02d-%02d", dobYear, dobMonthZeroBased + 1, dobDay)
+    val api = apiService
+    var finalChangedAt = if (isChangingUsername) nowMs else prevChangedAt
+    if (api != null && token.isNotBlank() && networkTier.value != NetworkTier.OFFLINE) {
+      val resp = executeWithWeakNetworkRetry {
+        api.updateProfile(
+          bearer = "Bearer $token",
+          deviceFingerprint = buildDeviceFingerprint(),
+          body = ProfileUpdateRequestDto(
+            fullName = fullName,
+            username = username,
+            phoneNumber = phoneE164,
+            countryIso = countryIso,
+            gender = gender,
+            dateOfBirth = dobIso,
+            location = location,
+            bio = bio,
+            avatarMediaId = avatar?.mediaId ?: existingLocal?.avatarMediaId,
+          ),
+        )
+      }
+      if (resp != null && !resp.isSuccessful) {
+        return@withContext when (resp.code()) {
+          429 -> ProfileActionResult.Error(
+            message = "Username can only be changed once every 2 weeks.",
+            nextUsernameChangeMs = (prevChangedAt + twoWeeksMs).takeIf { prevChangedAt > 0L } ?: (nowMs + twoWeeksMs),
+          )
+          409 -> ProfileActionResult.Error("This username is already taken.")
+          else -> ProfileActionResult.Error(TelefamCoreEngine.sanitizeServerError(resp.code()))
+        }
+      }
+      resp?.body()?.let { body ->
+        if (body.usernameChangedAtMs > 0L) {
+          finalChangedAt = body.usernameChangedAtMs
+        }
+      }
+    }
+
+    val finalPhone = phoneE164.ifBlank { existingLocal?.phoneE164.orEmpty() }
+    val finalCountry = countryIso.ifBlank { existingLocal?.countryIso ?: existingCached?.countryIso ?: "KE" }
+    val finalGender = gender.ifBlank { existingLocal?.gender.orEmpty() }
+    val finalAvatarMediaId = avatar?.mediaId ?: existingLocal?.avatarMediaId
+    val finalAvatarPath = avatar?.localFilePath ?: existingLocal?.avatarLocalPath ?: existingCached?.avatarLocalPath
+    val finalAvatarUrl = avatar?.mediaId?.let { "/v1/media/avatar/$it" }
+      ?: existingCached?.avatarUrl
+      ?: finalAvatarMediaId?.let { "/v1/media/avatar/$it" }
+
+    dao.upsertProfile(
+      UserProfileEntity(
+        userId = userId,
+        email = existingLocal?.email ?: session.email.orEmpty(),
+        fullName = fullName,
+        username = username,
+        usernameLower = username.lowercase(),
+        phoneE164 = finalPhone,
+        countryIso = finalCountry,
+        gender = finalGender,
+        dateOfBirthIso = dobIso,
+        location = location,
+        bio = bio,
+        avatarMediaId = finalAvatarMediaId,
+        avatarLocalPath = finalAvatarPath,
+        avatarSha256 = avatar?.sha256Fingerprint ?: existingLocal?.avatarSha256,
+        avatarDHash = avatar?.dHashFingerprint ?: existingLocal?.avatarDHash,
+        usernameChangedAtMs = finalChangedAt,
+        backgroundsJson = existingLocal?.backgroundsJson ?: existingCached?.backgroundsJson ?: "[]",
+        updatedAtMs = nowMs,
+      ),
+    )
+
+    if (existingCached != null) {
+      val nextMs = if (finalChangedAt > 0L) finalChangedAt + twoWeeksMs else 0L
+      dao.upsertCachedUserProfile(
+        existingCached.copy(
+          fullName = fullName,
+          username = username,
+          avatarUrl = finalAvatarUrl,
+          avatarLocalPath = finalAvatarPath,
+          bio = bio,
+          location = location,
+          countryIso = finalCountry,
+          gender = finalGender,
+          dateOfBirth = dobIso,
+          phoneNumber = finalPhone,
+          usernameChangedAtMs = finalChangedAt,
+          nextUsernameChangeMs = nextMs,
+          cachedAtMs = nowMs,
+        ),
+      )
+    }
+
+    logAudit(userId, "profile_updated", "{\"username\":\"$username\",\"country\":\"$finalCountry\"}")
+    ProfileActionResult.Saved
+  }
+
+  private suspend fun persistBackgroundListToCache(userId: String, list: List<ProfileBackgroundItemDto>) {
+    val serialized = runCatching { profileBgListAdapter.toJson(list.take(5)) }.getOrDefault("[]")
+    val urlsSerialized = runCatching { stringListAdapter.toJson(list.take(5).map { it.url }) }.getOrDefault("[]")
+    dao.getProfileByUserId(userId)?.let { prof ->
+      dao.upsertProfile(prof.copy(backgroundsJson = serialized, updatedAtMs = System.currentTimeMillis()))
+    }
+    dao.getCachedUserProfile(userId)?.let { cached ->
+      dao.upsertCachedUserProfile(
+        cached.copy(
+          backgroundUrlsJson = urlsSerialized,
+          backgroundsJson = serialized,
+          cachedAtMs = System.currentTimeMillis(),
+        ),
+      )
+    }
   }
 
   suspend fun logAudit(userId: String, action: String, metadataJson: String = "{}") {
@@ -1780,6 +2102,33 @@ class TelefamRepository(
     return PostPublishResult.Uploaded(postId = postId, contentId = existing?.contentId.orEmpty())
   }
 
+  suspend fun updatePostPrivacy(postId: String, privacy: PostPrivacy): Boolean {
+    val cleanId = postId.trim()
+    if (cleanId.isBlank()) return false
+    dao.updateCachedFeedPostPrivacy(cleanId, privacy.apiValue)
+    val api = apiService
+    val token = identityStore.sessionFlow.first().accessToken.orEmpty()
+    if (api != null && token.isNotBlank() && networkTier.value != NetworkTier.OFFLINE) {
+      val deviceFp = buildDeviceFingerprint()
+      val resp = executeWithWeakNetworkRetry {
+        api.updatePost(
+          bearer = "Bearer $token",
+          deviceFingerprint = deviceFp,
+          postId = cleanId,
+          body = UpdatePostRequestDto(privacy = privacy.apiValue),
+        )
+      }
+      if (resp != null && !resp.isSuccessful) {
+        return false
+      }
+    }
+    val uid = identityStore.sessionFlow.first().userId.orEmpty()
+    if (uid.isNotBlank()) {
+      logAudit(uid, "post_privacy_updated", "{\"post_id\":\"$cleanId\",\"privacy\":\"${privacy.apiValue}\"}")
+    }
+    return true
+  }
+
   suspend fun deleteOwnerPost(postId: String): Boolean {
     dao.deleteFeedPost(postId)
     val api = apiService
@@ -1913,6 +2262,7 @@ class TelefamRepository(
       sortOrder = sortOrder,
       isHiddenByUser = false,
       viewsCount = viewsCount,
+      privacy = privacy.ifBlank { "public" },
       createdAtMs = createdAtMs,
       cachedAtMs = nowMs,
     )
@@ -1929,6 +2279,7 @@ class TelefamRepository(
       authorAvatarUrl = authorAvatarUrl.orEmpty(),
       isFollowingAuthor = isFollowingAuthor,
       isOwner = isOwner,
+      privacy = privacy.ifBlank { "public" },
       mode = mode,
       textContent = textContent,
       caption = caption,
@@ -2062,6 +2413,11 @@ class TelefamRepository(
           existingLocalPath = existingCached?.avatarLocalPath,
         )
         val serializedPosts = runCatching { feedItemListAdapter.toJson(body.posts) }.getOrDefault("[]")
+        val serializedSaved = runCatching { feedItemListAdapter.toJson(body.savedPosts) }.getOrDefault("[]")
+        val serializedReposted = runCatching { feedItemListAdapter.toJson(body.repostedPosts) }.getOrDefault("[]")
+        val serializedLocked = runCatching { feedItemListAdapter.toJson(body.lockedPosts) }.getOrDefault("[]")
+        val serializedBgUrls = runCatching { stringListAdapter.toJson(body.backgroundUrls) }.getOrDefault("[]")
+        val serializedBgs = runCatching { profileBgListAdapter.toJson(body.backgrounds) }.getOrDefault("[]")
         dao.upsertCachedUserProfile(
           CachedUserProfileEntity(
             userId = body.userId.ifBlank { cleanId },
@@ -2081,7 +2437,17 @@ class TelefamRepository(
             isBlocked = body.isBlocked,
             riskScore = body.riskScore,
             relationshipState = body.relationshipState,
+            gender = body.gender,
+            dateOfBirth = body.dateOfBirth,
+            phoneNumber = body.phoneNumber,
+            usernameChangedAtMs = body.usernameChangedAtMs,
+            nextUsernameChangeMs = body.nextUsernameChangeMs,
+            backgroundUrlsJson = serializedBgUrls,
+            backgroundsJson = serializedBgs,
             postsJson = serializedPosts,
+            savedPostsJson = serializedSaved,
+            repostedPostsJson = serializedReposted,
+            lockedPostsJson = serializedLocked,
             cachedAtMs = nowMs,
           ),
         )
@@ -2101,18 +2467,38 @@ class TelefamRepository(
     if (cachedProfile != null) {
       val cachedPosts = runCatching { feedItemListAdapter.fromJson(cachedProfile.postsJson).orEmpty() }
         .getOrDefault(emptyList())
-      val mergedPosts = if (cachedPosts.isNotEmpty()) {
-        val byLocalId = localPostDtos.associateBy { it.postId }
-        cachedPosts.map { p -> byLocalId[p.postId] ?: p }
+      val cachedSaved = runCatching { feedItemListAdapter.fromJson(cachedProfile.savedPostsJson).orEmpty() }
+        .getOrDefault(emptyList())
+      val cachedReposted = runCatching { feedItemListAdapter.fromJson(cachedProfile.repostedPostsJson).orEmpty() }
+        .getOrDefault(emptyList())
+      val cachedLocked = runCatching { feedItemListAdapter.fromJson(cachedProfile.lockedPostsJson).orEmpty() }
+        .getOrDefault(emptyList())
+      val cachedBgUrls = parseStringList(cachedProfile.backgroundUrlsJson)
+      val cachedBgs = runCatching { profileBgListAdapter.fromJson(cachedProfile.backgroundsJson).orEmpty() }
+        .getOrDefault(emptyList())
+
+      val byLocalId = localPostDtos.associateBy { it.postId }
+      val effPosts = if (cachedPosts.isNotEmpty()) {
+        cachedPosts.map { byLocalId[it.postId] ?: it }.filter { it.privacy != "private" }
       } else {
-        localPostDtos
+        localPostDtos.filter { it.privacy != "private" }
       }
+      val effLocked = if (isCaller) {
+        val localPrivate = localPostDtos.filter { it.privacy == "private" }
+        (cachedLocked.map { byLocalId[it.postId] ?: it }.filter { it.privacy == "private" } + localPrivate)
+          .distinctBy { it.postId }
+      } else emptyList()
+
       val effFollowing = pendingSync?.wantFollow ?: cachedProfile.isFollowing
       val effFollowsYou = cachedContact?.followsYou ?: cachedProfile.followsYou
       val relState = computeRelationshipStateString(effFollowing, effFollowsYou)
       val avatarResolved = cachedProfile.avatarLocalPath?.takeIf { File(it).exists() }
         ?: myProfile?.avatarLocalPath?.takeIf { File(it).exists() }
         ?: cachedProfile.avatarUrl.orEmpty()
+      val effChangedAt = maxOf(cachedProfile.usernameChangedAtMs, myProfile?.usernameChangedAtMs ?: 0L)
+      val effNextChange = cachedProfile.nextUsernameChangeMs.takeIf { it > 0L }
+        ?: if (effChangedAt > 0L) effChangedAt + (14L * 24L * 60L * 60L * 1000L) else 0L
+
       return UserProfileResponseDto(
         success = true,
         userId = cachedProfile.userId,
@@ -2122,6 +2508,13 @@ class TelefamRepository(
         bio = myProfile?.bio?.ifBlank { null } ?: cachedProfile.bio,
         location = myProfile?.location?.ifBlank { null } ?: cachedProfile.location,
         countryIso = myProfile?.countryIso?.ifBlank { null } ?: cachedProfile.countryIso,
+        gender = myProfile?.gender?.ifBlank { null } ?: cachedProfile.gender,
+        dateOfBirth = myProfile?.dateOfBirthIso?.ifBlank { null } ?: cachedProfile.dateOfBirth,
+        phoneNumber = myProfile?.phoneE164?.ifBlank { null } ?: cachedProfile.phoneNumber,
+        usernameChangedAtMs = effChangedAt,
+        nextUsernameChangeMs = effNextChange,
+        backgroundUrls = if (cachedBgUrls.isNotEmpty()) cachedBgUrls else cachedBgs.map { it.url },
+        backgrounds = cachedBgs,
         followingCount = cachedProfile.followingCount,
         followersCount = cachedProfile.followersCount,
         likesCount = maxOf(cachedProfile.likesCount, authorPosts.sumOf { it.likesCount }),
@@ -2131,7 +2524,10 @@ class TelefamRepository(
         relationshipState = relState,
         isBlocked = cachedProfile.isBlocked,
         riskScore = cachedProfile.riskScore,
-        posts = mergedPosts,
+        posts = effPosts,
+        savedPosts = cachedSaved,
+        repostedPosts = cachedReposted,
+        lockedPosts = effLocked,
       )
     }
 
@@ -2150,6 +2546,9 @@ class TelefamRepository(
     val cachedContactsAll = dao.observeAllCachedContacts().first()
     val offlineFollowingCount = if (isCaller) cachedContactsAll.count { it.isFollowing }.toLong() else dao.getCachedUserConnections(cleanId, "following").size.toLong()
     val offlineFollowersCount = if (isCaller) cachedContactsAll.count { it.followsYou }.toLong() else dao.getCachedUserConnections(cleanId, "followers").size.toLong()
+    val localBgs = myProfile?.backgroundsJson?.let {
+      runCatching { profileBgListAdapter.fromJson(it).orEmpty() }.getOrDefault(emptyList())
+    } ?: emptyList()
 
     return UserProfileResponseDto(
       success = true,
@@ -2160,6 +2559,13 @@ class TelefamRepository(
       bio = bio,
       location = location,
       countryIso = myProfile?.countryIso ?: cachedContact?.countryIso ?: "",
+      gender = myProfile?.gender.orEmpty(),
+      dateOfBirth = myProfile?.dateOfBirthIso.orEmpty(),
+      phoneNumber = myProfile?.phoneE164.orEmpty(),
+      usernameChangedAtMs = myProfile?.usernameChangedAtMs ?: 0L,
+      nextUsernameChangeMs = if ((myProfile?.usernameChangedAtMs ?: 0L) > 0L) myProfile!!.usernameChangedAtMs + (14L * 24L * 60L * 60L * 1000L) else 0L,
+      backgroundUrls = localBgs.map { it.url },
+      backgrounds = localBgs,
       followingCount = offlineFollowingCount,
       followersCount = offlineFollowersCount,
       likesCount = authorPosts.sumOf { it.likesCount },
@@ -2169,7 +2575,8 @@ class TelefamRepository(
       relationshipState = relState,
       isBlocked = false,
       riskScore = cachedContact?.riskScore ?: 0.0,
-      posts = localPostDtos,
+      posts = localPostDtos.filter { it.privacy != "private" },
+      lockedPosts = if (isCaller) localPostDtos.filter { it.privacy == "private" } else emptyList(),
     )
   }
 

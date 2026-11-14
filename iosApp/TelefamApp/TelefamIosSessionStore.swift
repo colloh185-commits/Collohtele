@@ -200,6 +200,61 @@ enum TelefamIosCountryCatalog {
     }
 }
 
+struct TelefamIosProfileBackgroundItem: Identifiable, Codable, Equatable {
+    let mediaId: String
+    let url: String
+    let sha256Fingerprint: String
+    let dHashFingerprint: String
+    let width: Int
+    let height: Int
+    let byteSize: Int
+    let createdAtMs: Int64
+
+    var id: String { mediaId }
+
+    enum CodingKeys: String, CodingKey {
+        case mediaId = "media_id"
+        case url
+        case sha256Fingerprint = "sha256_fingerprint"
+        case dHashFingerprint = "dhash_fingerprint"
+        case width, height
+        case byteSize = "byte_size"
+        case createdAtMs = "created_at_ms"
+    }
+
+    init(
+        mediaId: String,
+        url: String = "",
+        sha256Fingerprint: String = "",
+        dHashFingerprint: String = "",
+        width: Int = 0,
+        height: Int = 0,
+        byteSize: Int = 0,
+        createdAtMs: Int64 = 0
+    ) {
+        self.mediaId = mediaId
+        self.url = url
+        self.sha256Fingerprint = sha256Fingerprint
+        self.dHashFingerprint = dHashFingerprint
+        self.width = width
+        self.height = height
+        self.byteSize = byteSize
+        self.createdAtMs = createdAtMs
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        mediaId = try c.decodeIfPresent(String.self, forKey: .mediaId) ?? ""
+        url = try c.decodeIfPresent(String.self, forKey: .url) ?? ""
+        sha256Fingerprint = try c.decodeIfPresent(String.self, forKey: .sha256Fingerprint) ?? ""
+        dHashFingerprint = try c.decodeIfPresent(String.self, forKey: .dHashFingerprint) ?? ""
+        width = try c.decodeIfPresent(Int.self, forKey: .width) ?? 0
+        height = try c.decodeIfPresent(Int.self, forKey: .height) ?? 0
+        byteSize = try c.decodeIfPresent(Int.self, forKey: .byteSize) ?? 0
+        createdAtMs = try c.decodeIfPresent(Int64.self, forKey: .createdAtMs) ?? 0
+    }
+}
+
 struct TelefamIosAuthResponse: Codable {
     let success: Bool
     let userId: String?
@@ -582,6 +637,185 @@ final class TelefamIosSessionStore: ObservableObject {
         }
     }
 
+    static func sha256Hex(data: Data) -> String {
+        let digest = SHA256.hash(data: data)
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    func uploadProfileBackground(jpegData: Data) async -> (ok: Bool, error: String?, backgrounds: [TelefamIosProfileBackgroundItem]) {
+        guard let url = serverURL?.appendingPathComponent("v1/media/background") else {
+            return (false, "Server endpoint is not configured.", [])
+        }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("image/jpeg", forHTTPHeaderField: "Content-Type")
+        req.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
+        req.setValue(deviceFingerprint, forHTTPHeaderField: "X-Telefam-Device-FP")
+        req.setValue(Self.sha256Hex(data: jpegData), forHTTPHeaderField: "X-Telefam-Content-SHA256")
+        req.httpBody = jpegData
+
+        struct Resp: Codable {
+            let success: Bool
+            let error: String?
+            let backgrounds: [TelefamIosProfileBackgroundItem]?
+        }
+
+        do {
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            let parsed = try? JSONDecoder().decode(Resp.self, from: data)
+            if (200...299).contains(code), parsed?.success == true {
+                return (true, nil, parsed?.backgrounds ?? [])
+            }
+            if code == 409 {
+                return (false, parsed?.error ?? "Maximum 5 background photos allowed.", parsed?.backgrounds ?? [])
+            }
+            return (false, parsed?.error ?? "Unable to upload background photo.", [])
+        } catch {
+            return (false, "Network error while uploading background.", [])
+        }
+    }
+
+    func deleteProfileBackground(mediaId: String) async -> (ok: Bool, error: String?, backgrounds: [TelefamIosProfileBackgroundItem]) {
+        guard let url = serverURL?.appendingPathComponent("v1/profile/backgrounds").appendingPathComponent(mediaId) else {
+            return (false, "Server endpoint is not configured.", [])
+        }
+        var req = URLRequest(url: url)
+        req.httpMethod = "DELETE"
+        req.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
+        req.setValue(deviceFingerprint, forHTTPHeaderField: "X-Telefam-Device-FP")
+
+        struct Resp: Codable {
+            let success: Bool
+            let error: String?
+            let backgrounds: [TelefamIosProfileBackgroundItem]?
+        }
+        do {
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            let parsed = try? JSONDecoder().decode(Resp.self, from: data)
+            if (200...299).contains(code), parsed?.success == true {
+                return (true, nil, parsed?.backgrounds ?? [])
+            }
+            return (false, parsed?.error ?? "Unable to remove background photo.", [])
+        } catch {
+            return (false, "Network error while removing background.", [])
+        }
+    }
+
+    func reorderProfileBackgrounds(mediaIds: [String]) async -> (ok: Bool, error: String?, backgrounds: [TelefamIosProfileBackgroundItem]) {
+        guard let url = serverURL?.appendingPathComponent("v1/profile/backgrounds") else {
+            return (false, "Server endpoint is not configured.", [])
+        }
+        var req = URLRequest(url: url)
+        req.httpMethod = "PUT"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
+        req.setValue(deviceFingerprint, forHTTPHeaderField: "X-Telefam-Device-FP")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["media_ids": mediaIds])
+
+        struct Resp: Codable {
+            let success: Bool
+            let error: String?
+            let backgrounds: [TelefamIosProfileBackgroundItem]?
+        }
+        do {
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            let parsed = try? JSONDecoder().decode(Resp.self, from: data)
+            if (200...299).contains(code), parsed?.success == true {
+                return (true, nil, parsed?.backgrounds ?? [])
+            }
+            return (false, parsed?.error ?? "Unable to reorder backgrounds.", [])
+        } catch {
+            return (false, "Network error while reordering backgrounds.", [])
+        }
+    }
+
+    func updateProfile(
+        fullName: String,
+        username: String,
+        phoneE164: String,
+        countryIso: String,
+        gender: String,
+        dateOfBirthIso: String,
+        location: String,
+        bio: String,
+        avatarMediaId: String?
+    ) async -> (ok: Bool, error: String?, usernameChangedAtMs: Int64, nextUsernameChangeMs: Int64) {
+        guard let url = serverURL?.appendingPathComponent("v1/profile") else {
+            return (false, "Server endpoint is not configured.", 0, 0)
+        }
+        var payload: [String: Any] = [
+            "full_name": fullName,
+            "username": username,
+            "phone_number": phoneE164,
+            "country_iso": countryIso,
+            "gender": gender,
+            "date_of_birth": dateOfBirthIso,
+            "location": location,
+            "bio": bio
+        ]
+        if let avatarMediaId, !avatarMediaId.isEmpty {
+            payload["avatar_media_id"] = avatarMediaId
+        }
+
+        var req = URLRequest(url: url)
+        req.httpMethod = "PATCH"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
+        req.setValue(deviceFingerprint, forHTTPHeaderField: "X-Telefam-Device-FP")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+
+        struct Resp: Codable {
+            let success: Bool
+            let error: String?
+            let username: String?
+            let fullName: String?
+            let usernameChangedAtMs: Int64?
+            let nextUsernameChangeMs: Int64?
+
+            enum CodingKeys: String, CodingKey {
+                case success, error, username
+                case fullName = "full_name"
+                case usernameChangedAtMs = "username_changed_at_ms"
+                case nextUsernameChangeMs = "next_username_change_ms"
+            }
+        }
+
+        do {
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            let parsed = try? JSONDecoder().decode(Resp.self, from: data)
+            if (200...299).contains(code), parsed?.success == true {
+                self.fullName = parsed?.fullName ?? fullName
+                self.username = parsed?.username ?? username
+                self.phoneDisplay = phoneE164
+                self.location = location
+                self.bio = bio
+                TelefamIosKeychainVault.save(key: Keys.fullName, value: self.fullName)
+                TelefamIosKeychainVault.save(key: Keys.username, value: self.username)
+                TelefamIosKeychainVault.save(key: Keys.phoneDisplay, value: phoneE164)
+                TelefamIosKeychainVault.save(key: Keys.location, value: location)
+                TelefamIosKeychainVault.save(key: Keys.bio, value: bio)
+                return (
+                    true,
+                    nil,
+                    parsed?.usernameChangedAtMs ?? 0,
+                    parsed?.nextUsernameChangeMs ?? 0
+                )
+            }
+            return (
+                false,
+                parsed?.error ?? (code == 429 ? "Username can only be changed once every 2 weeks." : "Could not update profile."),
+                parsed?.usernameChangedAtMs ?? 0,
+                parsed?.nextUsernameChangeMs ?? 0
+            )
+        } catch {
+            return (false, "Network error while updating profile.", 0, 0)
+        }
+    }
+
     func sharePostURL(postId: String) -> URL {
         if let base = serverURL,
            let host = base.host?.lowercased(),
@@ -673,6 +907,7 @@ struct TelefamIosRemoteImage: View {
     let bearerToken: String
     let deviceFingerprint: String
     let fallbackInitials: String
+    var contentMode: ContentMode = .fill
 
     @State private var loadedImage: UIImage? = nil
 
@@ -681,7 +916,7 @@ struct TelefamIosRemoteImage: View {
             if let img = loadedImage {
                 Image(uiImage: img)
                     .resizable()
-                    .scaledToFill()
+                    .aspectRatio(contentMode: contentMode)
             } else {
                 ZStack {
                     Color(white: 0.22)
@@ -691,7 +926,7 @@ struct TelefamIosRemoteImage: View {
                 }
             }
         }
-        .task(id: urlString) {
+        .task(id: "\(urlString)|\(bearerToken.suffix(8))") {
             await fetchImage()
         }
     }

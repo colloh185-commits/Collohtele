@@ -27,6 +27,25 @@ const (
 	ModeVideo  PostMode = "video"
 )
 
+type PostPrivacy string
+
+const (
+	PrivacyPublic  PostPrivacy = "public"
+	PrivacyFriends PostPrivacy = "friends"
+	PrivacyPrivate PostPrivacy = "private"
+)
+
+func NormalizePrivacy(raw string) PostPrivacy {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "friends":
+		return PrivacyFriends
+	case "private":
+		return PrivacyPrivate
+	default:
+		return PrivacyPublic
+	}
+}
+
 var (
 	ErrInvalidPost = errors.New("invalid post payload")
 	ErrTooManyTags = errors.New("too many tags")
@@ -51,36 +70,38 @@ type HashtagInfo struct {
 }
 
 type CreatePostRequest struct {
-	ClientOpID        string     `json:"client_op_id"`
-	Mode              PostMode   `json:"mode"`
-	TextContent       string     `json:"text_content,omitempty"`
-	Caption           string     `json:"caption,omitempty"`
-	ThemeID           string     `json:"theme_id,omitempty"`
-	FontID            string     `json:"font_id,omitempty"`
-	Song              *SongTrack `json:"song,omitempty"`
-	TaggedUserIDs     []string   `json:"tagged_user_ids,omitempty"`
-	Hashtags          []string   `json:"hashtags,omitempty"`
-	PhotoMediaIDs     []string   `json:"photo_media_ids,omitempty"`
-	VideoMediaID      string     `json:"video_media_id,omitempty"`
-	ThumbnailMediaID  string     `json:"thumbnail_media_id,omitempty"`
-	TrimStartMs       int64      `json:"trim_start_ms,omitempty"`
-	TrimEndMs         int64      `json:"trim_end_ms,omitempty"`
-	Width             int        `json:"width,omitempty"`
-	Height            int        `json:"height,omitempty"`
-	DurationMs        int64      `json:"duration_ms,omitempty"`
-	MuteOriginalAudio bool       `json:"mute_original_audio,omitempty"`
-	ContentID         string     `json:"content_id,omitempty"`
+	ClientOpID        string      `json:"client_op_id"`
+	Mode              PostMode    `json:"mode"`
+	Privacy           PostPrivacy `json:"privacy,omitempty"`
+	TextContent       string      `json:"text_content,omitempty"`
+	Caption           string      `json:"caption,omitempty"`
+	ThemeID           string      `json:"theme_id,omitempty"`
+	FontID            string      `json:"font_id,omitempty"`
+	Song              *SongTrack  `json:"song,omitempty"`
+	TaggedUserIDs     []string    `json:"tagged_user_ids,omitempty"`
+	Hashtags          []string    `json:"hashtags,omitempty"`
+	PhotoMediaIDs     []string    `json:"photo_media_ids,omitempty"`
+	VideoMediaID      string      `json:"video_media_id,omitempty"`
+	ThumbnailMediaID  string      `json:"thumbnail_media_id,omitempty"`
+	TrimStartMs       int64       `json:"trim_start_ms,omitempty"`
+	TrimEndMs         int64       `json:"trim_end_ms,omitempty"`
+	Width             int         `json:"width,omitempty"`
+	Height            int         `json:"height,omitempty"`
+	DurationMs        int64       `json:"duration_ms,omitempty"`
+	MuteOriginalAudio bool        `json:"mute_original_audio,omitempty"`
+	ContentID         string      `json:"content_id,omitempty"`
 }
 
 type UpdatePostRequest struct {
-	TextContent       string     `json:"text_content,omitempty"`
-	Caption           string     `json:"caption,omitempty"`
-	ThemeID           string     `json:"theme_id,omitempty"`
-	FontID            string     `json:"font_id,omitempty"`
-	Song              *SongTrack `json:"song,omitempty"`
-	TaggedUserIDs     []string   `json:"tagged_user_ids,omitempty"`
-	Hashtags          []string   `json:"hashtags,omitempty"`
-	MuteOriginalAudio *bool      `json:"mute_original_audio,omitempty"`
+	TextContent       string      `json:"text_content,omitempty"`
+	Caption           string      `json:"caption,omitempty"`
+	Privacy           PostPrivacy `json:"privacy,omitempty"`
+	ThemeID           string      `json:"theme_id,omitempty"`
+	FontID            string      `json:"font_id,omitempty"`
+	Song              *SongTrack  `json:"song,omitempty"`
+	TaggedUserIDs     []string    `json:"tagged_user_ids,omitempty"`
+	Hashtags          []string    `json:"hashtags,omitempty"`
+	MuteOriginalAudio *bool       `json:"mute_original_audio,omitempty"`
 }
 
 type StoredPost struct {
@@ -88,6 +109,7 @@ type StoredPost struct {
 	ClientOpID        string                 `json:"client_op_id"`
 	AuthorUserID      string                 `json:"author_user_id"`
 	Mode              PostMode               `json:"mode"`
+	Privacy           PostPrivacy            `json:"privacy"`
 	TextContent       string                 `json:"text_content,omitempty"`
 	Caption           string                 `json:"caption,omitempty"`
 	ThemeID           string                 `json:"theme_id,omitempty"`
@@ -399,6 +421,7 @@ func (s *Service) CreatePost(authorUserID string, req CreatePostRequest, videoRe
 		ClientOpID:        clientOpID,
 		AuthorUserID:      authorUserID,
 		Mode:              req.Mode,
+		Privacy:           NormalizePrivacy(string(req.Privacy)),
 		TextContent:       textContent,
 		Caption:           caption,
 		ThemeID:           security.SanitizeText(req.ThemeID, 40, false),
@@ -502,13 +525,18 @@ func (s *Service) UpdatePost(authorUserID, postID string, req UpdatePostRequest)
 		}
 	}
 
+	if strings.TrimSpace(string(req.Privacy)) != "" {
+		post.Privacy = NormalizePrivacy(string(req.Privacy))
+	}
 	if req.TextContent != "" || post.Mode == ModeText {
 		sanitized := security.SanitizeText(req.TextContent, 280, true)
 		if sanitized != "" {
 			post.TextContent = sanitized
 		}
 	}
-	post.Caption = security.SanitizeText(req.Caption, 2200, true)
+	if req.Caption != "" || strings.TrimSpace(string(req.Privacy)) == "" {
+		post.Caption = security.SanitizeText(req.Caption, 2200, true)
+	}
 	if strings.TrimSpace(req.ThemeID) != "" {
 		post.ThemeID = security.SanitizeText(req.ThemeID, 40, false)
 	}
@@ -531,34 +559,43 @@ func (s *Service) UpdatePost(authorUserID, postID string, req UpdatePostRequest)
 		}
 	}
 
-	cleanTags := make([]string, 0, len(req.TaggedUserIDs))
-	seenPeople := make(map[string]struct{})
-	for _, uid := range req.TaggedUserIDs {
-		c := security.SanitizeText(uid, 128, false)
-		if c == "" || c == authorUserID {
-			continue
+	if req.TaggedUserIDs != nil {
+		cleanTags := make([]string, 0, len(req.TaggedUserIDs))
+		seenPeople := make(map[string]struct{})
+		for _, uid := range req.TaggedUserIDs {
+			c := security.SanitizeText(uid, 128, false)
+			if c == "" || c == authorUserID {
+				continue
+			}
+			if _, exists := seenPeople[c]; !exists {
+				seenPeople[c] = struct{}{}
+				cleanTags = append(cleanTags, c)
+			}
 		}
-		if _, exists := seenPeople[c]; !exists {
-			seenPeople[c] = struct{}{}
-			cleanTags = append(cleanTags, c)
-		}
+		post.TaggedUserIDs = cleanTags
 	}
-	post.TaggedUserIDs = cleanTags
 
-	cleanHashtags := make([]string, 0, len(req.Hashtags))
-	seenHash := make(map[string]struct{})
-	for _, rawH := range req.Hashtags {
-		h := SanitizeHashtag(rawH)
-		if h == "" {
-			continue
+	if req.Hashtags != nil {
+		cleanHashtags := make([]string, 0, len(req.Hashtags))
+		seenHash := make(map[string]struct{})
+		for _, rawH := range req.Hashtags {
+			h := SanitizeHashtag(rawH)
+			if h == "" {
+				continue
+			}
+			if _, exists := seenHash[h]; !exists {
+				seenHash[h] = struct{}{}
+				cleanHashtags = append(cleanHashtags, h)
+				s.hashtags[h] = s.hashtags[h] + 1
+			}
 		}
-		if _, exists := seenHash[h]; !exists {
-			seenHash[h] = struct{}{}
-			cleanHashtags = append(cleanHashtags, h)
-			s.hashtags[h] = s.hashtags[h] + 1
+		post.Hashtags = cleanHashtags
+	} else {
+		// Preserve existing hashtag counts when performing a privacy-only update
+		for _, oldTag := range post.Hashtags {
+			s.hashtags[oldTag] = s.hashtags[oldTag] + 1
 		}
 	}
-	post.Hashtags = cleanHashtags
 	return post, nil
 }
 
