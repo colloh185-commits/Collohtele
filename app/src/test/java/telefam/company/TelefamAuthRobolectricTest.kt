@@ -67,6 +67,20 @@ import telefam.company.data.network.UserConnectionsResponseDto
 import telefam.company.data.network.UserProfileResponseDto
 import telefam.company.data.network.UserReportRequestDto
 import telefam.company.data.network.UserReportResponseDto
+import telefam.company.data.network.AppVersionResponseDto
+import telefam.company.data.network.ContentPreferencesDto
+import telefam.company.data.network.FaqListResponseDto
+import telefam.company.data.network.LegalDocumentsResponseDto
+import telefam.company.data.network.LogoutRequestDto
+import telefam.company.data.network.NotificationSettingsDto
+import telefam.company.data.network.PrivacySettingsDto
+import telefam.company.data.network.ProblemReportRequestDto
+import telefam.company.data.network.ProblemReportResponseDto
+import telefam.company.data.network.RestrictedAccountsResponseDto
+import telefam.company.data.network.SettingsBundleResponseDto
+import telefam.company.data.network.SupportTicketsResponseDto
+import telefam.company.data.network.SystemStatusResponseDto
+import telefam.company.data.network.UserMuteResponseDto
 import telefam.company.data.network.UsernameCheckResponseDto
 import telefam.company.data.network.VerifyLinkDto
 import telefam.company.data.network.VerifyOtpDto
@@ -512,6 +526,51 @@ class TelefamAuthRobolectricTest {
       body: ProfileUpdateRequestDto,
     ): Response<ProfileUpdateResponseDto> =
       Response.success(ProfileUpdateResponseDto(success = true, username = body.username, fullName = body.fullName))
+
+    override suspend fun muteUser(bearer: String, deviceFingerprint: String, userId: String): Response<UserMuteResponseDto> =
+      Response.success(UserMuteResponseDto(success = true, userId = userId, isMuted = true))
+
+    override suspend fun unmuteUser(bearer: String, deviceFingerprint: String, userId: String): Response<UserMuteResponseDto> =
+      Response.success(UserMuteResponseDto(success = true, userId = userId, isMuted = false))
+
+    override suspend fun getSettings(bearer: String, deviceFingerprint: String): Response<SettingsBundleResponseDto> =
+      Response.success(SettingsBundleResponseDto(success = true))
+
+    override suspend fun updatePrivacySettings(bearer: String, deviceFingerprint: String, body: PrivacySettingsDto): Response<SettingsBundleResponseDto> =
+      Response.success(SettingsBundleResponseDto(success = true, privacy = body))
+
+    override suspend fun updateNotificationSettings(bearer: String, deviceFingerprint: String, body: NotificationSettingsDto): Response<SettingsBundleResponseDto> =
+      Response.success(SettingsBundleResponseDto(success = true, notifications = body))
+
+    override suspend fun updateContentPreferences(bearer: String, deviceFingerprint: String, body: ContentPreferencesDto): Response<SettingsBundleResponseDto> =
+      Response.success(SettingsBundleResponseDto(success = true, contentPreferences = body))
+
+    override suspend fun listBlockedAccounts(bearer: String, deviceFingerprint: String, query: String): Response<RestrictedAccountsResponseDto> =
+      Response.success(RestrictedAccountsResponseDto(success = true))
+
+    override suspend fun listMutedAccounts(bearer: String, deviceFingerprint: String, query: String): Response<RestrictedAccountsResponseDto> =
+      Response.success(RestrictedAccountsResponseDto(success = true))
+
+    override suspend fun submitProblemReport(bearer: String, deviceFingerprint: String, body: ProblemReportRequestDto): Response<ProblemReportResponseDto> =
+      Response.success(ProblemReportResponseDto(success = true, referenceNumber = "TF-TEST-1"))
+
+    override suspend fun listSupportTickets(bearer: String, deviceFingerprint: String): Response<SupportTicketsResponseDto> =
+      Response.success(SupportTicketsResponseDto(success = true))
+
+    override suspend fun searchFaqs(bearer: String, deviceFingerprint: String, query: String): Response<FaqListResponseDto> =
+      Response.success(FaqListResponseDto(success = true))
+
+    override suspend fun getSystemStatus(bearer: String, deviceFingerprint: String): Response<SystemStatusResponseDto> =
+      Response.success(SystemStatusResponseDto(success = true))
+
+    override suspend fun getLegalDocuments(bearer: String, deviceFingerprint: String): Response<LegalDocumentsResponseDto> =
+      Response.success(LegalDocumentsResponseDto(success = true))
+
+    override suspend fun checkAppVersion(bearer: String, deviceFingerprint: String, version: String): Response<AppVersionResponseDto> =
+      Response.success(AppVersionResponseDto(success = true, latestVersion = version))
+
+    override suspend fun logout(bearer: String, deviceFingerprint: String, body: LogoutRequestDto): Response<GenericSuccessDto> =
+      Response.success(GenericSuccessDto(success = true))
 
     override suspend fun downloadMedia(url: String): Response<ResponseBody> =
       Response.success(ByteArray(0).toResponseBody("application/octet-stream".toMediaType()))

@@ -31,8 +31,16 @@ type RequestOtpPayload struct {
 }
 
 type RequestOtpResponse struct {
-	Success         bool  `json:"success"`
-	CooldownSeconds int64 `json:"cooldown_seconds"`
+	Success                bool   `json:"success"`
+	CooldownSeconds        int64  `json:"cooldown_seconds"`
+	RequiresDeviceApproval bool   `json:"requires_device_approval,omitempty"`
+	RequestID              string `json:"request_id,omitempty"`
+	PollToken              string `json:"poll_token,omitempty"`
+	TargetDeviceName       string `json:"target_device_name,omitempty"`
+	TargetLocation         string `json:"target_location,omitempty"`
+	RequestTimeMs          int64  `json:"request_time_ms,omitempty"`
+	ExpiresInSeconds       int64  `json:"expires_in_seconds,omitempty"`
+	TryAnotherWayProvider  string `json:"try_another_way_provider,omitempty"`
 }
 
 type VerifyOtpPayload struct {
@@ -49,9 +57,11 @@ type RefreshTokenPayload struct {
 }
 
 type OAuthPayload struct {
-	Provider      string `json:"provider"`
-	IdentityToken string `json:"identity_token"`
-	Nonce         string `json:"nonce,omitempty"`
+	Provider          string `json:"provider"`
+	IdentityToken     string `json:"identity_token"`
+	Nonce             string `json:"nonce,omitempty"`
+	ExpectedEmail     string `json:"expected_email,omitempty"`
+	ApprovalRequestID string `json:"approval_request_id,omitempty"`
 }
 
 type AuthSessionResponse struct {
@@ -175,21 +185,32 @@ const usernameChangeCooldownMs int64 = 14 * 24 * 60 * 60 * 1000
 const maxProfileBackgrounds = 5
 
 type Handler struct {
-	fp          *fingerprint.Service
-	limiter     *ratelimit.Limiter
-	otp         *OtpService
-	tokens      *TokenService
-	audit       *audit.Logger
-	mailer      *mailer.ResendClient
-	contacts    *contacts.Service
-	posts       *posts.Service
-	feeds       *feeds.Engine
-	mu          sync.Mutex
-	profiles    map[string]storedProfile
-	usernames   map[string]string
-	mediaMeta   map[string]*media.ProcessedMedia
-	backgrounds map[string][]ProfileBackgroundItem
-	ackedOps    map[string]struct{}
+	fp                  *fingerprint.Service
+	limiter             *ratelimit.Limiter
+	otp                 *OtpService
+	tokens              *TokenService
+	audit               *audit.Logger
+	mailer              *mailer.ResendClient
+	contacts            *contacts.Service
+	posts               *posts.Service
+	feeds               *feeds.Engine
+	mu                  sync.Mutex
+	profiles            map[string]storedProfile
+	usernames           map[string]string
+	mediaMeta           map[string]*media.ProcessedMedia
+	backgrounds         map[string][]ProfileBackgroundItem
+	privacySettings     map[string]PrivacySettingsDTO
+	notifSettings       map[string]NotificationSettingsDTO
+	contentPrefs        map[string]ContentPreferencesDTO
+	supportTickets      map[string][]SupportTicketDTO
+	ackedOps            map[string]struct{}
+	emailToUserID       map[string]string
+	userEmails          map[string]string
+	trustedDevices      map[string]map[string]*TrustedDeviceRecord
+	loginRequests       map[string]*LoginApprovalRequest
+	deviceBlocks        map[string]time.Time
+	countryAttributions map[string]*UserCountryAttribution
+	countrySignalLog    map[string][]DeviceContextTelemetryPayload
 }
 
 func NewHandler(
@@ -205,20 +226,31 @@ func NewHandler(
 		contactsSvc = contacts.NewService()
 	}
 	return &Handler{
-		fp:          fp,
-		limiter:     limiter,
-		otp:         otp,
-		tokens:      tokens,
-		audit:       auditLogger,
-		mailer:      resendMailer,
-		contacts:    contactsSvc,
-		posts:       posts.NewService(),
-		feeds:       feeds.NewEngine(),
-		profiles:    make(map[string]storedProfile),
-		usernames:   make(map[string]string),
-		mediaMeta:   make(map[string]*media.ProcessedMedia),
-		backgrounds: make(map[string][]ProfileBackgroundItem),
-		ackedOps:    make(map[string]struct{}),
+		fp:                  fp,
+		limiter:             limiter,
+		otp:                 otp,
+		tokens:              tokens,
+		audit:               auditLogger,
+		mailer:              resendMailer,
+		contacts:            contactsSvc,
+		posts:               posts.NewService(),
+		feeds:               feeds.NewEngine(),
+		profiles:            make(map[string]storedProfile),
+		usernames:           make(map[string]string),
+		mediaMeta:           make(map[string]*media.ProcessedMedia),
+		backgrounds:         make(map[string][]ProfileBackgroundItem),
+		privacySettings:     make(map[string]PrivacySettingsDTO),
+		notifSettings:       make(map[string]NotificationSettingsDTO),
+		contentPrefs:        make(map[string]ContentPreferencesDTO),
+		supportTickets:      make(map[string][]SupportTicketDTO),
+		ackedOps:            make(map[string]struct{}),
+		emailToUserID:       make(map[string]string),
+		userEmails:          make(map[string]string),
+		trustedDevices:      make(map[string]map[string]*TrustedDeviceRecord),
+		loginRequests:       make(map[string]*LoginApprovalRequest),
+		deviceBlocks:        make(map[string]time.Time),
+		countryAttributions: make(map[string]*UserCountryAttribution),
+		countrySignalLog:    make(map[string][]DeviceContextTelemetryPayload),
 	}
 }
 
@@ -232,10 +264,15 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/auth/otp/request", h.handleRequestOtp)
 	mux.HandleFunc("POST /v1/auth/otp/verify", h.handleVerifyOtp)
 	mux.HandleFunc("POST /v1/auth/verify-link", h.handleVerifyLink)
+	mux.HandleFunc("GET /v1/auth/login-requests/pending", h.handleGetPendingLoginRequests)
+	mux.HandleFunc("GET /v1/auth/login-requests/{id}/status", h.handleGetLoginRequestStatus)
+	mux.HandleFunc("POST /v1/auth/login-requests/{id}/respond", h.handleRespondToLoginRequest)
 	mux.HandleFunc("GET /verify", h.handleWebVerifyRedirect)
 	mux.HandleFunc("POST /v1/auth/token/refresh", h.handleRefreshToken)
+	mux.HandleFunc("POST /v1/auth/logout", h.handleLogout)
 	mux.HandleFunc("POST /v1/auth/oauth/google", h.handleGoogleOAuth)
 	mux.HandleFunc("POST /v1/auth/oauth/apple", h.handleAppleOAuth)
+	mux.HandleFunc("POST /v1/telemetry/device-context", h.handleDeviceContextTelemetry)
 	mux.HandleFunc("POST /v1/media/avatar", h.handleAvatarUpload)
 	mux.HandleFunc("GET /v1/media/avatar/{id}", h.handleAvatarDownload)
 	mux.HandleFunc("POST /v1/media/background", h.handleProfileBackgroundUpload)
@@ -259,12 +296,26 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/profile/backgrounds", h.handleAttachProfileBackground)
 	mux.HandleFunc("PUT /v1/profile/backgrounds", h.handleReorderProfileBackgrounds)
 	mux.HandleFunc("DELETE /v1/profile/backgrounds/{id}", h.handleDeleteProfileBackground)
+	mux.HandleFunc("GET /v1/settings", h.handleGetSettings)
+	mux.HandleFunc("PUT /v1/settings/privacy", h.handleUpdatePrivacySettings)
+	mux.HandleFunc("PUT /v1/settings/notifications", h.handleUpdateNotificationSettings)
+	mux.HandleFunc("PUT /v1/settings/content-preferences", h.handleUpdateContentPreferences)
+	mux.HandleFunc("GET /v1/settings/blocked-accounts", h.handleListBlockedAccounts)
+	mux.HandleFunc("GET /v1/settings/muted-accounts", h.handleListMutedAccounts)
+	mux.HandleFunc("GET /v1/settings/system-status", h.handleSystemStatus)
+	mux.HandleFunc("POST /v1/support/reports", h.handleSubmitProblemReport)
+	mux.HandleFunc("GET /v1/support/tickets", h.handleListSupportTickets)
+	mux.HandleFunc("GET /v1/support/faqs", h.handleSearchFaqs)
+	mux.HandleFunc("GET /v1/legal/documents", h.handleLegalDocuments)
+	mux.HandleFunc("GET /v1/app/version", h.handleAppVersion)
 	mux.HandleFunc("GET /v1/users/{id}/profile", h.handleGetUserProfile)
 	mux.HandleFunc("GET /v1/users/{id}/connections", h.handleGetUserConnections)
 	mux.HandleFunc("GET /v1/users/{id}/followers", h.handleGetUserFollowers)
 	mux.HandleFunc("GET /v1/users/{id}/following", h.handleGetUserFollowing)
 	mux.HandleFunc("POST /v1/users/{id}/block", h.handleBlockUser)
 	mux.HandleFunc("POST /v1/users/{id}/unblock", h.handleUnblockUser)
+	mux.HandleFunc("POST /v1/users/{id}/mute", h.handleMuteUser)
+	mux.HandleFunc("POST /v1/users/{id}/unmute", h.handleUnmuteUser)
 	mux.HandleFunc("POST /v1/users/{id}/report", h.handleReportUser)
 	mux.HandleFunc("GET /v1/contacts", h.handleListContacts)
 	mux.HandleFunc("POST /v1/contacts/follow", h.handleFollowContact)
@@ -317,6 +368,43 @@ func (h *Handler) handleRequestOtp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	now := time.Now().UTC()
+	h.mu.Lock()
+	if h.isDeviceBlockedLocked(ctx.AccountHash, ctx.DeviceFingerprint, now) {
+		h.mu.Unlock()
+		h.audit.Record(ctx.AccountHash, "otp_request_blocked_device", ctx.DeviceFingerprint, ctx.IPFingerprint, nil)
+		sanitizer.WriteSanitizedError(w, http.StatusForbidden, "device_request_denied", nil, "This sign-in attempt was denied from your trusted device. Try another way to verify.")
+		return
+	}
+	userID, emailExists := h.resolveCanonicalUserByEmailLocked(email)
+	var targetDev *TrustedDeviceRecord
+	if emailExists && !h.isDeviceTrustedForUserLocked(userID, ctx.DeviceFingerprint) {
+		targetDev = h.pickOtherTrustedDeviceLocked(userID, ctx.DeviceFingerprint)
+	}
+	if emailExists && targetDev != nil {
+		approvalReq, pollToken := h.initiateCrossDeviceApprovalLocked(userID, ctx.AccountHash, email, ctx.DeviceFingerprint, targetDev, r)
+		h.mu.Unlock()
+
+		h.audit.Record(userID, "device_login_approval_requested", ctx.DeviceFingerprint, ctx.IPFingerprint, map[string]string{
+			"request_id":  approvalReq.RequestID,
+			"target_name": approvalReq.TargetDeviceName,
+		})
+		writeJSON(w, http.StatusOK, RequestOtpResponse{
+			Success:                true,
+			CooldownSeconds:        0,
+			RequiresDeviceApproval: true,
+			RequestID:              approvalReq.RequestID,
+			PollToken:              pollToken,
+			TargetDeviceName:       approvalReq.TargetDeviceName,
+			TargetLocation:         approvalReq.TargetLocation,
+			RequestTimeMs:          approvalReq.CreatedAt.UnixMilli(),
+			ExpiresInSeconds:       int64(loginApprovalTTL.Seconds()),
+			TryAnotherWayProvider:  "google",
+		})
+		return
+	}
+	h.mu.Unlock()
+
 	if h.mailer == nil || !h.mailer.IsConfigured() {
 		sanitizer.WriteSanitizedError(w, http.StatusServiceUnavailable, "mailer_not_configured", errors.New("RESEND_API_KEY missing"), sanitizer.GenericErrorMessage)
 		return
@@ -364,6 +452,14 @@ func (h *Handler) handleVerifyOtp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.mu.Lock()
+	blocked := h.isDeviceBlockedLocked(ctx.AccountHash, ctx.DeviceFingerprint, time.Now().UTC())
+	h.mu.Unlock()
+	if blocked {
+		sanitizer.WriteSanitizedError(w, http.StatusForbidden, "device_request_denied", nil, "This sign-in attempt was denied from your trusted device.")
+		return
+	}
+
 	if !h.limiter.CheckVerifyAttempt(ctx.AccountHash, ctx.DeviceFingerprint, ctx.IPFingerprint) {
 		h.audit.Record(ctx.AccountHash, "otp_verify_rate_limited", ctx.DeviceFingerprint, ctx.IPFingerprint, nil)
 		sanitizer.WriteSanitizedError(w, http.StatusTooManyRequests, "verify_rate_limited", nil, sanitizer.TryLaterMessage)
@@ -377,8 +473,13 @@ func (h *Handler) handleVerifyOtp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.mu.Lock()
+	userID, _ := h.resolveCanonicalUserByEmailLocked(verifiedEmail)
+	h.recordTrustedDeviceAndEmailLocked(userID, verifiedEmail, ctx.DeviceFingerprint, r)
+	h.mu.Unlock()
+
 	h.limiter.ResetAccountCooldown(ctx.AccountHash, ctx.DeviceFingerprint)
-	h.issueAuthResponse(w, ctx.AccountHash, verifiedEmail, ctx.DeviceFingerprint, ctx.IPFingerprint)
+	h.issueAuthResponseWithRequest(w, r, userID, verifiedEmail, "", ctx.DeviceFingerprint, ctx.IPFingerprint)
 }
 
 func (h *Handler) handleVerifyLink(w http.ResponseWriter, r *http.Request) {
@@ -402,8 +503,18 @@ func (h *Handler) handleVerifyLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.mu.Lock()
+	if h.isDeviceBlockedLocked(accountHash, deviceFP, time.Now().UTC()) {
+		h.mu.Unlock()
+		sanitizer.WriteSanitizedError(w, http.StatusForbidden, "device_request_denied", nil, "This sign-in attempt was denied from your trusted device.")
+		return
+	}
+	userID, _ := h.resolveCanonicalUserByEmailLocked(verifiedEmail)
+	h.recordTrustedDeviceAndEmailLocked(userID, verifiedEmail, deviceFP, r)
+	h.mu.Unlock()
+
 	h.limiter.ResetAccountCooldown(accountHash, deviceFP)
-	h.issueAuthResponse(w, accountHash, verifiedEmail, deviceFP, ipFP)
+	h.issueAuthResponseWithRequest(w, r, userID, verifiedEmail, "", deviceFP, ipFP)
 }
 
 func (h *Handler) handleRefreshToken(w http.ResponseWriter, r *http.Request) {
@@ -464,8 +575,50 @@ func (h *Handler) handleExternalOAuth(w http.ResponseWriter, r *http.Request, ex
 		return
 	}
 	ipFP := h.fp.ExtractIPFingerprint(r)
-	userID := h.fp.HashAccount(expectedProvider + ":" + req.IdentityToken[:min(16, len(req.IdentityToken))])
-	h.issueAuthResponse(w, userID, "", deviceFP, ipFP)
+
+	verifiedEmail, verifiedName, verErr := verifyOAuthIdentity(expectedProvider, req.IdentityToken)
+	if verErr != nil {
+		h.audit.Record("", "oauth_verification_failed", deviceFP, ipFP, map[string]string{"provider": expectedProvider})
+		sanitizer.WriteSanitizedError(w, http.StatusUnauthorized, "oauth_verification_failed", verErr, "Account verification failed.")
+		return
+	}
+
+	cleanExpectedEmail := strings.ToLower(strings.TrimSpace(req.ExpectedEmail))
+	if cleanExpectedEmail != "" && (verifiedEmail == "" || !strings.EqualFold(verifiedEmail, cleanExpectedEmail)) {
+		h.audit.Record(h.fp.HashAccount(cleanExpectedEmail), "oauth_email_mismatch", deviceFP, ipFP, nil)
+		sanitizer.WriteSanitizedError(w, http.StatusForbidden, "oauth_email_mismatch", nil, "Please sign in with the Google account matching your Telefam email.")
+		return
+	}
+
+	var userID string
+	h.mu.Lock()
+	if verifiedEmail != "" {
+		userID, _ = h.resolveCanonicalUserByEmailLocked(verifiedEmail)
+		acctHash := h.fp.HashAccount(verifiedEmail)
+		delete(h.deviceBlocks, acctHash+":"+deviceFP)
+		h.limiter.ResetAccountCooldown(acctHash, deviceFP)
+	} else {
+		userID = h.fp.HashAccount(expectedProvider + ":" + req.IdentityToken[:min(16, len(req.IdentityToken))])
+	}
+
+	if reqID := security.SanitizeText(req.ApprovalRequestID, 80, false); reqID != "" {
+		if reqItem, ok := h.loginRequests[reqID]; ok {
+			if reqItem.RequestingDeviceFP != deviceFP || (reqItem.Email != "" && !strings.EqualFold(reqItem.Email, verifiedEmail)) {
+				h.mu.Unlock()
+				sanitizer.WriteSanitizedError(w, http.StatusForbidden, "oauth_approval_mismatch", nil, "Signed-in account does not match this verification request.")
+				return
+			}
+			reqItem.Status = "consumed"
+			reqItem.RespondedAt = time.Now().UTC()
+			reqItem.RespondedByDeviceFP = deviceFP
+			delete(h.deviceBlocks, reqItem.AccountHash+":"+deviceFP)
+		}
+	}
+
+	h.recordTrustedDeviceAndEmailLocked(userID, verifiedEmail, deviceFP, r)
+	h.mu.Unlock()
+
+	h.issueAuthResponseWithRequest(w, r, userID, verifiedEmail, verifiedName, deviceFP, ipFP)
 }
 
 func (h *Handler) handleAvatarUpload(w http.ResponseWriter, r *http.Request) {
@@ -573,6 +726,10 @@ func (h *Handler) handleProfileSetup(w http.ResponseWriter, r *http.Request) {
 		delete(h.usernames, prev.Username)
 	}
 	h.usernames[username] = claims.UserID
+	if authCountry, _ := h.resolveAuthoritativeCountryForProfileLocked(claims.UserID, countryISO, r); authCountry != "" {
+		countryISO = authCountry
+	}
+	h.recordTrustedDeviceAndEmailLocked(claims.UserID, claims.Email, deviceFP, r)
 	h.profiles[claims.UserID] = storedProfile{
 		UserID:              claims.UserID,
 		FullName:            fullName,
@@ -925,6 +1082,12 @@ func (h *Handler) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	h.usernames[username] = claims.UserID
 
+	if !hasPrev && countryISO == "" {
+		countryISO = "KE"
+	}
+	if authCountry, _ := h.resolveAuthoritativeCountryForProfileLocked(claims.UserID, countryISO, r); authCountry != "" {
+		countryISO = authCountry
+	}
 	updated := storedProfile{
 		UserID:              claims.UserID,
 		FullName:            fullName,
@@ -937,9 +1100,6 @@ func (h *Handler) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
 		Bio:                 bio,
 		AvatarMediaID:       avatarID,
 		UsernameChangedAtMs: usernameChangedAt,
-	}
-	if !hasPrev && updated.CountryISO == "" {
-		updated.CountryISO = "KE"
 	}
 	h.profiles[claims.UserID] = updated
 	h.mu.Unlock()
@@ -1005,6 +1165,13 @@ type UserProfileResponse struct {
 	FollowsYou           bool                    `json:"follows_you"`
 	IsOwner              bool                    `json:"is_owner"`
 	IsBlocked            bool                    `json:"is_blocked"`
+	IsMuted              bool                    `json:"is_muted"`
+	IsPrivateAccount     bool                    `json:"is_private_account"`
+	WhoCanComment        string                  `json:"who_can_comment"`
+	WhoCanMention        string                  `json:"who_can_mention"`
+	LikesVisibility      string                  `json:"likes_visibility"`
+	FollowingVisibility  string                  `json:"following_visibility"`
+	ShowActivityStatus   bool                    `json:"show_activity_status"`
 	RiskScore            float64                 `json:"risk_score"`
 	RelationshipState    string                  `json:"relationship_state"`
 	Videos               []UserProfileVideoItem  `json:"videos"`
@@ -1066,11 +1233,15 @@ func (h *Handler) handleGetUserProfile(w http.ResponseWriter, r *http.Request) {
 		avatarURL = "/v1/media/avatar/" + u.AvatarMediaID
 	}
 
+	isMuted := !isOwner && h.feeds.IsMuted(claims.UserID, targetID)
+
 	var sp storedProfile
 	var bgItems []ProfileBackgroundItem
+	var targetPrivacy PrivacySettingsDTO
 	h.mu.Lock()
 	sp = h.profiles[targetID]
 	bgItems = append([]ProfileBackgroundItem(nil), h.backgrounds[targetID]...)
+	targetPrivacy = h.getUserPrivacyLocked(targetID)
 	h.mu.Unlock()
 
 	bgURLs := make([]string, 0, len(bgItems))
@@ -1088,6 +1259,12 @@ func (h *Handler) handleGetUserProfile(w http.ResponseWriter, r *http.Request) {
 		FollowsYou:  followsYou,
 	}
 	feedItems, lockedItems, likesCount := h.feeds.BuildAuthorFeedItems(claims.UserID, authorPosts, authorSummary)
+	if !isOwner && targetPrivacy.IsPrivateAccount && !isFollowing {
+		feedItems = []feeds.FeedItem{}
+	}
+	if !isOwner && (targetPrivacy.LikesVisibility == "only_me" || (targetPrivacy.LikesVisibility == "friends" && !(isFollowing && followsYou))) {
+		likesCount = 0
+	}
 
 	var savedItems []feeds.FeedItem
 	var repostedItems []feeds.FeedItem
@@ -1140,6 +1317,13 @@ func (h *Handler) handleGetUserProfile(w http.ResponseWriter, r *http.Request) {
 		FollowsYou:           followsYou,
 		IsOwner:              isOwner,
 		IsBlocked:            isBlocked,
+		IsMuted:              isMuted,
+		IsPrivateAccount:     targetPrivacy.IsPrivateAccount,
+		WhoCanComment:        targetPrivacy.WhoCanComment,
+		WhoCanMention:        targetPrivacy.WhoCanMention,
+		LikesVisibility:      targetPrivacy.LikesVisibility,
+		FollowingVisibility:  targetPrivacy.FollowingVisibility,
+		ShowActivityStatus:   targetPrivacy.ShowActivityStatus,
 		RiskScore:            h.contacts.GetRiskScore(targetID),
 		RelationshipState:    string(contacts.ComputeRelationship(isFollowing, followsYou)),
 		Videos:               videoItems,
@@ -1184,6 +1368,20 @@ func (h *Handler) writeUserConnectionsResponse(w http.ResponseWriter, r *http.Re
 	if targetID == "" {
 		sanitizer.WriteSanitizedError(w, http.StatusBadRequest, "invalid_user_id", nil, sanitizer.GenericErrorMessage)
 		return
+	}
+	if targetID != claims.UserID {
+		h.mu.Lock()
+		targetPrivacy := h.getUserPrivacyLocked(targetID)
+		h.mu.Unlock()
+		_, _, isFollowing, followsYou := h.contacts.GetUserRelationshipForViewer(claims.UserID, targetID)
+		if targetPrivacy.IsPrivateAccount && !isFollowing {
+			writeJSON(w, http.StatusOK, contacts.ConnectionsPageResponse{Success: true, Page: 1, HasMore: false})
+			return
+		}
+		if !isFollowers && (targetPrivacy.FollowingVisibility == "only_me" || (targetPrivacy.FollowingVisibility == "friends" && !(isFollowing && followsYou))) {
+			writeJSON(w, http.StatusOK, contacts.ConnectionsPageResponse{Success: true, Page: 1, HasMore: false})
+			return
+		}
 	}
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 	pageSize, _ := strconv.Atoi(r.URL.Query().Get("page_size"))
@@ -1874,14 +2072,36 @@ func (h *Handler) handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (h *Handler) issueAuthResponse(w http.ResponseWriter, userID, email, deviceFP, ipFP string) {
+	h.issueAuthResponseWithRequest(w, nil, userID, email, "", deviceFP, ipFP)
+}
+
+func (h *Handler) issueAuthResponseWithRequest(w http.ResponseWriter, r *http.Request, userID, email, preferredName, deviceFP, ipFP string) {
 	pair, _, err := h.tokens.IssueInitialPair(userID, email, deviceFP)
 	if err != nil {
 		sanitizer.WriteSanitizedError(w, http.StatusInternalServerError, "issue_tokens", err, sanitizer.GenericErrorMessage)
 		return
 	}
 	fullName, username := security.AutofillFromEmail(email)
+	if strings.TrimSpace(preferredName) != "" {
+		fullName = security.SanitizeText(preferredName, 64, false)
+	}
 	h.mu.Lock()
-	_, profileDone := h.profiles[userID]
+	h.recordTrustedDeviceAndEmailLocked(userID, email, deviceFP, r)
+	storedProf, profileDone := h.profiles[userID]
+	if profileDone {
+		if storedProf.FullName != "" {
+			fullName = storedProf.FullName
+		}
+		if storedProf.Username != "" {
+			username = storedProf.Username
+		}
+	}
+	if r != nil {
+		if authCountry, _ := h.resolveAuthoritativeCountryForProfileLocked(userID, storedProf.CountryISO, r); authCountry != "" && profileDone && storedProf.CountryISO != authCountry {
+			storedProf.CountryISO = authCountry
+			h.profiles[userID] = storedProf
+		}
+	}
 	h.mu.Unlock()
 
 	h.audit.Record(userID, "auth_session_issued", deviceFP, ipFP, nil)

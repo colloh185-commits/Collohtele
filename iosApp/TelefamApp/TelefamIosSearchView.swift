@@ -6,6 +6,7 @@ struct TelefamIosSearchView: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var store: TelefamIosFeedStore
     @ObservedObject var contactsStore: TelefamContactsStore
+    @ObservedObject var settingsStore: TelefamIosSettingsStore
 
     var onEditOwnerPost: (TelefamIosFeedItem) -> Void
     var onTapHashtag: (String, TelefamIosPostMode) -> Void
@@ -15,13 +16,40 @@ struct TelefamIosSearchView: View {
 
     @State private var viewerIndex: Int? = nil
 
+    private var visibleResults: [TelefamIosFeedItem] {
+        let mutedIds = Set(settingsStore.mutedAccounts.map(\.userId))
+        let blockedIds = Set(settingsStore.blockedAccounts.map(\.userId))
+        let hiddenTopics = Set(
+            settingsStore.bundle.contentPreferences.notInterestedTopics
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+                .filter { !$0.isEmpty }
+        )
+        return store.searchResults.filter { item in
+            if !item.isOwner && (mutedIds.contains(item.authorUserId) || blockedIds.contains(item.authorUserId)) {
+                return false
+            }
+            if !hiddenTopics.isEmpty {
+                let captionLower = item.caption.lowercased()
+                let textLower = item.textContent.lowercased()
+                let tagsLower = item.hashtags.map { $0.lowercased() }
+                for topic in hiddenTopics {
+                    if captionLower.contains(topic) || textLower.contains(topic) || tagsLower.contains(where: { $0.contains(topic) }) {
+                        return false
+                    }
+                }
+            }
+            return true
+        }
+    }
+
     var body: some View {
         ZStack {
             if let startIdx = viewerIndex {
                 TelefamIosFeedView(
                     store: store,
                     contactsStore: contactsStore,
-                    items: store.searchResults,
+                    settingsStore: settingsStore,
+                    items: visibleResults,
                     initialIndex: startIdx,
                     isStandaloneViewer: true,
                     bottomChromePadding: 0,
@@ -118,23 +146,27 @@ struct TelefamIosSearchView: View {
 
                 Divider().background(TelefamPalette.border(colorScheme))
 
-                if store.isSearching && store.searchResults.isEmpty {
+                if store.isSearching && visibleResults.isEmpty {
                     Spacer()
                     TelefamIosTricolorSpinner(size: 40)
                     Spacer()
-                } else if store.searchResults.isEmpty {
+                } else if visibleResults.isEmpty {
                     Spacer()
                     Text("No videos found")
                         .font(.system(size: 15, weight: .medium))
                         .foregroundColor(TelefamPalette.textMuted(colorScheme))
                     Spacer()
                 } else {
+                    let prefs = settingsStore.bundle.contentPreferences
                     ScrollView {
                         LazyVGrid(columns: gridItems, spacing: 10) {
-                            ForEach(Array(store.searchResults.enumerated()), id: \.element.postId) { idx, item in
+                            ForEach(Array(visibleResults.enumerated()), id: \.element.postId) { idx, item in
                                 TelefamIosSearchVideoCard(
                                     store: store,
                                     item: item,
+                                    autoplayEnabled: prefs.autoplayVideos,
+                                    videoQuality: prefs.videoQuality,
+                                    dataSaver: prefs.dataSaver,
                                     onTap: { viewerIndex = idx },
                                     onOpenAuthorProfile: {
                                         if !item.authorUserId.isEmpty {
@@ -170,6 +202,9 @@ struct TelefamIosSearchView: View {
 private struct TelefamIosSearchVideoCard: View {
     @ObservedObject var store: TelefamIosFeedStore
     let item: TelefamIosFeedItem
+    let autoplayEnabled: Bool
+    let videoQuality: String
+    let dataSaver: Bool
     let onTap: () -> Void
     var onOpenAuthorProfile: () -> Void = {}
     @State private var mutedPlayer: AVPlayer? = nil
@@ -252,10 +287,11 @@ private struct TelefamIosSearchVideoCard: View {
         }
         .buttonStyle(.plain)
         .onAppear {
-            guard item.mode == "video", let url = store.selectRenditionURL(for: item) else { return }
+            guard autoplayEnabled, item.mode == "video",
+                  let url = store.selectRenditionURL(for: item, qualityPreference: videoQuality, dataSaver: dataSaver) else { return }
             let asset = store.makeAuthorizedAsset(for: url)
             let pItem = AVPlayerItem(asset: asset)
-            pItem.preferredForwardBufferDuration = 4
+            pItem.preferredForwardBufferDuration = dataSaver ? 2 : 4
             let p = AVPlayer(playerItem: pItem)
             p.isMuted = true
             p.play()

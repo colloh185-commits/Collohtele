@@ -89,11 +89,133 @@ struct TelefamIosUserProfile: Codable, Equatable {
     var followsYou: Bool
     var isOwner: Bool
     var isBlocked: Bool
+    var isMuted: Bool = false
+    var isPrivateRestricted: Bool = false
+    var whoCanComment: String = "everyone"
+    var whoCanMention: String = "everyone"
+    var likesVisibility: String = "everyone"
+    var followingVisibility: String = "everyone"
+    var showActivityStatus: Bool = true
     var riskScore: Double
     var posts: [TelefamIosFeedItem]
     var savedPosts: [TelefamIosFeedItem]
     var repostedPosts: [TelefamIosFeedItem]
     var lockedPosts: [TelefamIosFeedItem]
+
+    enum CodingKeys: String, CodingKey {
+        case userId, fullName, username, avatarUrl, bio, location, countryIso, gender, dateOfBirth, phoneNumber
+        case usernameChangedAtMs, nextUsernameChangeMs, backgroundUrls, backgrounds
+        case followingCount, followersCount, likesCount, isFollowing, followsYou, isOwner, isBlocked
+        case isMuted, isPrivateRestricted, whoCanComment, whoCanMention, likesVisibility, followingVisibility, showActivityStatus
+        case riskScore, posts, savedPosts, repostedPosts, lockedPosts
+    }
+
+    init(
+        userId: String,
+        fullName: String,
+        username: String,
+        avatarUrl: String,
+        bio: String,
+        location: String,
+        countryIso: String,
+        gender: String,
+        dateOfBirth: String,
+        phoneNumber: String,
+        usernameChangedAtMs: Int64,
+        nextUsernameChangeMs: Int64,
+        backgroundUrls: [String],
+        backgrounds: [TelefamIosProfileBackgroundItem],
+        followingCount: Int64,
+        followersCount: Int64,
+        likesCount: Int64,
+        isFollowing: Bool,
+        followsYou: Bool,
+        isOwner: Bool,
+        isBlocked: Bool,
+        isMuted: Bool = false,
+        isPrivateRestricted: Bool = false,
+        whoCanComment: String = "everyone",
+        whoCanMention: String = "everyone",
+        likesVisibility: String = "everyone",
+        followingVisibility: String = "everyone",
+        showActivityStatus: Bool = true,
+        riskScore: Double,
+        posts: [TelefamIosFeedItem],
+        savedPosts: [TelefamIosFeedItem],
+        repostedPosts: [TelefamIosFeedItem],
+        lockedPosts: [TelefamIosFeedItem]
+    ) {
+        self.userId = userId
+        self.fullName = fullName
+        self.username = username
+        self.avatarUrl = avatarUrl
+        self.bio = bio
+        self.location = location
+        self.countryIso = countryIso
+        self.gender = gender
+        self.dateOfBirth = dateOfBirth
+        self.phoneNumber = phoneNumber
+        self.usernameChangedAtMs = usernameChangedAtMs
+        self.nextUsernameChangeMs = nextUsernameChangeMs
+        self.backgroundUrls = backgroundUrls
+        self.backgrounds = backgrounds
+        self.followingCount = followingCount
+        self.followersCount = followersCount
+        self.likesCount = likesCount
+        self.isFollowing = isFollowing
+        self.followsYou = followsYou
+        self.isOwner = isOwner
+        self.isBlocked = isBlocked
+        self.isMuted = isMuted
+        self.isPrivateRestricted = isPrivateRestricted
+        self.whoCanComment = whoCanComment
+        self.whoCanMention = whoCanMention
+        self.likesVisibility = likesVisibility
+        self.followingVisibility = followingVisibility
+        self.showActivityStatus = showActivityStatus
+        self.riskScore = riskScore
+        self.posts = posts
+        self.savedPosts = savedPosts
+        self.repostedPosts = repostedPosts
+        self.lockedPosts = lockedPosts
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        userId = try c.decodeIfPresent(String.self, forKey: .userId) ?? ""
+        fullName = try c.decodeIfPresent(String.self, forKey: .fullName) ?? ""
+        username = try c.decodeIfPresent(String.self, forKey: .username) ?? ""
+        avatarUrl = try c.decodeIfPresent(String.self, forKey: .avatarUrl) ?? ""
+        bio = try c.decodeIfPresent(String.self, forKey: .bio) ?? ""
+        location = try c.decodeIfPresent(String.self, forKey: .location) ?? ""
+        countryIso = try c.decodeIfPresent(String.self, forKey: .countryIso) ?? ""
+        gender = try c.decodeIfPresent(String.self, forKey: .gender) ?? ""
+        dateOfBirth = try c.decodeIfPresent(String.self, forKey: .dateOfBirth) ?? ""
+        phoneNumber = try c.decodeIfPresent(String.self, forKey: .phoneNumber) ?? ""
+        usernameChangedAtMs = try c.decodeIfPresent(Int64.self, forKey: .usernameChangedAtMs) ?? 0
+        nextUsernameChangeMs = try c.decodeIfPresent(Int64.self, forKey: .nextUsernameChangeMs) ?? 0
+        backgroundUrls = try c.decodeIfPresent([String].self, forKey: .backgroundUrls) ?? []
+        backgrounds = try c.decodeIfPresent([TelefamIosProfileBackgroundItem].self, forKey: .backgrounds) ?? []
+        followingCount = try c.decodeIfPresent(Int64.self, forKey: .followingCount) ?? 0
+        followersCount = try c.decodeIfPresent(Int64.self, forKey: .followersCount) ?? 0
+        likesCount = try c.decodeIfPresent(Int64.self, forKey: .likesCount) ?? 0
+        isFollowing = try c.decodeIfPresent(Bool.self, forKey: .isFollowing) ?? false
+        followsYou = try c.decodeIfPresent(Bool.self, forKey: .followsYou) ?? false
+        isOwner = try c.decodeIfPresent(Bool.self, forKey: .isOwner) ?? false
+        isBlocked = try c.decodeIfPresent(Bool.self, forKey: .isBlocked) ?? false
+        isMuted = try c.decodeIfPresent(Bool.self, forKey: .isMuted) ?? false
+        isPrivateRestricted = try c.decodeIfPresent(Bool.self, forKey: .isPrivateRestricted) ?? false
+        whoCanComment = try c.decodeIfPresent(String.self, forKey: .whoCanComment) ?? "everyone"
+        whoCanMention = try c.decodeIfPresent(String.self, forKey: .whoCanMention) ?? "everyone"
+        likesVisibility = try c.decodeIfPresent(String.self, forKey: .likesVisibility) ?? "everyone"
+        followingVisibility = try c.decodeIfPresent(String.self, forKey: .followingVisibility) ?? "everyone"
+        showActivityStatus = try c.decodeIfPresent(Bool.self, forKey: .showActivityStatus) ?? true
+        riskScore = try c.decodeIfPresent(Double.self, forKey: .riskScore) ?? 0
+        posts = try c.decodeIfPresent([TelefamIosFeedItem].self, forKey: .posts) ?? []
+        savedPosts = try c.decodeIfPresent([TelefamIosFeedItem].self, forKey: .savedPosts) ?? []
+        repostedPosts = try c.decodeIfPresent([TelefamIosFeedItem].self, forKey: .repostedPosts) ?? []
+        lockedPosts = try c.decodeIfPresent([TelefamIosFeedItem].self, forKey: .lockedPosts) ?? []
+    }
 
     var relationship: TelefamRelationshipState {
         TelefamRelationshipState.compute(isFollowing: isFollowing, followsYou: followsYou)
@@ -118,6 +240,10 @@ struct TelefamIosUserProfile: Codable, Equatable {
             lhs.followsYou == rhs.followsYou &&
             lhs.isOwner == rhs.isOwner &&
             lhs.isBlocked == rhs.isBlocked &&
+            lhs.isMuted == rhs.isMuted &&
+            lhs.isPrivateRestricted == rhs.isPrivateRestricted &&
+            lhs.likesVisibility == rhs.likesVisibility &&
+            lhs.followingVisibility == rhs.followingVisibility &&
             lhs.posts.count == rhs.posts.count &&
             lhs.savedPosts.count == rhs.savedPosts.count &&
             lhs.repostedPosts.count == rhs.repostedPosts.count &&
@@ -188,6 +314,13 @@ private struct UserProfileAPIResponse: Codable {
     let followsYou: Bool?
     let isOwner: Bool?
     let isBlocked: Bool?
+    let isMuted: Bool?
+    let isPrivateRestricted: Bool?
+    let whoCanComment: String?
+    let whoCanMention: String?
+    let likesVisibility: String?
+    let followingVisibility: String?
+    let showActivityStatus: Bool?
     let riskScore: Double?
     let posts: [TelefamIosFeedItem]?
     let savedPosts: [TelefamIosFeedItem]?
@@ -217,6 +350,13 @@ private struct UserProfileAPIResponse: Codable {
         case followsYou = "follows_you"
         case isOwner = "is_owner"
         case isBlocked = "is_blocked"
+        case isMuted = "is_muted"
+        case isPrivateRestricted = "is_private_restricted"
+        case whoCanComment = "who_can_comment"
+        case whoCanMention = "who_can_mention"
+        case likesVisibility = "likes_visibility"
+        case followingVisibility = "following_visibility"
+        case showActivityStatus = "show_activity_status"
         case riskScore = "risk_score"
         case posts
         case savedPosts = "saved_posts"
@@ -411,6 +551,13 @@ final class TelefamIosProfileStore: ObservableObject {
                 followsYou: decoded.followsYou ?? false,
                 isOwner: decoded.isOwner ?? profile.isOwner,
                 isBlocked: decoded.isBlocked ?? false,
+                isMuted: decoded.isMuted ?? profile.isMuted,
+                isPrivateRestricted: decoded.isPrivateRestricted ?? false,
+                whoCanComment: decoded.whoCanComment ?? "everyone",
+                whoCanMention: decoded.whoCanMention ?? "everyone",
+                likesVisibility: decoded.likesVisibility ?? "everyone",
+                followingVisibility: decoded.followingVisibility ?? "everyone",
+                showActivityStatus: decoded.showActivityStatus ?? true,
                 riskScore: decoded.riskScore ?? 0,
                 posts: decoded.posts ?? [],
                 savedPosts: decoded.savedPosts ?? [],
@@ -607,6 +754,29 @@ final class TelefamIosProfileStore: ObservableObject {
         }
     }
 
+    func muteUser(settingsStore: TelefamIosSettingsStore) async {
+        let targetId = profile.userId
+        guard !targetId.isEmpty else { return }
+        profile.isMuted = true
+        persistProfileCache()
+        await settingsStore.muteAccount(
+            userId: targetId,
+            fullName: profile.fullName,
+            username: profile.username,
+            avatarUrl: profile.avatarUrl
+        )
+        showToast("Account muted")
+    }
+
+    func unmuteUser(settingsStore: TelefamIosSettingsStore) async {
+        let targetId = profile.userId
+        guard !targetId.isEmpty else { return }
+        profile.isMuted = false
+        persistProfileCache()
+        await settingsStore.unmuteAccount(userId: targetId)
+        showToast("Account unmuted")
+    }
+
     func reportUser(reason: String, details: String) async {
         let targetId = profile.userId
         guard !targetId.isEmpty else { return }
@@ -661,6 +831,7 @@ struct TelefamIosProfileView: View {
     @ObservedObject var sessionStore: TelefamIosSessionStore
     @ObservedObject var contactsStore: TelefamContactsStore
     @ObservedObject var feedStore: TelefamIosFeedStore
+    @ObservedObject var settingsStore: TelefamIosSettingsStore
     @StateObject private var profileStore: TelefamIosProfileStore
 
     let isEmbeddedOwnProfileTab: Bool
@@ -695,6 +866,7 @@ struct TelefamIosProfileView: View {
         sessionStore: TelefamIosSessionStore,
         contactsStore: TelefamContactsStore,
         feedStore: TelefamIosFeedStore,
+        settingsStore: TelefamIosSettingsStore,
         themeMode: Binding<TelefamThemeMode>,
         onBack: @escaping () -> Void,
         onOpenUserProfile: @escaping (String) -> Void,
@@ -707,6 +879,7 @@ struct TelefamIosProfileView: View {
         self.sessionStore = sessionStore
         self.contactsStore = contactsStore
         self.feedStore = feedStore
+        self.settingsStore = settingsStore
         self._themeMode = themeMode
         self.onBack = onBack
         self.onOpenUserProfile = onOpenUserProfile
@@ -869,6 +1042,7 @@ struct TelefamIosProfileView: View {
                                 VStack(spacing: 8) {
                                     let emptyTitle: String = {
                                         if p.isBlocked { return "Blocked account" }
+                                        if !p.isOwner && p.isPrivateRestricted { return "Private account" }
                                         if !p.isOwner { return "No posts yet" }
                                         switch activeOwnerTab {
                                         case .posts: return "No posts yet"
@@ -879,6 +1053,7 @@ struct TelefamIosProfileView: View {
                                     }()
                                     let emptyBody: String = {
                                         if p.isBlocked { return "Unblock this account to view their posts." }
+                                        if !p.isOwner && p.isPrivateRestricted { return "Follow this account to see their posts." }
                                         if !p.isOwner { return "Published photos, text cards, and videos appear here." }
                                         switch activeOwnerTab {
                                         case .posts: return "Published photos, text cards, and videos appear here."
@@ -999,12 +1174,16 @@ struct TelefamIosProfileView: View {
             }
             .preferredColorScheme(themeMode.preferredColorScheme)
         }
-        .sheet(isPresented: $showSettingsSheet) {
-            OwnerProfileSettingsSheet(
+        .fullScreenCover(isPresented: $showSettingsSheet) {
+            TelefamIosSettingsView(
                 sessionStore: sessionStore,
+                settingsStore: settingsStore,
                 themeMode: $themeMode,
-                username: p.username,
-                email: sessionStore.email
+                displayName: p.fullName.isEmpty ? sessionStore.fullName : p.fullName,
+                username: p.username.isEmpty ? sessionStore.username : p.username,
+                avatarUrl: p.avatarUrl,
+                authorizedAvatarUrl: feedStore.authorizedURLString(p.avatarUrl),
+                profileShareUrl: profileStore.shareProfileURL().absoluteString
             )
             .preferredColorScheme(themeMode.preferredColorScheme)
         }
@@ -1029,6 +1208,7 @@ struct TelefamIosProfileView: View {
                 TelefamIosFeedView(
                     store: feedStore,
                     contactsStore: contactsStore,
+                    settingsStore: settingsStore,
                     items: vPosts,
                     initialIndex: viewerStartIndex,
                     isStandaloneViewer: true,
@@ -1051,9 +1231,7 @@ struct TelefamIosProfileView: View {
                     },
                     onOpenAuthorProfile: { uid in
                         viewerPosts = nil
-                        if uid != profileStore.profile.userId {
-                            onOpenUserProfile(uid)
-                        }
+                        onOpenUserProfile(uid)
                     }
                 )
                 .preferredColorScheme(themeMode.preferredColorScheme)
@@ -1062,8 +1240,12 @@ struct TelefamIosProfileView: View {
         .onReceive(heroCycleTimer) { _ in
             let count = profileStore.profile.backgrounds.count
             if count > 1 {
-                withAnimation(.easeInOut(duration: 0.7)) {
+                if settingsStore.bundle.contentPreferences.reducedMotion {
                     heroIndex = (heroIndex + 1) % count
+                } else {
+                    withAnimation(.easeInOut(duration: 0.7)) {
+                        heroIndex = (heroIndex + 1) % count
+                    }
                 }
             } else {
                 heroIndex = 0
@@ -1120,6 +1302,11 @@ struct TelefamIosProfileView: View {
                         sessionStore.signOut()
                     }
                 } else {
+                    if profile.isMuted {
+                        Button("Unmute") { Task { await profileStore.unmuteUser(settingsStore: settingsStore) } }
+                    } else {
+                        Button("Mute") { Task { await profileStore.muteUser(settingsStore: settingsStore) } }
+                    }
                     if profile.isBlocked {
                         Button("Unblock") { Task { await profileStore.unblockUser() } }
                     } else {
@@ -1255,6 +1442,11 @@ struct TelefamIosProfileView: View {
                                             profileStore.showToast("Link copied")
                                         }
                                         Button("Invite friends") { presentInviteShare() }
+                                        if profile.isMuted {
+                                            Button("Unmute") { Task { await profileStore.unmuteUser(settingsStore: settingsStore) } }
+                                        } else {
+                                            Button("Mute") { Task { await profileStore.muteUser(settingsStore: settingsStore) } }
+                                        }
                                         if profile.isBlocked {
                                             Button("Unblock") { Task { await profileStore.unblockUser() } }
                                         } else {
@@ -1326,8 +1518,12 @@ struct TelefamIosProfileView: View {
                     count: formatTelefamProfileMetricCount(profile.followingCount),
                     label: "Following"
                 ) {
-                    showConnectionsSheet = true
-                    Task { await profileStore.openConnections(isFollowers: false) }
+                    if !profile.isOwner && profile.followingVisibility.lowercased() == "only_me" {
+                        profileStore.showToast("Following list is private")
+                    } else {
+                        showConnectionsSheet = true
+                        Task { await profileStore.openConnections(isFollowers: false) }
+                    }
                 }
 
                 Rectangle()
@@ -2128,111 +2324,6 @@ private struct FriendsPrivacySvgIcon: View {
             a2.move(to: CGPoint(x: w * 0.62, y: h * 0.60))
             a2.addQuadCurve(to: CGPoint(x: w * 0.88, y: h * 0.82), control: CGPoint(x: w * 0.78, y: h * 0.58))
             ctx.stroke(a2, with: .color(color), style: stroke)
-        }
-    }
-}
-
-// MARK: - Owner Settings Modal (Log out STRICTLY FIRST)
-
-private struct OwnerProfileSettingsSheet: View {
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.dismiss) private var dismiss
-
-    @ObservedObject var sessionStore: TelefamIosSessionStore
-    @Binding var themeMode: TelefamThemeMode
-    let username: String
-    let email: String
-
-    private var accentCrimson: Color {
-        colorScheme == .dark ? TelefamPalette.crimsonBright : TelefamPalette.crimson
-    }
-
-    var body: some View {
-        NavigationStack {
-            VStack(spacing: 16) {
-                // 1. Log out MUST appear FIRST in Settings
-                Button {
-                    dismiss()
-                    sessionStore.signOut()
-                } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: "rectangle.portrait.and.arrow.right")
-                            .font(.system(size: 16, weight: .bold))
-                        Text("Log out")
-                            .font(.system(size: 15, weight: .bold))
-                    }
-                    .foregroundColor(.white)
-                    .frame(maxWidth: .infinity, minHeight: 50)
-                    .background(accentCrimson)
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
-                }
-
-                Divider().background(TelefamPalette.border(colorScheme))
-
-                // 2. Theme Toggle Row
-                Button {
-                    themeMode = themeMode.next
-                } label: {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Appearance")
-                                .font(.system(size: 15, weight: .semibold))
-                                .foregroundColor(TelefamPalette.textPrimary(colorScheme))
-                            Text(themeMode.label)
-                                .font(.system(size: 12.5))
-                                .foregroundColor(TelefamPalette.textMuted(colorScheme))
-                        }
-                        Spacer()
-                        Text("Switch theme")
-                            .font(.system(size: 12.5, weight: .bold))
-                            .foregroundColor(accentCrimson)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .background(accentCrimson.opacity(0.14))
-                            .clipShape(RoundedRectangle(cornerRadius: 10))
-                    }
-                    .padding(14)
-                    .background(TelefamPalette.surface(colorScheme))
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
-                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(TelefamPalette.border(colorScheme), lineWidth: 1))
-                }
-                .buttonStyle(.plain)
-
-                // 3. Account Details
-                if !username.isEmpty || !email.isEmpty {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Account")
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundColor(TelefamPalette.textMuted(colorScheme))
-                        if !username.isEmpty {
-                            Text("@\(username)")
-                                .font(.system(size: 14.5, weight: .semibold))
-                                .foregroundColor(TelefamPalette.textPrimary(colorScheme))
-                        }
-                        if !email.isEmpty {
-                            Text(email)
-                                .font(.system(size: 13))
-                                .foregroundColor(TelefamPalette.textMuted(colorScheme))
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(14)
-                    .background(TelefamPalette.surface(colorScheme))
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
-                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(TelefamPalette.border(colorScheme), lineWidth: 1))
-                }
-
-                Spacer()
-            }
-            .padding(20)
-            .background(TelefamPalette.background(colorScheme).ignoresSafeArea())
-            .navigationTitle("Settings")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") { dismiss() }
-                }
-            }
         }
     }
 }

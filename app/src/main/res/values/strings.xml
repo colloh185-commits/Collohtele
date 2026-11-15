@@ -236,4 +236,44 @@
     <string name="feed_privacy_public">Public</string>
     <string name="feed_privacy_friends">Friends</string>
     <string name="feed_privacy_private">Private</string>
+    <string name="feed_action_mute_user">Mute account</string>
+    <string name="profile_action_mute">Mute</string>
+    <string name="profile_action_unmute">Unmute</string>
+    <string name="profile_private_account_title">This account is private</string>
+    <string name="profile_private_account_subtitle">Follow this account to see their posts.</string>
+    <string name="profile_following_private_toast">Following list is private</string>
+
+    <!-- Settings and Privacy Hub & Subscreens -->
+    <string name="settings_privacy_title">Settings and privacy</string>
+    <string name="settings_search_hint">Search settings</string>
+    <string name="settings_section_account">Account</string>
+    <string name="settings_section_content_activity">Content &amp; activity</string>
+    <string name="settings_section_privacy_safety">Privacy and safety</string>
+    <string name="settings_section_support_about">Support &amp; about</string>
+    <string name="settings_item_account_privacy">Privacy</string>
+    <string name="settings_item_account_privacy_sub">Private account, activity, discovery</string>
+    <string name="settings_item_share_profile">Share profile</string>
+    <string name="settings_item_share_profile_sub">QR code, link, copy profile URL</string>
+    <string name="settings_item_notifications">Notifications</string>
+    <string name="settings_item_notifications_sub">Push, email, SMS</string>
+    <string name="settings_item_content_prefs">Content preferences</string>
+    <string name="settings_item_content_prefs_sub">Suggested content, language, video quality</string>
+    <string name="settings_item_safety_privacy">Privacy</string>
+    <string name="settings_item_safety_privacy_sub">Who can comment, mention, see likes, following</string>
+    <string name="settings_item_blocked_accounts">Blocked accounts</string>
+    <string name="settings_item_blocked_accounts_sub">Manage blocked and muted users</string>
+    <string name="settings_item_report_problem">Report a problem</string>
+    <string name="settings_item_report_problem_sub">Send feedback, report abuse</string>
+    <string name="settings_item_safety_center">Safety Center</string>
+    <string name="settings_item_safety_center_sub">Tips, tools, resources</string>
+    <string name="settings_item_help_support">Help &amp; support</string>
+    <string name="settings_item_help_support_sub">FAQs, tickets, system status</string>
+    <string name="settings_item_terms_policies">Terms and policies</string>
+    <string name="settings_item_terms_policies_sub">Terms of Service, Privacy Policy, Community Guidelines</string>
+    <string name="settings_item_about">About</string>
+    <string name="settings_item_about_sub">Version, copyright, open source</string>
+    <string name="settings_logout">Log out</string>
+    <string name="settings_logout_dialog_title">Log out of this device?</string>
+    <string name="settings_logout_all_devices">Log out of all devices</string>
+    <string name="settings_cancel">Cancel</string>
 </resources>

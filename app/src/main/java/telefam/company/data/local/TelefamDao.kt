@@ -259,5 +259,53 @@ interface TelefamDao {
 
   @Query("UPDATE cached_user_connections SET isFollowing = :isFollowing, relationshipState = :relationshipState WHERE targetUserId = :targetUserId")
   suspend fun updateCachedUserConnectionFollow(targetUserId: String, isFollowing: Boolean, relationshipState: String)
-}
 
+  // Settings, Blocked & Muted Accounts, Support Tickets & Offline Settings Sync Outbox
+  @Query("SELECT * FROM cached_settings WHERE userId = :userId LIMIT 1")
+  suspend fun getCachedSettings(userId: String): CachedSettingsEntity?
+
+  @Query("SELECT * FROM cached_settings WHERE userId = :userId LIMIT 1")
+  fun observeCachedSettings(userId: String): Flow<CachedSettingsEntity?>
+
+  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  suspend fun upsertCachedSettings(entity: CachedSettingsEntity)
+
+  @Query("SELECT * FROM cached_restricted_accounts WHERE ownerUserId = :ownerUserId AND kind = :kind ORDER BY createdAtMs DESC")
+  suspend fun getRestrictedAccounts(ownerUserId: String, kind: String): List<CachedRestrictedAccountEntity>
+
+  @Query("SELECT targetUserId FROM cached_restricted_accounts WHERE ownerUserId = :ownerUserId AND kind = :kind")
+  suspend fun getRestrictedAccountIds(ownerUserId: String, kind: String): List<String>
+
+  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  suspend fun upsertRestrictedAccount(account: CachedRestrictedAccountEntity)
+
+  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  suspend fun upsertRestrictedAccounts(accounts: List<CachedRestrictedAccountEntity>)
+
+  @Query("DELETE FROM cached_restricted_accounts WHERE ownerUserId = :ownerUserId AND kind = :kind AND targetUserId = :targetUserId")
+  suspend fun deleteRestrictedAccount(ownerUserId: String, kind: String, targetUserId: String)
+
+  @Query("DELETE FROM cached_restricted_accounts WHERE ownerUserId = :ownerUserId AND kind = :kind")
+  suspend fun clearRestrictedAccountsByKind(ownerUserId: String, kind: String)
+
+  @Query("SELECT * FROM support_tickets WHERE userId = :userId ORDER BY createdAtMs DESC")
+  suspend fun getSupportTickets(userId: String): List<SupportTicketEntity>
+
+  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  suspend fun upsertSupportTicket(ticket: SupportTicketEntity)
+
+  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  suspend fun upsertSupportTickets(tickets: List<SupportTicketEntity>)
+
+  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  suspend fun enqueueSettingsOp(op: PendingSettingsOpEntity)
+
+  @Query("SELECT * FROM pending_settings_ops WHERE userId = :userId AND nextRetryAtMs <= :nowMs ORDER BY createdAtMs ASC LIMIT :limit")
+  suspend fun getReadySettingsOps(userId: String, nowMs: Long, limit: Int): List<PendingSettingsOpEntity>
+
+  @Query("DELETE FROM pending_settings_ops WHERE opId = :opId")
+  suspend fun deleteSettingsOp(opId: String)
+
+  @Query("UPDATE pending_settings_ops SET retryCount = :retryCount, nextRetryAtMs = :nextRetryAtMs WHERE opId = :opId")
+  suspend fun scheduleSettingsOpRetry(opId: String, retryCount: Int, nextRetryAtMs: Long)
+}

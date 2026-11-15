@@ -107,9 +107,10 @@ val FeedLoaderGreen = Color(0xFF16A34A)
 fun TelefamTricolorSpinner(
   modifier: Modifier = Modifier,
   size: Dp = 42.dp,
+  reducedMotion: Boolean = false,
 ) {
   val infinite = rememberInfiniteTransition(label = "tricolor_spinner")
-  val angle by infinite.animateFloat(
+  val animatedAngle by infinite.animateFloat(
     initialValue = 0f,
     targetValue = 360f,
     animationSpec = infiniteRepeatable(
@@ -118,6 +119,7 @@ fun TelefamTricolorSpinner(
     ),
     label = "tricolor_rotation",
   )
+  val angle = if (reducedMotion) 0f else animatedAngle
 
   Canvas(
     modifier = modifier
@@ -225,6 +227,7 @@ fun TelefamSparkleEmblem(modifier: Modifier = Modifier) {
 fun AnimatedAudioBarsIcon(
   isPlaying: Boolean,
   tint: Color = Color.White,
+  reducedMotion: Boolean = false,
   modifier: Modifier = Modifier,
 ) {
   val infinite = rememberInfiniteTransition(label = "eq_bars")
@@ -247,9 +250,10 @@ fun AnimatedAudioBarsIcon(
     label = "bar3",
   )
 
-  val h1 = if (isPlaying) b1 else 0.5f
-  val h2 = if (isPlaying) b2 else 0.85f
-  val h3 = if (isPlaying) b3 else 0.45f
+  val animate = isPlaying && !reducedMotion
+  val h1 = if (animate) b1 else 0.5f
+  val h2 = if (animate) b2 else 0.85f
+  val h3 = if (animate) b3 else 0.45f
 
   Canvas(modifier = modifier.size(16.dp)) {
     val w = size.width
@@ -562,6 +566,7 @@ fun FeedMoreOptionsSheet(
   onRepost: () -> Unit,
   onDownload: () -> Unit,
   onNotInterested: () -> Unit,
+  onMute: () -> Unit = {},
   onReport: () -> Unit,
   onBlock: () -> Unit,
   onEdit: () -> Unit,
@@ -729,6 +734,15 @@ fun FeedMoreOptionsSheet(
             onDismiss()
           },
           testTag = "feed_menu_not_interested",
+        )
+        SheetActionRow(
+          icon = Icons.Filled.VisibilityOff,
+          label = stringResource(R.string.feed_action_mute_user),
+          onClick = {
+            onMute()
+            onDismiss()
+          },
+          testTag = "feed_menu_mute",
         )
         SheetActionRow(
           icon = Icons.Filled.Flag,

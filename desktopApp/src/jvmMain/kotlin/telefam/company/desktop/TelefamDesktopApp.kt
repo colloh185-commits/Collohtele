@@ -287,16 +287,34 @@ fun main() = application {
   var showChatsRail by remember { mutableStateOf(true) }
   val profileBackStack = remember { mutableStateListOf<String>() }
   var profileViewerState by remember { mutableStateOf<DesktopProfileViewerState?>(null) }
+  var showSettingsScreen by remember { mutableStateOf(false) }
+  var settingsBundle by remember { mutableStateOf(apiClient.loadCachedSettingsBundle()) }
+
   val openUserProfile: (String) -> Unit = { uid ->
     val clean = uid.trim()
-    if (clean.isNotBlank() && profileBackStack.lastOrNull() != clean) {
-      profileBackStack.add(clean)
+    if (clean.isNotBlank()) {
+      if (clean == "me" || (session.userId.isNotBlank() && clean == session.userId)) {
+        profileBackStack.clear()
+        profileViewerState = null
+        showFeedSearch = false
+        showSettingsScreen = false
+        activeTab = "profile"
+      } else if (profileBackStack.lastOrNull() != clean) {
+        profileBackStack.add(clean)
+      }
     }
   }
 
   LaunchedEffect(Unit) {
     delay(700L)
     splashVisible = false
+  }
+
+  LaunchedEffect(session.isAuthenticated, session.userId) {
+    if (session.isAuthenticated) {
+      val fetched = withContext(Dispatchers.IO) { apiClient.getSettings() }
+      settingsBundle = fetched
+    }
   }
 
   LaunchedEffect(toastMessage) {
@@ -707,13 +725,30 @@ fun main() = application {
                       toastMessage = "Link copied"
                     }
 
+                    val notInterestedTopics = settingsBundle.contentPreferences.notInterestedTopics
+                    val filteredFeedPosts = remember(feedPosts.toList(), notInterestedTopics) {
+                      if (notInterestedTopics.isEmpty()) {
+                        feedPosts.toList()
+                      } else {
+                        val blocked = notInterestedTopics.map { it.trim().lowercase() }.filter { it.isNotEmpty() }.toSet()
+                        feedPosts.filter { p ->
+                          p.isOwner || blocked.none { t ->
+                            p.hashtags.any { it.lowercase() == t } ||
+                              p.caption.lowercase().contains(t) ||
+                              p.textContent.lowercase().contains(t)
+                          }
+                        }
+                      }
+                    }
+
                     DesktopReusableFeedStage(
                       apiClient = apiClient,
-                      items = feedPosts,
+                      items = filteredFeedPosts,
                       initialIndex = 0,
                       activeTab = activeFeedTab,
                       isStandaloneViewer = false,
-                      isHostActive = !showFeedSearch && profileBackStack.isEmpty() && profileViewerState == null && postLaunchTarget == null,
+                      isHostActive = !showFeedSearch && profileBackStack.isEmpty() && profileViewerState == null && postLaunchTarget == null && !showSettingsScreen,
+                      contentPreferences = settingsBundle.contentPreferences,
                       onSelectTab = { activeFeedTab = it },
                       onLiveClick = { toastMessage = "LIVE — Coming soon" },
                       onSearchClick = { showFeedSearch = true },
@@ -790,6 +825,13 @@ fun main() = application {
                         feedPosts.removeAll { it.authorUserId == uid }
                         onInteractFeed(pid, SharedFeedAction.BLOCK, "")
                       },
+                      onMuteAuthor = { _, uid ->
+                        feedPosts.removeAll { it.authorUserId == uid }
+                        scope.launch {
+                          withContext(Dispatchers.IO) { apiClient.muteUser(uid) }
+                          toastMessage = "Account muted"
+                        }
+                      },
                       onEditOwnerPost = { item -> postLaunchTarget = DesktopPostLaunchTarget.EditPost(item) },
                       onChangePostPrivacy = { pid, priv ->
                         for (i in feedPosts.indices) {
@@ -855,7 +897,8 @@ fun main() = application {
                         profileViewerState = DesktopProfileViewerState(list, idx)
                       },
                       onToggleTheme = toggleTheme,
-                      onSignOut = { apiClient.signOut() },
+                      onOpenSettings = { showSettingsScreen = true },
+                      onSignOut = { showSettingsScreen = true },
                       onToast = { toastMessage = it },
                     )
                   }
@@ -891,6 +934,7 @@ fun main() = application {
               shortcuts = feedSearchShortcuts,
               query = feedSearchQuery,
               activeShortcut = feedActiveShortcut,
+              contentPreferences = settingsBundle.contentPreferences,
               onQueryChanged = { feedSearchQuery = it },
               onShortcutSelected = { sc -> feedActiveShortcut = if (feedActiveShortcut == sc) "" else sc },
               onClose = { showFeedSearch = false },
@@ -966,6 +1010,14 @@ fun main() = application {
                 feedSearchResults = feedSearchResults.filterNot { it.authorUserId == uid }
                 scope.launch { withContext(Dispatchers.IO) { apiClient.interactFeed(pid, SharedFeedAction.BLOCK) } }
               },
+              onMuteAuthor = { _, uid ->
+                feedSearchResults = feedSearchResults.filterNot { it.authorUserId == uid }
+                feedPosts.removeAll { it.authorUserId == uid }
+                scope.launch {
+                  withContext(Dispatchers.IO) { apiClient.muteUser(uid) }
+                  toastMessage = "Account muted"
+                }
+              },
               onEditOwnerPost = { item ->
                 showFeedSearch = false
                 postLaunchTarget = DesktopPostLaunchTarget.EditPost(item)
@@ -1027,9 +1079,9 @@ fun main() = application {
                 profileViewerState = DesktopProfileViewerState(list, idx)
               },
               onToggleTheme = toggleTheme,
+              onOpenSettings = { showSettingsScreen = true },
               onSignOut = {
-                profileBackStack.clear()
-                apiClient.signOut()
+                showSettingsScreen = true
               },
               onToast = { toastMessage = it },
             )
@@ -1043,7 +1095,8 @@ fun main() = application {
               initialIndex = viewerState.initialIndex,
               activeTab = SharedFeedTab.FOR_YOU,
               isStandaloneViewer = true,
-              isHostActive = postLaunchTarget == null,
+              isHostActive = postLaunchTarget == null && !showSettingsScreen,
+              contentPreferences = settingsBundle.contentPreferences,
               onSelectTab = {},
               onLiveClick = {},
               onSearchClick = { profileViewerState = null; showFeedSearch = true },
@@ -1119,6 +1172,14 @@ fun main() = application {
                 profileViewerState = null
                 scope.launch { withContext(Dispatchers.IO) { apiClient.blockUser(uid) } }
               },
+              onMuteAuthor = { _, uid ->
+                profileViewerState = null
+                feedPosts.removeAll { it.authorUserId == uid }
+                scope.launch {
+                  withContext(Dispatchers.IO) { apiClient.muteUser(uid) }
+                  toastMessage = "Account muted"
+                }
+              },
               onEditOwnerPost = { item ->
                 profileViewerState = null
                 postLaunchTarget = DesktopPostLaunchTarget.EditPost(item)
@@ -1180,6 +1241,27 @@ fun main() = application {
                 }
               },
               onToast = { msg -> toastMessage = msg },
+            )
+          }
+
+          if (showSettingsScreen) {
+            DesktopSettingsAndPrivacyScreen(
+              apiClient = apiClient,
+              isDark = isDark,
+              settingsBundle = settingsBundle,
+              avatarUrl = "",
+              onSettingsUpdated = { settingsBundle = it },
+              onToggleTheme = toggleTheme,
+              onLoggedOut = { allDevices ->
+                showSettingsScreen = false
+                profileBackStack.clear()
+                profileViewerState = null
+                scope.launch {
+                  withContext(Dispatchers.IO) { apiClient.signOut(allDevices) }
+                }
+              },
+              onClose = { showSettingsScreen = false },
+              onToast = { toastMessage = it },
             )
           }
         }
@@ -2973,6 +3055,7 @@ private fun DesktopReusableFeedStage(
   activeTab: SharedFeedTab,
   isStandaloneViewer: Boolean,
   isHostActive: Boolean = true,
+  contentPreferences: DesktopContentPreferences = DesktopContentPreferences(),
   onSelectTab: (SharedFeedTab) -> Unit,
   onLiveClick: () -> Unit,
   onSearchClick: () -> Unit,
@@ -2987,6 +3070,7 @@ private fun DesktopReusableFeedStage(
   onNotInterested: (String) -> Unit,
   onReport: (String, String) -> Unit,
   onBlock: (String, String) -> Unit,
+  onMuteAuthor: (String, String) -> Unit = { _, _ -> },
   onEditOwnerPost: (DesktopFeedPost) -> Unit,
   onChangePostPrivacy: (String, String) -> Unit = { _, _ -> },
   onDeleteOwnerPost: (String) -> Unit,
@@ -3000,7 +3084,7 @@ private fun DesktopReusableFeedStage(
   var currentIndex by remember(initialIndex, items.size) {
     mutableStateOf(initialIndex.coerceIn(0, (items.size - 1).coerceAtLeast(0)))
   }
-  var isPaused by remember(currentIndex) { mutableStateOf(false) }
+  var isPaused by remember(currentIndex, contentPreferences.autoplayVideos) { mutableStateOf(!contentPreferences.autoplayVideos) }
   var isFast2x by remember(currentIndex) { mutableStateOf(false) }
   var showDoubleHeart by remember { mutableStateOf(false) }
   var activeDialog by remember { mutableStateOf<String?>(null) }
@@ -3261,9 +3345,30 @@ private fun DesktopReusableFeedStage(
           Text(">> 2x", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp))
         }
       }
-      if (showDoubleHeart) {
+      if (showDoubleHeart && !contentPreferences.reducedMotion) {
         Box(modifier = Modifier.align(Alignment.Center)) {
           DesktopSvgIcon(DesktopIconKind.HEART_FILLED, Color(0xFFFF5A76), 74.dp)
+        }
+      }
+
+      if (contentPreferences.captionsEnabled) {
+        val ccText = current.caption.ifBlank { current.textContent }.trim()
+        if (ccText.isNotEmpty()) {
+          Surface(
+            color = Color.Black.copy(alpha = 0.72f),
+            shape = RoundedCornerShape(10.dp),
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 148.dp, start = 24.dp, end = 86.dp),
+          ) {
+            Text(
+              text = ccText,
+              color = Color.White,
+              fontSize = 13.sp,
+              fontWeight = FontWeight.Medium,
+              maxLines = 2,
+              overflow = TextOverflow.Ellipsis,
+              modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            )
+          }
         }
       }
 
@@ -3508,6 +3613,7 @@ private fun DesktopReusableFeedStage(
                   DesktopDialogButton("Edit video") { activeDialog = null; onEditOwnerPost(current) }
                   DesktopDialogButton("Delete video") { onDeleteOwnerPost(current.postId); activeDialog = null }
                 } else {
+                  DesktopDialogButton("Mute @${current.authorUsername}") { onMuteAuthor(current.postId, current.authorUserId); activeDialog = null }
                   DesktopDialogButton("Block @${current.authorUsername}") { onBlock(current.postId, current.authorUserId); activeDialog = null }
                 }
               }
@@ -3560,6 +3666,7 @@ private fun DesktopFeedSearchOverlay(
   shortcuts: List<DesktopSearchShortcut>,
   query: String,
   activeShortcut: String,
+  contentPreferences: DesktopContentPreferences = DesktopContentPreferences(),
   onQueryChanged: (String) -> Unit,
   onShortcutSelected: (String) -> Unit,
   onClose: () -> Unit,
@@ -3573,6 +3680,7 @@ private fun DesktopFeedSearchOverlay(
   onNotInterested: (String) -> Unit,
   onReport: (String, String) -> Unit,
   onBlock: (String, String) -> Unit,
+  onMuteAuthor: (String, String) -> Unit = { _, _ -> },
   onEditOwnerPost: (DesktopFeedPost) -> Unit,
   onChangePostPrivacy: (String, String) -> Unit = { _, _ -> },
   onDeleteOwnerPost: (String) -> Unit,
@@ -3592,6 +3700,7 @@ private fun DesktopFeedSearchOverlay(
       activeTab = SharedFeedTab.FOR_YOU,
       isStandaloneViewer = true,
       isHostActive = true,
+      contentPreferences = contentPreferences,
       onSelectTab = {},
       onLiveClick = {},
       onSearchClick = { viewerStartIndex = null },
@@ -3606,6 +3715,7 @@ private fun DesktopFeedSearchOverlay(
       onNotInterested = onNotInterested,
       onReport = onReport,
       onBlock = onBlock,
+      onMuteAuthor = onMuteAuthor,
       onEditOwnerPost = onEditOwnerPost,
       onChangePostPrivacy = onChangePostPrivacy,
       onDeleteOwnerPost = onDeleteOwnerPost,
@@ -3846,6 +3956,7 @@ private fun DesktopUserProfileScreen(
   onOpenUserProfile: (String) -> Unit,
   onOpenPostAtIndex: (List<DesktopFeedPost>, Int) -> Unit,
   onToggleTheme: () -> Unit,
+  onOpenSettings: () -> Unit = {},
   onSignOut: () -> Unit,
   onToast: (String) -> Unit,
 ) {
@@ -3859,7 +3970,6 @@ private fun DesktopUserProfileScreen(
   var showFilterPopup by remember { mutableStateOf(false) }
   var showSortPopup by remember { mutableStateOf(false) }
   var showMoreDialog by remember { mutableStateOf(false) }
-  var showSettingsDialog by remember { mutableStateOf(false) }
   var showBackgroundsDialog by remember { mutableStateOf(false) }
   var isUploadingBg by remember { mutableStateOf(false) }
   var showEditProfileDialog by remember { mutableStateOf(false) }
@@ -3896,19 +4006,25 @@ private fun DesktopUserProfileScreen(
   val openConnections: (Boolean) -> Unit = { isFollowers ->
     val p = profile
     if (p != null) {
-      connectionsType = if (isFollowers) "followers" else "following"
-      connectionsItems = emptyList()
-      connectionsPage = 1
-      connectionsHasMore = false
-      connectionsLoading = true
-      scope.launch {
-        val res = withContext(Dispatchers.IO) { apiClient.getUserConnections(p.userId, isFollowers, 1) }
-        if (res is DesktopApiOutcome.Ok) {
-          connectionsItems = res.data.items
-          connectionsPage = res.data.page
-          connectionsHasMore = res.data.hasMore
+      if (p.isPrivateRestricted && !p.isOwner) {
+        onToast("This account is private")
+      } else if (!isFollowers && !p.isOwner && p.followingVisibility.equals("only_me", ignoreCase = true)) {
+        onToast("Following list is private")
+      } else {
+        connectionsType = if (isFollowers) "followers" else "following"
+        connectionsItems = emptyList()
+        connectionsPage = 1
+        connectionsHasMore = false
+        connectionsLoading = true
+        scope.launch {
+          val res = withContext(Dispatchers.IO) { apiClient.getUserConnections(p.userId, isFollowers, 1) }
+          if (res is DesktopApiOutcome.Ok) {
+            connectionsItems = res.data.items
+            connectionsPage = res.data.page
+            connectionsHasMore = res.data.hasMore
+          }
+          connectionsLoading = false
         }
-        connectionsLoading = false
       }
     }
   }
@@ -4124,7 +4240,7 @@ private fun DesktopUserProfileScreen(
                                 .size(38.dp)
                                 .clip(CircleShape)
                                 .background(Color.Black.copy(alpha = 0.42f))
-                                .clickable { showSettingsDialog = true },
+                                .clickable { onOpenSettings() },
                               contentAlignment = Alignment.Center,
                             ) {
                               DesktopSvgIcon(DesktopIconKind.GEAR, Color.White, 18.dp)
@@ -4568,6 +4684,23 @@ private fun DesktopUserProfileScreen(
                   DesktopTricolorSpinner(size = 34.dp)
                 }
               }
+            } else if (p != null && p.isPrivateRestricted && !p.isOwner && !p.isBlocked) {
+              item(key = "private_restricted", span = { GridItemSpan(maxLineSpan) }) {
+                Column(
+                  modifier = Modifier.fillMaxWidth().padding(vertical = 42.dp, horizontal = 24.dp),
+                  horizontalAlignment = Alignment.CenterHorizontally,
+                  verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                  DesktopSvgIcon(DesktopIconKind.LOCK, MaterialTheme.colorScheme.onSurfaceVariant, 32.dp)
+                  Text("This account is private", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                  Text(
+                    text = "Follow this account to see their photos and videos.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 13.sp,
+                    textAlign = TextAlign.Center,
+                  )
+                }
+              }
             } else if (p != null && !p.isBlocked && filteredPosts.isEmpty()) {
               item(key = "empty", span = { GridItemSpan(maxLineSpan) }) {
                 val emptyText = when (selectedOwnerTab) {
@@ -4695,51 +4828,6 @@ private fun DesktopUserProfileScreen(
               Text("Sort posts", fontWeight = FontWeight.Bold, fontSize = 16.sp)
               DesktopProfileSort.entries.forEach { opt ->
                 DesktopDialogButton(opt.label) { postSort = opt; showSortPopup = false }
-              }
-            }
-          }
-        }
-      }
-
-      // Owner Settings Dialog (Logout STRICTLY FIRST!)
-      if (showSettingsDialog && p != null) {
-        DesktopModalOverlay(onDismiss = { showSettingsDialog = false }) {
-          Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-              Text("Settings", fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-              Box(modifier = Modifier.size(32.dp).clip(CircleShape).clickable { showSettingsDialog = false }, contentAlignment = Alignment.Center) {
-                DesktopSvgIcon(DesktopIconKind.CLOSE, MaterialTheme.colorScheme.onSurfaceVariant, 16.dp)
-              }
-            }
-
-            // 1. Log out FIRST in settings
-            Button(
-              onClick = { showSettingsDialog = false; onSignOut() },
-              shape = RoundedCornerShape(12.dp),
-              colors = ButtonDefaults.buttonColors(containerColor = accentCrimson),
-              modifier = Modifier.fillMaxWidth().height(46.dp),
-            ) {
-              Text("Log out", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.5.sp)
-            }
-
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            DesktopDialogButton("Switch theme (${apiClient.session.themeMode.name.lowercase().replaceFirstChar { it.uppercase() }})") {
-              onToggleTheme()
-            }
-            if (p.username.isNotBlank() || apiClient.session.email.isNotBlank()) {
-              Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.background,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                modifier = Modifier.fillMaxWidth(),
-              ) {
-                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                  Text("Account", fontSize = 11.5.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                  Text("@${p.username}", fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold)
-                  if (apiClient.session.email.isNotBlank()) {
-                    Text(apiClient.session.email, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                  }
-                }
               }
             }
           }
@@ -4940,6 +5028,18 @@ private fun DesktopUserProfileScreen(
                 DesktopDialogButton("Switch theme") { showMoreDialog = false; onToggleTheme() }
                 DesktopDialogButton("Sign out") { showMoreDialog = false; onSignOut() }
               } else {
+                DesktopDialogButton(if (p.isMuted) "Unmute @${p.username}" else "Mute @${p.username}") {
+                  showMoreDialog = false
+                  scope.launch {
+                    val res = withContext(Dispatchers.IO) {
+                      if (p.isMuted) apiClient.unmuteUser(p.userId) else apiClient.muteUser(p.userId)
+                    }
+                    if (res is DesktopApiOutcome.Ok) {
+                      profile = p.copy(isMuted = res.data)
+                      onToast(if (res.data) "Account muted" else "Account unmuted")
+                    }
+                  }
+                }
                 DesktopDialogButton(if (p.isBlocked) "Unblock @${p.username}" else "Block @${p.username}") {
                   showMoreDialog = false
                   scope.launch {

@@ -384,11 +384,16 @@ final class TelefamIosFeedStore: ObservableObject {
         persistCaches()
     }
 
-    func selectRenditionURL(for item: TelefamIosFeedItem) -> URL? {
+    func selectRenditionURL(for item: TelefamIosFeedItem, qualityPreference: String = "auto", dataSaver: Bool = false) -> URL? {
         let sorted = item.renditions.sorted { $0.bitrateKbps < $1.bitrateKbps }
         let chosen: String
         if !sorted.isEmpty {
-            if isWeakNetwork {
+            let pref = qualityPreference.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if dataSaver || pref == "data_saver" {
+                chosen = (sorted.first { $0.bitrateKbps >= 250 } ?? sorted.first)!.url
+            } else if pref == "high" && !isWeakNetwork {
+                chosen = sorted.last!.url
+            } else if isWeakNetwork {
                 chosen = (sorted.first { $0.bitrateKbps >= 300 } ?? sorted.first)!.url
             } else {
                 chosen = (sorted.last { $0.bitrateKbps <= 1600 } ?? sorted.last)!.url
@@ -417,10 +422,16 @@ final class TelefamIosFeedStore: ObservableObject {
         return asset
     }
 
-    func preloadNextFiveVideos(after index: Int, in list: [TelefamIosFeedItem]) {
-        let upcoming = list.dropFirst(index + 1).filter { $0.mode == "video" }.prefix(5)
+    func preloadNextFiveVideos(
+        after index: Int,
+        in list: [TelefamIosFeedItem],
+        qualityPreference: String = "auto",
+        dataSaver: Bool = false
+    ) {
+        let count = dataSaver ? 1 : 5
+        let upcoming = list.dropFirst(index + 1).filter { $0.mode == "video" }.prefix(count)
         for item in upcoming {
-            guard let url = selectRenditionURL(for: item) else { continue }
+            guard let url = selectRenditionURL(for: item, qualityPreference: qualityPreference, dataSaver: dataSaver) else { continue }
             let asset = makeAuthorizedAsset(for: url)
             asset.loadValuesAsynchronously(forKeys: ["playable"]) {}
         }
@@ -930,6 +941,7 @@ private struct FeedBookmarkSvgIcon: View {
 struct TelefamIosFeedView: View {
     @ObservedObject var store: TelefamIosFeedStore
     @ObservedObject var contactsStore: TelefamContactsStore
+    @ObservedObject var settingsStore: TelefamIosSettingsStore
     let items: [TelefamIosFeedItem]
     let initialIndex: Int
     let isStandaloneViewer: Bool
@@ -960,11 +972,37 @@ struct TelefamIosFeedView: View {
     @State private var reportPostId: String? = nil
     @State private var privacyPostItem: TelefamIosFeedItem? = nil
 
+    private var visibleItems: [TelefamIosFeedItem] {
+        let mutedIds = Set(settingsStore.mutedAccounts.map(\.userId))
+        let blockedIds = Set(settingsStore.blockedAccounts.map(\.userId))
+        let hiddenTopics = Set(
+            settingsStore.bundle.contentPreferences.notInterestedTopics
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+                .filter { !$0.isEmpty }
+        )
+        return items.filter { item in
+            if !item.isOwner && (mutedIds.contains(item.authorUserId) || blockedIds.contains(item.authorUserId)) {
+                return false
+            }
+            if !isStandaloneViewer && !hiddenTopics.isEmpty {
+                let captionLower = item.caption.lowercased()
+                let textLower = item.textContent.lowercased()
+                let tagsLower = item.hashtags.map { $0.lowercased() }
+                for topic in hiddenTopics {
+                    if captionLower.contains(topic) || textLower.contains(topic) || tagsLower.contains(where: { $0.contains(topic) }) {
+                        return false
+                    }
+                }
+            }
+            return true
+        }
+    }
+
     var body: some View {
         ZStack(alignment: .top) {
             Color(red: 0.027, green: 0.031, blue: 0.043).ignoresSafeArea()
 
-            if items.isEmpty {
+            if visibleItems.isEmpty {
                 VStack(spacing: 12) {
                     Spacer()
                     if store.isLoading || store.isWeakNetwork {
@@ -993,7 +1031,7 @@ struct TelefamIosFeedView: View {
                 .padding(.bottom, bottomChromePadding)
             } else {
                 TabView(selection: $currentIndex) {
-                    ForEach(Array(items.enumerated()), id: \.element.postId) { idx, item in
+                    ForEach(Array(visibleItems.enumerated()), id: \.element.postId) { idx, item in
                         feedPage(item: item, isActive: currentIndex == idx)
                             .rotationEffect(.degrees(-90))
                             .tag(idx)
@@ -1007,11 +1045,19 @@ struct TelefamIosFeedView: View {
             topOverlayBar
         }
         .onAppear {
-            currentIndex = min(max(0, initialIndex), max(0, items.count - 1))
+            currentIndex = min(max(0, initialIndex), max(0, visibleItems.count - 1))
             activatePage(at: currentIndex)
         }
         .onChange(of: currentIndex) { idx in
             activatePage(at: idx)
+        }
+        .onChange(of: visibleItems.map(\.postId)) { _ in
+            let clamped = min(max(0, currentIndex), max(0, visibleItems.count - 1))
+            currentIndex = clamped
+            activatePage(at: clamped)
+        }
+        .onChange(of: settingsStore.bundle.contentPreferences) { _ in
+            activatePage(at: currentIndex)
         }
         .onDisappear {
             sharedPlayer.pause()
@@ -1042,6 +1088,17 @@ struct TelefamIosFeedView: View {
             }
             if !item.isOwner {
                 Button("Not interested") { store.notInterested(postId: item.postId) }
+                Button("Mute @\(item.authorUsername)") {
+                    Task {
+                        await settingsStore.muteAccount(
+                            userId: item.authorUserId,
+                            fullName: item.authorFullName,
+                            username: item.authorUsername,
+                            avatarUrl: item.authorAvatarUrl
+                        )
+                        store.showToast("Muted @\(item.authorUsername)")
+                    }
+                }
                 Button("Report") { reportPostId = item.postId }
             }
             if item.isOwner {
@@ -1052,6 +1109,7 @@ struct TelefamIosFeedView: View {
             } else {
                 Button("Block @\(item.authorUsername)", role: .destructive) {
                     store.blockAuthor(postId: item.postId, authorUserId: item.authorUserId)
+                    Task { await settingsStore.refreshBlockedAccounts() }
                 }
             }
             Button("Cancel", role: .cancel) {}
@@ -1239,16 +1297,44 @@ struct TelefamIosFeedView: View {
                 }
 
                 if showDoubleTapHeart {
-                    FeedHeartSvgIcon(filled: true)
-                        .scaleEffect(2.4)
-                        .transition(.scale.combined(with: .opacity))
+                    if settingsStore.bundle.contentPreferences.reducedMotion {
+                        FeedHeartSvgIcon(filled: true)
+                            .scaleEffect(1.85)
+                    } else {
+                        FeedHeartSvgIcon(filled: true)
+                            .scaleEffect(2.4)
+                            .transition(.scale.combined(with: .opacity))
+                    }
                 }
             }
 
-            HStack(alignment: .bottom) {
-                bottomLeftMetadata(item: item, isPlayingAudio: isActive && !isPaused)
-                Spacer(minLength: 12)
-                rightActionRail(item: item)
+            VStack(alignment: .leading, spacing: 8) {
+                let ccText = item.caption.isEmpty ? item.textContent : item.caption
+                if isActive && settingsStore.bundle.contentPreferences.captionsEnabled && !ccText.isEmpty {
+                    HStack(spacing: 6) {
+                        Text("CC")
+                            .font(.system(size: 10.5, weight: .heavy))
+                            .foregroundColor(.black)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.white)
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                        Text(ccText)
+                            .font(.system(size: 12.5, weight: .medium))
+                            .foregroundColor(.white)
+                            .lineLimit(2)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Color.black.opacity(0.68))
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+
+                HStack(alignment: .bottom) {
+                    bottomLeftMetadata(item: item, isPlayingAudio: isActive && !isPaused && !settingsStore.bundle.contentPreferences.reducedMotion)
+                    Spacer(minLength: 12)
+                    rightActionRail(item: item)
+                }
             }
             .padding(.horizontal, 14)
             .padding(.bottom, 16 + bottomChromePadding)
@@ -1524,14 +1610,28 @@ struct TelefamIosFeedView: View {
 
     private func activatePage(at index: Int) {
         clearPlaybackObservers()
-        guard items.indices.contains(index) else { return }
-        let active = items[index]
-        isPaused = false
+        let list = visibleItems
+        guard list.indices.contains(index) else {
+            sharedPlayer.pause()
+            sharedPlayer.replaceCurrentItem(with: nil)
+            songPlayer.pause()
+            songPlayer.replaceCurrentItem(with: nil)
+            return
+        }
+        let active = list[index]
+        let prefs = settingsStore.bundle.contentPreferences
+        let shouldAutoplay = prefs.autoplayVideos
+        isPaused = !shouldAutoplay
         isFastForward2x = false
         isPlaybackFailed = false
-        store.preloadNextFiveVideos(after: index, in: items)
+        store.preloadNextFiveVideos(
+            after: index,
+            in: list,
+            qualityPreference: prefs.videoQuality,
+            dataSaver: prefs.dataSaver
+        )
 
-        if index >= items.count - 3 && store.hasMoreActive && !isStandaloneViewer {
+        if index >= list.count - 3 && store.hasMoreActive && !isStandaloneViewer {
             Task { await store.loadMore() }
         }
 
@@ -1541,29 +1641,35 @@ struct TelefamIosFeedView: View {
         let songUrlStr = store.authorizedURLString(active.song?.previewUrl ?? "")
         let hasSong = !songUrlStr.isEmpty
 
-        if active.mode == "video", let url = store.selectRenditionURL(for: active) ?? URL(string: store.authorizedURLString(active.videoUrl)) {
+        if active.mode == "video",
+           let url = store.selectRenditionURL(for: active, qualityPreference: prefs.videoQuality, dataSaver: prefs.dataSaver)
+               ?? URL(string: store.authorizedURLString(active.videoUrl)) {
             let asset = store.makeAuthorizedAsset(for: url)
             let playerItem = AVPlayerItem(asset: asset)
-            playerItem.preferredForwardBufferDuration = 12
+            playerItem.preferredForwardBufferDuration = prefs.dataSaver ? 4 : 12
             sharedPlayer.isMuted = active.muteOriginalAudio || hasSong
             sharedPlayer.automaticallyWaitsToMinimizeStalling = true
             sharedPlayer.replaceCurrentItem(with: playerItem)
             videoEndObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: playerItem, queue: .main) { _ in
                 sharedPlayer.seek(to: .zero)
-                sharedPlayer.play()
+                if !isPaused { sharedPlayer.play() }
             }
             videoFailObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemFailedToPlayToEndTime, object: playerItem, queue: .main) { _ in
                 if let fallbackURL = URL(string: store.authorizedURLString(active.videoUrl)), fallbackURL != url {
                     let fallbackItem = AVPlayerItem(asset: store.makeAuthorizedAsset(for: fallbackURL))
                     sharedPlayer.replaceCurrentItem(with: fallbackItem)
-                    sharedPlayer.play()
+                    if !isPaused { sharedPlayer.play() }
                 } else {
                     isBuffering = false
                     isPlaybackFailed = true
                 }
             }
-            sharedPlayer.play()
-            sharedPlayer.rate = 1.0
+            if shouldAutoplay {
+                sharedPlayer.play()
+                sharedPlayer.rate = 1.0
+            } else {
+                sharedPlayer.pause()
+            }
             isBuffering = false
         } else {
             sharedPlayer.pause()
@@ -1576,9 +1682,13 @@ struct TelefamIosFeedView: View {
             songPlayer.replaceCurrentItem(with: sItem)
             songEndObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: sItem, queue: .main) { _ in
                 songPlayer.seek(to: .zero)
-                songPlayer.play()
+                if !isPaused { songPlayer.play() }
             }
-            songPlayer.play()
+            if shouldAutoplay {
+                songPlayer.play()
+            } else {
+                songPlayer.pause()
+            }
         } else {
             songPlayer.pause()
             songPlayer.replaceCurrentItem(with: nil)

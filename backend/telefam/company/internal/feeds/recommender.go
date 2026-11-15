@@ -142,33 +142,43 @@ type UserReportRecord struct {
 
 // Engine dynamically ranks feeds and search results using real per-user affinity signals.
 type Engine struct {
-	mu            sync.RWMutex
-	viewsCount    map[string]int64              // postID -> view count
-	likes         map[string]map[string]bool    // postID -> userID -> liked
-	favourites    map[string]map[string]bool    // postID -> userID -> saved
-	reposts       map[string]map[string]int64   // postID -> userID -> timestampMs
-	sharesCount   map[string]int64              // postID -> count
-	commentsCount map[string]int64              // postID -> count
-	notInterested map[string]map[string]bool    // userID -> postID -> suppressed
-	blockedUsers  map[string]map[string]bool    // blockerUserID -> blockedAuthorID -> true
-	affinity      map[string]map[string]float64 // userID -> dimensionKey -> dynamic weight
-	ackedOps      map[string]struct{}
-	reports       []ReportRecord
-	userReports   []UserReportRecord
+	mu                  sync.RWMutex
+	viewsCount          map[string]int64              // postID -> view count
+	likes               map[string]map[string]bool    // postID -> userID -> liked
+	favourites          map[string]map[string]bool    // postID -> userID -> saved
+	reposts             map[string]map[string]int64   // postID -> userID -> timestampMs
+	sharesCount         map[string]int64              // postID -> count
+	commentsCount       map[string]int64              // postID -> count
+	notInterested       map[string]map[string]bool    // userID -> postID -> suppressed
+	blockedUsers        map[string]map[string]bool    // blockerUserID -> blockedAuthorID -> true
+	blockedAtMs         map[string]map[string]int64   // blockerUserID -> blockedAuthorID -> unix ms
+	mutedUsers          map[string]map[string]int64   // muterUserID -> mutedAuthorID -> unix ms
+	notInterestedTopics map[string]map[string]bool    // userID -> lowercase topic -> true
+	personalizationOff  map[string]bool               // userID -> true when personalization disabled
+	suggestedOff        map[string]bool               // userID -> true when suggested content disabled
+	affinity            map[string]map[string]float64 // userID -> dimensionKey -> dynamic weight
+	ackedOps            map[string]struct{}
+	reports             []ReportRecord
+	userReports         []UserReportRecord
 }
 
 func NewEngine() *Engine {
 	return &Engine{
-		viewsCount:    make(map[string]int64),
-		likes:         make(map[string]map[string]bool),
-		favourites:    make(map[string]map[string]bool),
-		reposts:       make(map[string]map[string]int64),
-		sharesCount:   make(map[string]int64),
-		commentsCount: make(map[string]int64),
-		notInterested: make(map[string]map[string]bool),
-		blockedUsers:  make(map[string]map[string]bool),
-		affinity:      make(map[string]map[string]float64),
-		ackedOps:      make(map[string]struct{}),
+		viewsCount:          make(map[string]int64),
+		likes:               make(map[string]map[string]bool),
+		favourites:          make(map[string]map[string]bool),
+		reposts:             make(map[string]map[string]int64),
+		sharesCount:         make(map[string]int64),
+		commentsCount:       make(map[string]int64),
+		notInterested:       make(map[string]map[string]bool),
+		blockedUsers:        make(map[string]map[string]bool),
+		blockedAtMs:         make(map[string]map[string]int64),
+		mutedUsers:          make(map[string]map[string]int64),
+		notInterestedTopics: make(map[string]map[string]bool),
+		personalizationOff:  make(map[string]bool),
+		suggestedOff:        make(map[string]bool),
+		affinity:            make(map[string]map[string]float64),
+		ackedOps:            make(map[string]struct{}),
 	}
 }
 
@@ -303,6 +313,12 @@ func (e *Engine) BlockUser(callerID, targetID string) {
 	defer e.mu.Unlock()
 	bm := e.ensurePostSet(e.blockedUsers, callerID)
 	bm[targetID] = true
+	bat := e.blockedAtMs[callerID]
+	if bat == nil {
+		bat = make(map[string]int64)
+		e.blockedAtMs[callerID] = bat
+	}
+	bat[targetID] = time.Now().UnixMilli()
 }
 
 func (e *Engine) UnblockUser(callerID, targetID string) {
@@ -311,6 +327,9 @@ func (e *Engine) UnblockUser(callerID, targetID string) {
 	if bm := e.blockedUsers[callerID]; bm != nil {
 		delete(bm, targetID)
 	}
+	if bat := e.blockedAtMs[callerID]; bat != nil {
+		delete(bat, targetID)
+	}
 }
 
 func (e *Engine) IsBlocked(callerID, targetID string) bool {
@@ -318,6 +337,109 @@ func (e *Engine) IsBlocked(callerID, targetID string) bool {
 	defer e.mu.RUnlock()
 	bm := e.blockedUsers[callerID]
 	return bm != nil && bm[targetID]
+}
+
+func (e *Engine) MuteUser(callerID, targetID string) {
+	if callerID == "" || targetID == "" || callerID == targetID {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	mm := e.mutedUsers[callerID]
+	if mm == nil {
+		mm = make(map[string]int64)
+		e.mutedUsers[callerID] = mm
+	}
+	mm[targetID] = time.Now().UnixMilli()
+}
+
+func (e *Engine) UnmuteUser(callerID, targetID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if mm := e.mutedUsers[callerID]; mm != nil {
+		delete(mm, targetID)
+	}
+}
+
+func (e *Engine) IsMuted(callerID, targetID string) bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	mm := e.mutedUsers[callerID]
+	_, ok := mm[targetID]
+	return ok
+}
+
+func (e *Engine) ListBlockedUsers(callerID string) map[string]int64 {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	out := make(map[string]int64)
+	bm := e.blockedUsers[callerID]
+	bat := e.blockedAtMs[callerID]
+	for uid, active := range bm {
+		if active {
+			out[uid] = bat[uid]
+		}
+	}
+	return out
+}
+
+func (e *Engine) ListMutedUsers(callerID string) map[string]int64 {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	out := make(map[string]int64)
+	for uid, ts := range e.mutedUsers[callerID] {
+		out[uid] = ts
+	}
+	return out
+}
+
+func (e *Engine) UpdateUserContentControls(
+	userID string,
+	suggestedEnabled bool,
+	notInterestedTopics []string,
+	personalizationEnabled bool,
+	resetSuggestions bool,
+) {
+	if userID == "" {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.suggestedOff[userID] = !suggestedEnabled
+	e.personalizationOff[userID] = !personalizationEnabled
+
+	topicSet := make(map[string]bool)
+	for _, raw := range notInterestedTopics {
+		clean := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(raw)), "#")
+		if clean != "" {
+			topicSet[clean] = true
+		}
+	}
+	e.notInterestedTopics[userID] = topicSet
+
+	if resetSuggestions {
+		delete(e.affinity, userID)
+		delete(e.notInterested, userID)
+	}
+}
+
+func postMatchesAnySuppressedTopic(p *posts.StoredPost, topics map[string]bool) bool {
+	if p == nil || len(topics) == 0 {
+		return false
+	}
+	lowerCap := strings.ToLower(p.Caption)
+	lowerText := strings.ToLower(p.TextContent)
+	for _, h := range p.Hashtags {
+		if topics[strings.ToLower(h)] {
+			return true
+		}
+	}
+	for topic := range topics {
+		if topic != "" && (strings.Contains(lowerCap, topic) || strings.Contains(lowerText, topic)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *Engine) RecordUserReport(reporterID, targetID, reason, details string) {
@@ -446,8 +568,13 @@ func (e *Engine) GetFeed(
 
 	nowMs := time.Now().UnixMilli()
 	userAffinity := e.affinity[viewerUserID]
+	if e.personalizationOff[viewerUserID] || e.suggestedOff[viewerUserID] {
+		userAffinity = nil
+	}
 	blocked := e.blockedUsers[viewerUserID]
+	muted := e.mutedUsers[viewerUserID]
 	suppressed := e.notInterested[viewerUserID]
+	suppressedTopics := e.notInterestedTopics[viewerUserID]
 
 	scored := make([]FeedItem, 0, len(allPosts))
 	for _, p := range allPosts {
@@ -462,6 +589,14 @@ func (e *Engine) GetFeed(
 			continue
 		}
 		if blocked != nil && blocked[p.AuthorUserID] {
+			continue
+		}
+		if muted != nil {
+			if _, isMuted := muted[p.AuthorUserID]; isMuted {
+				continue
+			}
+		}
+		if postMatchesAnySuppressedTopic(p, suppressedTopics) {
 			continue
 		}
 
@@ -539,7 +674,11 @@ func (e *Engine) Search(
 
 	nowMs := time.Now().UnixMilli()
 	userAffinity := e.affinity[viewerUserID]
+	if e.personalizationOff[viewerUserID] {
+		userAffinity = nil
+	}
 	blocked := e.blockedUsers[viewerUserID]
+	muted := e.mutedUsers[viewerUserID]
 
 	tagCounts := make(map[string]int64)
 	matched := make([]FeedItem, 0, len(allPosts))
@@ -551,6 +690,11 @@ func (e *Engine) Search(
 		}
 		if blocked != nil && blocked[p.AuthorUserID] {
 			continue
+		}
+		if muted != nil {
+			if _, isMuted := muted[p.AuthorUserID]; isMuted {
+				continue
+			}
 		}
 		if posts.NormalizePrivacy(string(p.Privacy)) == posts.PrivacyPrivate {
 			continue

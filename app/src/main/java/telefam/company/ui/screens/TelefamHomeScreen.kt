@@ -121,6 +121,7 @@ fun TelefamHomeScreen(
   onNotInterestedFeedPost: (String) -> Unit = {},
   onReportFeedPost: (String, String) -> Unit = { _, _ -> },
   onBlockFeedAuthor: (String, String) -> Unit = { _, _ -> },
+  onMuteFeedAuthor: (String) -> Unit = {},
   onEditOwnerFeedPost: (FeedUiItem) -> Unit = {},
   onChangeFeedPostPrivacy: (String, PostPrivacy) -> Unit = { _, _ -> },
   onDeleteOwnerFeedPost: (String) -> Unit = {},
@@ -334,6 +335,7 @@ fun TelefamHomeScreen(
                   onNotInterestedFeedPost = onNotInterestedFeedPost,
                   onReportFeedPost = onReportFeedPost,
                   onBlockFeedAuthor = onBlockFeedAuthor,
+                  onMuteFeedAuthor = onMuteFeedAuthor,
                   onEditOwnerFeedPost = onEditOwnerFeedPost,
                   onChangeFeedPostPrivacy = onChangeFeedPostPrivacy,
                   onDeleteOwnerFeedPost = onDeleteOwnerFeedPost,
@@ -395,6 +397,7 @@ fun TelefamHomeScreen(
                   onNotInterestedFeedPost = onNotInterestedFeedPost,
                   onReportFeedPost = onReportFeedPost,
                   onBlockFeedAuthor = onBlockFeedAuthor,
+                  onMuteFeedAuthor = onMuteFeedAuthor,
                   onEditOwnerFeedPost = onEditOwnerFeedPost,
                   onChangeFeedPostPrivacy = onChangeFeedPostPrivacy,
                   onDeleteOwnerFeedPost = onDeleteOwnerFeedPost,
@@ -479,6 +482,7 @@ private fun HomeTabContent(
   onNotInterestedFeedPost: (String) -> Unit,
   onReportFeedPost: (String, String) -> Unit,
   onBlockFeedAuthor: (String, String) -> Unit,
+  onMuteFeedAuthor: (String) -> Unit,
   onEditOwnerFeedPost: (FeedUiItem) -> Unit,
   onChangeFeedPostPrivacy: (String, PostPrivacy) -> Unit,
   onDeleteOwnerFeedPost: (String) -> Unit,
@@ -621,10 +625,11 @@ private fun HomeTabContent(
           !feeds.isSearchOpen &&
           uiState.activeUserProfile == null &&
           uiState.profileViewerItems == null &&
+          uiState.activeSettingsDestination == null &&
           !uiState.postComposer.isOpen,
         isLoading = feeds.isLoading,
         hasMore = feeds.hasMoreActive,
-        networkTier = uiState.networkTier,
+        networkTier = uiState.effectiveNetworkTierForFeeds,
         streamAccessToken = feeds.streamAccessToken,
         streamDeviceFp = feeds.streamDeviceFp,
         bottomChromePadding = chromeInset,
@@ -644,6 +649,7 @@ private fun HomeTabContent(
         onNotInterested = onNotInterestedFeedPost,
         onReportPost = onReportFeedPost,
         onBlockAuthor = onBlockFeedAuthor,
+        onMuteAuthor = onMuteFeedAuthor,
         onEditOwnerPost = onEditOwnerFeedPost,
         onChangePostPrivacy = onChangeFeedPostPrivacy,
         onDeleteOwnerPost = onDeleteOwnerFeedPost,
@@ -651,6 +657,9 @@ private fun HomeTabContent(
         onTapAudio = onTapFeedAudio,
         onRecordWatchProgress = onRecordFeedWatchProgress,
         onOpenAuthorProfile = onOpenUserProfile,
+        autoplayVideos = uiState.settings.contentPreferences.autoplayVideos,
+        captionsEnabled = uiState.settings.contentPreferences.captionsEnabled,
+        reducedMotion = uiState.settings.contentPreferences.reducedMotion,
         onShowToast = onShowFeedToast,
       )
     }

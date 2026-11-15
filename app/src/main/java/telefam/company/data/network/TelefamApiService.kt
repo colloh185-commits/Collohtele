@@ -347,6 +347,13 @@ data class UserProfileResponseDto(
   @Json(name = "is_owner") val isOwner: Boolean = false,
   @Json(name = "relationship_state") val relationshipState: String = "FOLLOW",
   @Json(name = "is_blocked") val isBlocked: Boolean = false,
+  @Json(name = "is_muted") val isMuted: Boolean = false,
+  @Json(name = "is_private_account") val isPrivateAccount: Boolean = false,
+  @Json(name = "who_can_comment") val whoCanComment: String = "everyone",
+  @Json(name = "who_can_mention") val whoCanMention: String = "everyone",
+  @Json(name = "likes_visibility") val likesVisibility: String = "everyone",
+  @Json(name = "following_visibility") val followingVisibility: String = "everyone",
+  @Json(name = "show_activity_status") val showActivityStatus: Boolean = true,
   @Json(name = "risk_score") val riskScore: Double = 0.0,
   val videos: List<UserProfileVideoDto> = emptyList(),
   val posts: List<FeedItemDto> = emptyList(),
@@ -513,6 +520,178 @@ data class FeedInteractionResponseDto(
 @JsonClass(generateAdapter = true)
 data class FeedInteractionBatchRequestDto(
   val operations: List<FeedInteractionRequestDto>,
+)
+
+@JsonClass(generateAdapter = true)
+data class PrivacySettingsDto(
+  @Json(name = "is_private_account") val isPrivateAccount: Boolean = false,
+  @Json(name = "who_can_comment") val whoCanComment: String = "everyone",
+  @Json(name = "who_can_mention") val whoCanMention: String = "everyone",
+  @Json(name = "who_can_find_you") val whoCanFindYou: String = "everyone",
+  @Json(name = "show_activity_status") val showActivityStatus: Boolean = true,
+  @Json(name = "likes_visibility") val likesVisibility: String = "everyone",
+  @Json(name = "following_visibility") val followingVisibility: String = "everyone",
+  @Json(name = "data_sharing_personalization") val dataSharingPersonalization: Boolean = true,
+  @Json(name = "analytics_sharing") val analyticsSharing: Boolean = true,
+  @Json(name = "essential_cookies") val essentialCookies: Boolean = true,
+  @Json(name = "personalization_cookies") val personalizationCookies: Boolean = true,
+  @Json(name = "updated_at_ms") val updatedAtMs: Long = 0L,
+)
+
+@JsonClass(generateAdapter = true)
+data class NotificationSettingsDto(
+  @Json(name = "master_pause") val masterPause: Boolean = false,
+  @Json(name = "channel_push") val channelPush: Boolean = true,
+  @Json(name = "channel_email") val channelEmail: Boolean = true,
+  @Json(name = "channel_sms") val channelSms: Boolean = false,
+  @Json(name = "type_messages") val typeMessages: Boolean = true,
+  @Json(name = "type_comments") val typeComments: Boolean = true,
+  @Json(name = "type_followers") val typeFollowers: Boolean = true,
+  @Json(name = "type_product_updates") val typeProductUpdates: Boolean = false,
+  @Json(name = "quiet_hours_enabled") val quietHoursEnabled: Boolean = false,
+  @Json(name = "quiet_start_minutes") val quietStartMinutes: Int = 1320,
+  @Json(name = "quiet_end_minutes") val quietEndMinutes: Int = 420,
+  @Json(name = "updated_at_ms") val updatedAtMs: Long = 0L,
+)
+
+@JsonClass(generateAdapter = true)
+data class ContentPreferencesDto(
+  @Json(name = "suggested_content_enabled") val suggestedContentEnabled: Boolean = true,
+  @Json(name = "not_interested_topics") val notInterestedTopics: List<String> = emptyList(),
+  @Json(name = "language_code") val languageCode: String = "en",
+  @Json(name = "autoplay_videos") val autoplayVideos: Boolean = true,
+  @Json(name = "video_quality") val videoQuality: String = "auto",
+  @Json(name = "data_saver") val dataSaver: Boolean = false,
+  @Json(name = "captions_enabled") val captionsEnabled: Boolean = false,
+  @Json(name = "reduced_motion") val reducedMotion: Boolean = false,
+  @Json(name = "reset_suggestions") val resetSuggestions: Boolean = false,
+  @Json(name = "updated_at_ms") val updatedAtMs: Long = 0L,
+)
+
+@JsonClass(generateAdapter = true)
+data class SettingsBundleResponseDto(
+  val success: Boolean = false,
+  val privacy: PrivacySettingsDto? = null,
+  val notifications: NotificationSettingsDto? = null,
+  @Json(name = "content_preferences") val contentPreferences: ContentPreferencesDto? = null,
+  @Json(name = "server_epoch_ms") val serverEpochMs: Long = 0L,
+)
+
+@JsonClass(generateAdapter = true)
+data class RestrictedAccountItemDto(
+  @Json(name = "user_id") val userId: String = "",
+  @Json(name = "full_name") val fullName: String = "",
+  val username: String = "",
+  @Json(name = "avatar_url") val avatarUrl: String = "",
+  @Json(name = "created_at_ms") val createdAtMs: Long = 0L,
+)
+
+@JsonClass(generateAdapter = true)
+data class RestrictedAccountsResponseDto(
+  val success: Boolean = false,
+  val items: List<RestrictedAccountItemDto> = emptyList(),
+)
+
+@JsonClass(generateAdapter = true)
+data class UserMuteResponseDto(
+  val success: Boolean = false,
+  @Json(name = "user_id") val userId: String = "",
+  @Json(name = "is_muted") val isMuted: Boolean = false,
+)
+
+@JsonClass(generateAdapter = true)
+data class ProblemReportRequestDto(
+  @Json(name = "client_op_id") val clientOpId: String = "",
+  val category: String,
+  val description: String,
+  @Json(name = "screenshot_media_id") val screenshotMediaId: String = "",
+  @Json(name = "screenshot_sha256") val screenshotSha256: String = "",
+)
+
+@JsonClass(generateAdapter = true)
+data class SupportTicketDto(
+  @Json(name = "ticket_id") val ticketId: String = "",
+  @Json(name = "reference_number") val referenceNumber: String = "",
+  val category: String = "",
+  val description: String = "",
+  @Json(name = "screenshot_media_id") val screenshotMediaId: String = "",
+  @Json(name = "screenshot_sha256") val screenshotSha256: String = "",
+  val status: String = "open",
+  @Json(name = "resolution_note") val resolutionNote: String = "",
+  @Json(name = "created_at_ms") val createdAtMs: Long = 0L,
+  @Json(name = "updated_at_ms") val updatedAtMs: Long = 0L,
+)
+
+@JsonClass(generateAdapter = true)
+data class ProblemReportResponseDto(
+  val success: Boolean = false,
+  @Json(name = "reference_number") val referenceNumber: String = "",
+  val ticket: SupportTicketDto? = null,
+)
+
+@JsonClass(generateAdapter = true)
+data class SupportTicketsResponseDto(
+  val success: Boolean = false,
+  val items: List<SupportTicketDto> = emptyList(),
+)
+
+@JsonClass(generateAdapter = true)
+data class FaqItemDto(
+  val id: String = "",
+  val category: String = "",
+  val question: String = "",
+  val answer: String = "",
+)
+
+@JsonClass(generateAdapter = true)
+data class FaqListResponseDto(
+  val success: Boolean = false,
+  val items: List<FaqItemDto> = emptyList(),
+)
+
+@JsonClass(generateAdapter = true)
+data class SystemServiceStatusDto(
+  @Json(name = "service_name") val serviceName: String = "",
+  val status: String = "operational",
+  @Json(name = "latency_ms") val latencyMs: Int = 0,
+  val summary: String = "",
+)
+
+@JsonClass(generateAdapter = true)
+data class SystemStatusResponseDto(
+  val success: Boolean = false,
+  @Json(name = "overall_status") val overallStatus: String = "operational",
+  val services: List<SystemServiceStatusDto> = emptyList(),
+  @Json(name = "checked_at_ms") val checkedAtMs: Long = 0L,
+)
+
+@JsonClass(generateAdapter = true)
+data class LegalDocumentDto(
+  val id: String = "",
+  val title: String = "",
+  @Json(name = "last_updated") val lastUpdated: String = "",
+  val sections: List<String> = emptyList(),
+)
+
+@JsonClass(generateAdapter = true)
+data class LegalDocumentsResponseDto(
+  val success: Boolean = false,
+  val items: List<LegalDocumentDto> = emptyList(),
+)
+
+@JsonClass(generateAdapter = true)
+data class AppVersionResponseDto(
+  val success: Boolean = false,
+  @Json(name = "latest_version") val latestVersion: String = "1.0",
+  @Json(name = "min_supported_version") val minSupportedVersion: String = "1.0",
+  @Json(name = "build_number") val buildNumber: Int = 1,
+  @Json(name = "update_available") val updateAvailable: Boolean = false,
+  @Json(name = "release_notes") val releaseNotes: String = "",
+)
+
+@JsonClass(generateAdapter = true)
+data class LogoutRequestDto(
+  @Json(name = "all_devices") val allDevices: Boolean = false,
 )
 
 interface TelefamApiService {
@@ -799,6 +978,107 @@ interface TelefamApiService {
     @Path("id") userId: String,
     @Body body: UserReportRequestDto,
   ): Response<UserReportResponseDto>
+
+  @POST("v1/users/{id}/mute")
+  suspend fun muteUser(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Path("id") userId: String,
+  ): Response<UserMuteResponseDto>
+
+  @POST("v1/users/{id}/unmute")
+  suspend fun unmuteUser(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Path("id") userId: String,
+  ): Response<UserMuteResponseDto>
+
+  @GET("v1/settings")
+  suspend fun getSettings(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+  ): Response<SettingsBundleResponseDto>
+
+  @PUT("v1/settings/privacy")
+  suspend fun updatePrivacySettings(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Body body: PrivacySettingsDto,
+  ): Response<SettingsBundleResponseDto>
+
+  @PUT("v1/settings/notifications")
+  suspend fun updateNotificationSettings(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Body body: NotificationSettingsDto,
+  ): Response<SettingsBundleResponseDto>
+
+  @PUT("v1/settings/content-preferences")
+  suspend fun updateContentPreferences(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Body body: ContentPreferencesDto,
+  ): Response<SettingsBundleResponseDto>
+
+  @GET("v1/settings/blocked-accounts")
+  suspend fun listBlockedAccounts(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Query("q") query: String = "",
+  ): Response<RestrictedAccountsResponseDto>
+
+  @GET("v1/settings/muted-accounts")
+  suspend fun listMutedAccounts(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Query("q") query: String = "",
+  ): Response<RestrictedAccountsResponseDto>
+
+  @POST("v1/support/reports")
+  suspend fun submitProblemReport(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Body body: ProblemReportRequestDto,
+  ): Response<ProblemReportResponseDto>
+
+  @GET("v1/support/tickets")
+  suspend fun listSupportTickets(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+  ): Response<SupportTicketsResponseDto>
+
+  @GET("v1/support/faqs")
+  suspend fun searchFaqs(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Query("q") query: String = "",
+  ): Response<FaqListResponseDto>
+
+  @GET("v1/settings/system-status")
+  suspend fun getSystemStatus(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+  ): Response<SystemStatusResponseDto>
+
+  @GET("v1/legal/documents")
+  suspend fun getLegalDocuments(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+  ): Response<LegalDocumentsResponseDto>
+
+  @GET("v1/app/version")
+  suspend fun checkAppVersion(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Query("version") version: String,
+  ): Response<AppVersionResponseDto>
+
+  @POST("v1/auth/logout")
+  suspend fun logout(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Body body: LogoutRequestDto,
+  ): Response<GenericSuccessDto>
 
   @GET
   suspend fun downloadMedia(@Url url: String): Response<ResponseBody>

@@ -29,6 +29,7 @@ type AccessClaims struct {
 	Email     string `json:"eml"`
 	DeviceFP  string `json:"dfp"`
 	FamilyID  string `json:"fid"`
+	IssuedAt  int64  `json:"iat"`
 	ExpiresAt int64  `json:"exp"`
 }
 
@@ -45,31 +46,66 @@ type refreshRecord struct {
 	UserID     string
 	Email      string
 	DeviceFP   string
+	CreatedAt  time.Time
 	ExpiresAt  time.Time
 	Revoked    bool
 	ReplacedBy string
 }
 
 type TokenService struct {
-	mu             sync.Mutex
-	signingSecret  []byte
-	refreshStore   map[string]*refreshRecord // key: sha256(refreshToken)
-	familyRevoked  map[string]bool
+	mu                   sync.Mutex
+	signingSecret        []byte
+	refreshStore         map[string]*refreshRecord // key: sha256(refreshToken)
+	familyRevoked        map[string]bool
+	userRevokedBefore    map[string]int64
 }
 
 func NewTokenService(secret []byte) *TokenService {
 	copied := make([]byte, len(secret))
 	copy(copied, secret)
 	return &TokenService{
-		signingSecret: copied,
-		refreshStore:  make(map[string]*refreshRecord),
-		familyRevoked: make(map[string]bool),
+		signingSecret:     copied,
+		refreshStore:      make(map[string]*refreshRecord),
+		familyRevoked:     make(map[string]bool),
+		userRevokedBefore: make(map[string]int64),
 	}
 }
 
 func (ts *TokenService) IssueInitialPair(userID, email, deviceFP string) (TokenPair, string, error) {
 	familyID := randomHex(16)
 	return ts.issueForFamily(userID, email, deviceFP, familyID)
+}
+
+// RevokeFamily invalidates all tokens in a single device's refresh family.
+func (ts *TokenService) RevokeFamily(familyID string) {
+	if familyID == "" {
+		return
+	}
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	ts.familyRevoked[familyID] = true
+	for _, item := range ts.refreshStore {
+		if item.FamilyID == familyID {
+			item.Revoked = true
+		}
+	}
+}
+
+// RevokeAllUserSessions immediately revokes every device session for the user.
+func (ts *TokenService) RevokeAllUserSessions(userID string) {
+	if userID == "" {
+		return
+	}
+	nowUnix := time.Now().Unix()
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	ts.userRevokedBefore[userID] = nowUnix
+	for _, item := range ts.refreshStore {
+		if item.UserID == userID {
+			ts.familyRevoked[item.FamilyID] = true
+			item.Revoked = true
+		}
+	}
 }
 
 // RotateRefreshToken enforces single-use rotating refresh tokens.
@@ -83,6 +119,13 @@ func (ts *TokenService) RotateRefreshToken(rawRefreshToken, deviceFP string) (To
 	if !ok {
 		ts.mu.Unlock()
 		return TokenPair{}, "", "", ErrTokenInvalid
+	}
+
+	if cutoff := ts.userRevokedBefore[rec.UserID]; cutoff > 0 && rec.CreatedAt.Unix() <= cutoff {
+		rec.Revoked = true
+		ts.familyRevoked[rec.FamilyID] = true
+		ts.mu.Unlock()
+		return TokenPair{}, rec.UserID, rec.FamilyID, ErrTokenInvalid
 	}
 
 	if rec.Revoked || ts.familyRevoked[rec.FamilyID] {
@@ -141,8 +184,9 @@ func (ts *TokenService) VerifyAccessToken(token string, expectedDeviceFP string)
 
 	ts.mu.Lock()
 	revoked := ts.familyRevoked[claims.FamilyID]
+	cutoff := ts.userRevokedBefore[claims.UserID]
 	ts.mu.Unlock()
-	if revoked {
+	if revoked || (cutoff > 0 && claims.IssuedAt <= cutoff) {
 		return AccessClaims{}, ErrTokenInvalid
 	}
 	return claims, nil
@@ -155,6 +199,7 @@ func (ts *TokenService) issueForFamily(userID, email, deviceFP, familyID string)
 		Email:     email,
 		DeviceFP:  deviceFP,
 		FamilyID:  familyID,
+		IssuedAt:  now.Unix(),
 		ExpiresAt: now.Add(AccessTokenTTL).Unix(),
 	}
 	payload, err := json.Marshal(claims)
@@ -176,6 +221,7 @@ func (ts *TokenService) issueForFamily(userID, email, deviceFP, familyID string)
 		UserID:    userID,
 		Email:     email,
 		DeviceFP:  deviceFP,
+		CreatedAt: now,
 		ExpiresAt: now.Add(RefreshTokenTTL),
 		Revoked:   false,
 	}

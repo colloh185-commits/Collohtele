@@ -623,6 +623,19 @@ final class TelefamIosSessionStore: ObservableObject {
         cooldownRemainingSec = 0
     }
 
+    func logout(allDevices: Bool) async {
+        if let url = serverURL?.appendingPathComponent("v1/auth/logout"), !sessionToken.isEmpty {
+            var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 8)
+            req.httpMethod = "POST"
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
+            req.setValue(deviceFingerprint, forHTTPHeaderField: "X-Telefam-Device-FP")
+            req.httpBody = try? JSONSerialization.data(withJSONObject: ["all_devices": allDevices])
+            _ = try? await URLSession.shared.data(for: req)
+        }
+        signOut()
+    }
+
     func signOut() {
         cooldownTimer?.invalidate()
         userId = ""

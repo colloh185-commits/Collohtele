@@ -19,25 +19,43 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import telefam.company.core.AdaptiveStreamSelector
+import telefam.company.core.AppLanguageOption
+import telefam.company.core.AppVersionCheckResult
+import telefam.company.core.AudienceOption
 import telefam.company.core.ContactFilterTab
+import telefam.company.core.ContentPreferencesState
+import telefam.company.core.DiscoverabilityOption
+import telefam.company.core.FaqEntry
 import telefam.company.core.FeedInteractionAction
 import telefam.company.core.FeedSearchShortcut
 import telefam.company.core.FeedTab
 import telefam.company.core.FeedVideoRendition
 import telefam.company.core.HashtagItem
+import telefam.company.core.LegalDocumentItem
 import telefam.company.core.NetworkTier
+import telefam.company.core.NotificationSettingsState
 import telefam.company.core.PostMode
 import telefam.company.core.PostPrivacy
 import telefam.company.core.PostSongTrack
+import telefam.company.core.PrivacySettingsState
 import telefam.company.core.ProfileBackgroundItem
+import telefam.company.core.RestrictedAccountItem
+import telefam.company.core.SettingsSnapshot
+import telefam.company.core.SupportTicketItem
+import telefam.company.core.SystemServiceStatusItem
 import telefam.company.core.TelefamContactsRules
 import telefam.company.core.TelefamCoreEngine
 import telefam.company.core.TelefamPostRules
 import telefam.company.core.TelefamProfileSanitizer
+import telefam.company.core.TelefamSettingsContentCatalog
+import telefam.company.core.VideoQualityOption
+import telefam.company.core.VisibilityOption
 import telefam.company.data.local.AuditLogEntity
 import telefam.company.data.local.CachedContactEntity
 import telefam.company.data.local.CachedFeedPostEntity
 import telefam.company.data.local.CachedHashtagEntity
+import telefam.company.data.local.CachedRestrictedAccountEntity
+import telefam.company.data.local.CachedSettingsEntity
 import telefam.company.data.local.CachedUserConnectionEntity
 import telefam.company.data.local.CachedUserProfileEntity
 import telefam.company.data.local.ContactSyncActionEntity
@@ -48,10 +66,12 @@ import telefam.company.data.local.MediaUploadEntity
 import telefam.company.data.local.OfflineActionEntity
 import telefam.company.data.local.PendingFeedInteractionEntity
 import telefam.company.data.local.PendingPostUploadEntity
+import telefam.company.data.local.PendingSettingsOpEntity
 import telefam.company.data.local.RateLimitHitEntity
 import telefam.company.data.local.RateLimitStateEntity
 import telefam.company.data.local.RefreshTokenRecordEntity
 import telefam.company.data.local.StoredSession
+import telefam.company.data.local.SupportTicketEntity
 import telefam.company.data.local.TelefamDao
 import telefam.company.data.local.UserProfileEntity
 import telefam.company.data.network.AuditEventDto
@@ -59,13 +79,18 @@ import telefam.company.data.network.ContactActionDto
 import telefam.company.data.network.ContactItemDto
 import telefam.company.data.network.ContactSyncActionDto
 import telefam.company.data.network.ContactSyncBatchRequestDto
+import telefam.company.data.network.ContentPreferencesDto
 import telefam.company.data.network.CreatePostRequestDto
 import telefam.company.data.network.FeedInteractionBatchRequestDto
 import telefam.company.data.network.FeedInteractionRequestDto
 import telefam.company.data.network.FeedItemDto
 import telefam.company.data.network.FeedVideoRenditionDto
+import telefam.company.data.network.LogoutRequestDto
 import telefam.company.data.network.NetworkQualityMonitor
+import telefam.company.data.network.NotificationSettingsDto
 import telefam.company.data.network.OAuthDto
+import telefam.company.data.network.PrivacySettingsDto
+import telefam.company.data.network.ProblemReportRequestDto
 import telefam.company.data.network.ProfileBackgroundItemDto
 import telefam.company.data.network.ProfileBackgroundReorderDto
 import telefam.company.data.network.ProfileSetupDto
@@ -90,6 +115,9 @@ import telefam.company.security.EncryptedTokenVault
 import telefam.company.security.SecurityIntegrityGuard
 import telefam.company.ui.theme.ThemeMode
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.UUID
 
 sealed class AuthActionResult {
@@ -1283,6 +1311,7 @@ class TelefamRepository(
     flushPendingContactActions(nowMs, batchLimit)
     flushPendingFeedInteractions(nowMs, batchLimit)
     flushPendingPostUploads(nowMs, batchLimit.coerceAtMost(5))
+    flushPendingSettingsOps()
 
     val ready = dao.getReadyOfflineActions(nowMs, batchLimit)
     if (ready.isEmpty()) return
@@ -2718,6 +2747,22 @@ class TelefamRepository(
     }
     dao.updateCachedUserConnectionFollow(cleanId, isFollowing = false, relationshipState = "FOLLOW")
 
+    val cachedProf = dao.getCachedUserProfile(cleanId)
+    val cachedContact = dao.getCachedContact(cleanId)
+    dao.upsertRestrictedAccount(
+      CachedRestrictedAccountEntity(
+        compositeKey = "$callerId|blocked|$cleanId",
+        ownerUserId = callerId,
+        kind = "blocked",
+        targetUserId = cleanId,
+        fullName = cachedProf?.fullName ?: cachedContact?.fullName ?: cleanId,
+        username = cachedProf?.username ?: cachedContact?.username ?: cleanId,
+        avatarUrl = cachedProf?.avatarUrl ?: cachedContact?.avatarUrl,
+        avatarLocalPath = cachedProf?.avatarLocalPath ?: cachedContact?.avatarLocalPath,
+        createdAtMs = System.currentTimeMillis(),
+      ),
+    )
+
     val api = apiService
     val token = session.accessToken.orEmpty()
     if (api != null && token.isNotBlank() && networkTier.value != NetworkTier.OFFLINE) {
@@ -2730,7 +2775,9 @@ class TelefamRepository(
         }
         return true
       }
-      return false
+    }
+    if (callerId.isNotBlank()) {
+      enqueueSettingsOp(callerId, "block", cleanId)
     }
     return true
   }
@@ -2741,6 +2788,9 @@ class TelefamRepository(
     val session = identityStore.sessionFlow.first()
     val callerId = session.userId.orEmpty()
     dao.updateCachedUserProfileBlocked(cleanId, isBlocked = false, isFollowing = false, relationshipState = "FOLLOW")
+    if (callerId.isNotBlank()) {
+      dao.deleteRestrictedAccount(callerId, "blocked", cleanId)
+    }
 
     val api = apiService
     val token = session.accessToken.orEmpty()
@@ -2754,7 +2804,9 @@ class TelefamRepository(
         }
         return true
       }
-      return false
+    }
+    if (callerId.isNotBlank()) {
+      enqueueSettingsOp(callerId, "unblock", cleanId)
     }
     return true
   }
@@ -2827,14 +2879,696 @@ class TelefamRepository(
 
   fun applicationContext(): Context = appContext
 
-  suspend fun signOut() {
+  suspend fun signOut(allDevices: Boolean = false) {
     val session = identityStore.sessionFlow.first()
     val userId = session.userId.orEmpty()
+    val token = session.accessToken.orEmpty()
+    val api = apiService
+    if (api != null && token.isNotBlank() && networkTier.value != NetworkTier.OFFLINE) {
+      runCatching {
+        api.logout("Bearer $token", buildDeviceFingerprint(), LogoutRequestDto(allDevices = allDevices))
+      }
+    }
     if (userId.isNotBlank()) {
-      logAudit(userId, "user_signed_out", "{}")
+      logAudit(userId, if (allDevices) "user_signed_out_all_devices" else "user_signed_out", "{}")
     }
     identityStore.clearSession()
   }
+
+  // Offline-first Settings, Privacy, Notifications, Content Prefs, Mutes, Support Tickets & System Info
+  suspend fun loadCachedSettings(): SettingsSnapshot {
+    val callerId = identityStore.sessionFlow.first().userId.orEmpty()
+    if (callerId.isBlank()) return SettingsSnapshot()
+    val entity = dao.getCachedSettings(callerId) ?: return SettingsSnapshot()
+    return mapEntityToSettingsSnapshot(entity)
+  }
+
+  suspend fun fetchSettings(): SettingsSnapshot {
+    val session = identityStore.sessionFlow.first()
+    val callerId = session.userId.orEmpty()
+    if (callerId.isBlank()) return SettingsSnapshot()
+    val local = dao.getCachedSettings(callerId)?.let(::mapEntityToSettingsSnapshot) ?: SettingsSnapshot()
+
+    val api = apiService
+    val token = session.accessToken.orEmpty()
+    if (api != null && token.isNotBlank() && networkTier.value != NetworkTier.OFFLINE) {
+      flushPendingSettingsOps()
+      val resp = executeWithWeakNetworkRetry { api.getSettings("Bearer $token", buildDeviceFingerprint()) }
+      val body = resp?.body()
+      if (resp != null && resp.isSuccessful && body?.success == true) {
+        val merged = SettingsSnapshot(
+          privacy = body.privacy?.let(::mapPrivacyDtoToState) ?: local.privacy,
+          notifications = body.notifications?.let(::mapNotificationDtoToState) ?: local.notifications,
+          contentPreferences = body.contentPreferences?.let(::mapContentPrefsDtoToState) ?: local.contentPreferences,
+        )
+        persistSettingsSnapshot(callerId, merged)
+        return merged
+      }
+    }
+    return local
+  }
+
+  suspend fun savePrivacySettings(next: PrivacySettingsState): SettingsSnapshot {
+    val session = identityStore.sessionFlow.first()
+    val callerId = session.userId.orEmpty()
+    val stamped = next.copy(updatedAtMs = System.currentTimeMillis())
+    val current = if (callerId.isNotBlank()) loadCachedSettings() else SettingsSnapshot()
+    val updated = current.copy(privacy = stamped)
+    if (callerId.isNotBlank()) {
+      persistSettingsSnapshot(callerId, updated)
+    }
+
+    val dto = mapPrivacyStateToDto(stamped)
+    val api = apiService
+    val token = session.accessToken.orEmpty()
+    if (api != null && token.isNotBlank() && networkTier.value != NetworkTier.OFFLINE) {
+      val resp = executeWithWeakNetworkRetry { api.updatePrivacySettings("Bearer $token", buildDeviceFingerprint(), dto) }
+      if (resp != null && resp.isSuccessful) {
+        return updated
+      }
+    }
+    if (callerId.isNotBlank()) {
+      val json = moshi.adapter(PrivacySettingsDto::class.java).toJson(dto)
+      enqueueSettingsOp(callerId, "privacy", json)
+    }
+    return updated
+  }
+
+  suspend fun saveNotificationSettings(next: NotificationSettingsState): SettingsSnapshot {
+    val session = identityStore.sessionFlow.first()
+    val callerId = session.userId.orEmpty()
+    val stamped = next.copy(updatedAtMs = System.currentTimeMillis())
+    val current = if (callerId.isNotBlank()) loadCachedSettings() else SettingsSnapshot()
+    val updated = current.copy(notifications = stamped)
+    if (callerId.isNotBlank()) {
+      persistSettingsSnapshot(callerId, updated)
+    }
+
+    val dto = mapNotificationStateToDto(stamped)
+    val api = apiService
+    val token = session.accessToken.orEmpty()
+    if (api != null && token.isNotBlank() && networkTier.value != NetworkTier.OFFLINE) {
+      val resp = executeWithWeakNetworkRetry { api.updateNotificationSettings("Bearer $token", buildDeviceFingerprint(), dto) }
+      if (resp != null && resp.isSuccessful) {
+        return updated
+      }
+    }
+    if (callerId.isNotBlank()) {
+      val json = moshi.adapter(NotificationSettingsDto::class.java).toJson(dto)
+      enqueueSettingsOp(callerId, "notifications", json)
+    }
+    return updated
+  }
+
+  suspend fun saveContentPreferences(next: ContentPreferencesState, resetSuggestions: Boolean = false): SettingsSnapshot {
+    val session = identityStore.sessionFlow.first()
+    val callerId = session.userId.orEmpty()
+    val stamped = next.copy(updatedAtMs = System.currentTimeMillis())
+    val current = if (callerId.isNotBlank()) loadCachedSettings() else SettingsSnapshot()
+    val updated = current.copy(contentPreferences = stamped)
+    if (callerId.isNotBlank()) {
+      persistSettingsSnapshot(callerId, updated)
+    }
+
+    val dto = mapContentPrefsStateToDto(stamped, resetSuggestions)
+    val api = apiService
+    val token = session.accessToken.orEmpty()
+    if (api != null && token.isNotBlank() && networkTier.value != NetworkTier.OFFLINE) {
+      val resp = executeWithWeakNetworkRetry { api.updateContentPreferences("Bearer $token", buildDeviceFingerprint(), dto) }
+      if (resp != null && resp.isSuccessful) {
+        return updated
+      }
+    }
+    if (callerId.isNotBlank()) {
+      val json = moshi.adapter(ContentPreferencesDto::class.java).toJson(dto)
+      enqueueSettingsOp(callerId, "content_prefs", json)
+    }
+    return updated
+  }
+
+  suspend fun listRestrictedAccounts(isMuted: Boolean, query: String = ""): List<RestrictedAccountItem> {
+    val session = identityStore.sessionFlow.first()
+    val callerId = session.userId.orEmpty()
+    if (callerId.isBlank()) return emptyList()
+    val kind = if (isMuted) "muted" else "blocked"
+    val cleanQuery = query.trim().lowercase()
+
+    val api = apiService
+    val token = session.accessToken.orEmpty()
+    if (api != null && token.isNotBlank() && networkTier.value != NetworkTier.OFFLINE) {
+      flushPendingSettingsOps()
+      val resp = executeWithWeakNetworkRetry {
+        if (isMuted) api.listMutedAccounts("Bearer $token", buildDeviceFingerprint(), "")
+        else api.listBlockedAccounts("Bearer $token", buildDeviceFingerprint(), "")
+      }
+      val body = resp?.body()
+      if (resp != null && resp.isSuccessful && body?.success == true) {
+        dao.clearRestrictedAccountsByKind(callerId, kind)
+        val entities = body.items.map { item ->
+          CachedRestrictedAccountEntity(
+            compositeKey = "$callerId|$kind|${item.userId}",
+            ownerUserId = callerId,
+            kind = kind,
+            targetUserId = item.userId,
+            fullName = item.fullName,
+            username = item.username,
+            avatarUrl = item.avatarUrl.takeIf { it.isNotBlank() },
+            avatarLocalPath = null,
+            createdAtMs = item.createdAtMs,
+          )
+        }
+        if (entities.isNotEmpty()) dao.upsertRestrictedAccounts(entities)
+      }
+    }
+
+    return dao.getRestrictedAccounts(callerId, kind)
+      .filter {
+        cleanQuery.isBlank() ||
+          it.fullName.lowercase().contains(cleanQuery) ||
+          it.username.lowercase().contains(cleanQuery)
+      }
+      .map {
+        RestrictedAccountItem(
+          userId = it.targetUserId,
+          fullName = it.fullName,
+          username = it.username,
+          avatarUrl = it.avatarUrl,
+          avatarLocalPath = it.avatarLocalPath,
+          isMuted = isMuted,
+          createdAtMs = it.createdAtMs,
+        )
+      }
+  }
+
+  suspend fun muteUserAccount(targetUserId: String): Boolean {
+    val cleanId = targetUserId.trim()
+    val session = identityStore.sessionFlow.first()
+    val callerId = session.userId.orEmpty()
+    if (cleanId.isBlank() || callerId.isBlank() || cleanId == callerId) return false
+
+    dao.hideFeedPostsByAuthor(cleanId)
+    val cachedProf = dao.getCachedUserProfile(cleanId)
+    val cachedContact = dao.getCachedContact(cleanId)
+    dao.upsertRestrictedAccount(
+      CachedRestrictedAccountEntity(
+        compositeKey = "$callerId|muted|$cleanId",
+        ownerUserId = callerId,
+        kind = "muted",
+        targetUserId = cleanId,
+        fullName = cachedProf?.fullName ?: cachedContact?.fullName ?: cleanId,
+        username = cachedProf?.username ?: cachedContact?.username ?: cleanId,
+        avatarUrl = cachedProf?.avatarUrl ?: cachedContact?.avatarUrl,
+        avatarLocalPath = cachedProf?.avatarLocalPath ?: cachedContact?.avatarLocalPath,
+        createdAtMs = System.currentTimeMillis(),
+      ),
+    )
+
+    val api = apiService
+    val token = session.accessToken.orEmpty()
+    if (api != null && token.isNotBlank() && networkTier.value != NetworkTier.OFFLINE) {
+      val resp = executeWithWeakNetworkRetry { api.muteUser("Bearer $token", buildDeviceFingerprint(), cleanId) }
+      if (resp != null && resp.isSuccessful) {
+        logAudit(callerId, "user_muted", "{\"target\":\"$cleanId\"}")
+        return true
+      }
+    }
+    enqueueSettingsOp(callerId, "mute", cleanId)
+    return true
+  }
+
+  suspend fun unmuteUserAccount(targetUserId: String): Boolean {
+    val cleanId = targetUserId.trim()
+    val session = identityStore.sessionFlow.first()
+    val callerId = session.userId.orEmpty()
+    if (cleanId.isBlank() || callerId.isBlank()) return false
+
+    dao.deleteRestrictedAccount(callerId, "muted", cleanId)
+    val api = apiService
+    val token = session.accessToken.orEmpty()
+    if (api != null && token.isNotBlank() && networkTier.value != NetworkTier.OFFLINE) {
+      val resp = executeWithWeakNetworkRetry { api.unmuteUser("Bearer $token", buildDeviceFingerprint(), cleanId) }
+      if (resp != null && resp.isSuccessful) {
+        logAudit(callerId, "user_unmuted", "{\"target\":\"$cleanId\"}")
+        return true
+      }
+    }
+    enqueueSettingsOp(callerId, "unmute", cleanId)
+    return true
+  }
+
+  suspend fun submitProblemReport(
+    category: String,
+    description: String,
+    screenshotUri: Uri?,
+  ): SupportTicketItem? {
+    val session = identityStore.sessionFlow.first()
+    val callerId = session.userId.orEmpty()
+    val cleanCat = TelefamProfileSanitizer.sanitizePlainText(category, 64, singleLine = true)
+    val cleanDesc = TelefamProfileSanitizer.sanitizePlainText(description, 2000, singleLine = false)
+    if (callerId.isBlank() || cleanCat.isBlank() || cleanDesc.length < 5) return null
+
+    var processedShot: ProcessedPostPhoto? = null
+    if (screenshotUri != null) {
+      processedShot = withContext(Dispatchers.IO) {
+        MediaUploadProcessor.compressPostPhoto(appContext, screenshotUri)
+      }
+    }
+
+    val opId = UUID.randomUUID().toString()
+    val nowMs = System.currentTimeMillis()
+    val dateStamp = SimpleDateFormat("yyyyMMdd", Locale.US).format(Date(nowMs))
+    val localRef = "TF-$dateStamp-${opId.take(6).uppercase()}"
+
+    var mediaId = ""
+    var sha256 = processedShot?.sha256Fingerprint.orEmpty()
+    val api = apiService
+    val token = session.accessToken.orEmpty()
+    if (api != null && token.isNotBlank() && networkTier.value != NetworkTier.OFFLINE) {
+      if (processedShot != null && File(processedShot.localFilePath).exists()) {
+        val bytes = File(processedShot.localFilePath).readBytes()
+        val uploadResp = runCatching {
+          api.uploadPostPhoto(
+            bearer = "Bearer $token",
+            deviceFingerprint = buildDeviceFingerprint(),
+            imageBody = bytes.toRequestBody("image/jpeg".toMediaType()),
+          )
+        }.getOrNull()
+        if (uploadResp != null && uploadResp.isSuccessful) {
+          mediaId = uploadResp.body()?.mediaId.orEmpty()
+          sha256 = uploadResp.body()?.sha256Fingerprint?.ifBlank { sha256 } ?: sha256
+        }
+      }
+
+      val reqDto = ProblemReportRequestDto(
+        clientOpId = opId,
+        category = cleanCat,
+        description = cleanDesc,
+        screenshotMediaId = mediaId,
+        screenshotSha256 = sha256,
+      )
+      val resp = executeWithWeakNetworkRetry { api.submitProblemReport("Bearer $token", buildDeviceFingerprint(), reqDto) }
+      val body = resp?.body()
+      if (resp != null && resp.isSuccessful && body?.success == true) {
+        val srvTicket = body.ticket
+        val item = SupportTicketItem(
+          ticketId = srvTicket?.ticketId?.ifBlank { opId } ?: opId,
+          referenceNumber = body.referenceNumber.ifBlank { localRef },
+          category = srvTicket?.category?.ifBlank { cleanCat } ?: cleanCat,
+          description = srvTicket?.description?.ifBlank { cleanDesc } ?: cleanDesc,
+          screenshotLocalPath = processedShot?.localFilePath,
+          screenshotSha256 = sha256,
+          status = srvTicket?.status ?: "open",
+          resolutionNote = srvTicket?.resolutionNote ?: "Submitted to Trust & Support",
+          isSynced = true,
+          createdAtMs = srvTicket?.createdAtMs ?: nowMs,
+        )
+        dao.upsertSupportTicket(
+          SupportTicketEntity(
+            ticketId = item.ticketId,
+            userId = callerId,
+            referenceNumber = item.referenceNumber,
+            category = item.category,
+            description = item.description,
+            screenshotLocalPath = item.screenshotLocalPath,
+            screenshotSha256 = item.screenshotSha256,
+            status = item.status,
+            resolutionNote = item.resolutionNote,
+            isSynced = true,
+            createdAtMs = item.createdAtMs,
+          ),
+        )
+        return item
+      }
+    }
+
+    // Offline-first fallback: save ticket immediately with local reference and enqueue outbox sync
+    val offlineItem = SupportTicketItem(
+      ticketId = opId,
+      referenceNumber = localRef,
+      category = cleanCat,
+      description = cleanDesc,
+      screenshotLocalPath = processedShot?.localFilePath,
+      screenshotSha256 = sha256,
+      status = "queued_offline",
+      resolutionNote = "Saved offline. Will synchronize automatically when back online.",
+      isSynced = false,
+      createdAtMs = nowMs,
+    )
+    dao.upsertSupportTicket(
+      SupportTicketEntity(
+        ticketId = offlineItem.ticketId,
+        userId = callerId,
+        referenceNumber = offlineItem.referenceNumber,
+        category = offlineItem.category,
+        description = offlineItem.description,
+        screenshotLocalPath = offlineItem.screenshotLocalPath,
+        screenshotSha256 = offlineItem.screenshotSha256,
+        status = offlineItem.status,
+        resolutionNote = offlineItem.resolutionNote,
+        isSynced = false,
+        createdAtMs = offlineItem.createdAtMs,
+      ),
+    )
+    val reqJson = moshi.adapter(ProblemReportRequestDto::class.java).toJson(
+      ProblemReportRequestDto(
+        clientOpId = opId,
+        category = cleanCat,
+        description = cleanDesc,
+        screenshotMediaId = mediaId,
+        screenshotSha256 = sha256,
+      ),
+    )
+    enqueueSettingsOp(callerId, "report_problem", reqJson)
+    return offlineItem
+  }
+
+  suspend fun fetchSupportTickets(): List<SupportTicketItem> {
+    val session = identityStore.sessionFlow.first()
+    val callerId = session.userId.orEmpty()
+    if (callerId.isBlank()) return emptyList()
+
+    val api = apiService
+    val token = session.accessToken.orEmpty()
+    if (api != null && token.isNotBlank() && networkTier.value != NetworkTier.OFFLINE) {
+      flushPendingSettingsOps()
+      val resp = executeWithWeakNetworkRetry { api.listSupportTickets("Bearer $token", buildDeviceFingerprint()) }
+      val body = resp?.body()
+      if (resp != null && resp.isSuccessful && body?.success == true) {
+        val entities = body.items.map { t ->
+          SupportTicketEntity(
+            ticketId = t.ticketId.ifBlank { t.referenceNumber },
+            userId = callerId,
+            referenceNumber = t.referenceNumber,
+            category = t.category,
+            description = t.description,
+            screenshotLocalPath = null,
+            screenshotSha256 = t.screenshotSha256,
+            status = t.status,
+            resolutionNote = t.resolutionNote,
+            isSynced = true,
+            createdAtMs = t.createdAtMs,
+          )
+        }
+        if (entities.isNotEmpty()) dao.upsertSupportTickets(entities)
+      }
+    }
+
+    return dao.getSupportTickets(callerId).map { e ->
+      SupportTicketItem(
+        ticketId = e.ticketId,
+        referenceNumber = e.referenceNumber,
+        category = e.category,
+        description = e.description,
+        screenshotLocalPath = e.screenshotLocalPath,
+        screenshotSha256 = e.screenshotSha256,
+        status = e.status,
+        resolutionNote = e.resolutionNote,
+        isSynced = e.isSynced,
+        createdAtMs = e.createdAtMs,
+      )
+    }
+  }
+
+  suspend fun fetchFaqs(query: String): List<FaqEntry> {
+    val cleanQuery = query.trim().lowercase()
+    val session = identityStore.sessionFlow.first()
+    val api = apiService
+    val token = session.accessToken.orEmpty()
+    if (api != null && token.isNotBlank() && networkTier.value != NetworkTier.OFFLINE) {
+      val resp = runCatching { api.searchFaqs("Bearer $token", buildDeviceFingerprint(), cleanQuery) }.getOrNull()
+      val items = resp?.body()?.items
+      if (resp != null && resp.isSuccessful && !items.isNullOrEmpty()) {
+        return items.map { FaqEntry(it.id, it.category, it.question, it.answer) }
+      }
+    }
+    return TelefamSettingsContentCatalog.defaultFaqs.filter {
+      cleanQuery.isBlank() ||
+        it.question.lowercase().contains(cleanQuery) ||
+        it.answer.lowercase().contains(cleanQuery) ||
+        it.category.lowercase().contains(cleanQuery)
+    }
+  }
+
+  suspend fun fetchSystemStatus(): List<SystemServiceStatusItem> {
+    val session = identityStore.sessionFlow.first()
+    val api = apiService
+    val token = session.accessToken.orEmpty()
+    if (api != null && token.isNotBlank() && networkTier.value != NetworkTier.OFFLINE) {
+      val resp = runCatching { api.getSystemStatus("Bearer $token", buildDeviceFingerprint()) }.getOrNull()
+      val services = resp?.body()?.services
+      if (resp != null && resp.isSuccessful && !services.isNullOrEmpty()) {
+        return services.map { SystemServiceStatusItem(it.serviceName, it.status, it.latencyMs, it.summary) }
+      }
+    }
+    val offline = networkTier.value == NetworkTier.OFFLINE
+    return listOf(
+      SystemServiceStatusItem(
+        serviceName = "Device Sync & Connectivity",
+        status = if (offline) "offline" else "degraded",
+        latencyMs = 0,
+        summary = if (offline) "No internet connection. Local encrypted cache active." else "Unable to reach server right now.",
+      ),
+    )
+  }
+
+  suspend fun fetchLegalDocuments(): List<LegalDocumentItem> {
+    val session = identityStore.sessionFlow.first()
+    val api = apiService
+    val token = session.accessToken.orEmpty()
+    if (api != null && token.isNotBlank() && networkTier.value != NetworkTier.OFFLINE) {
+      val resp = runCatching { api.getLegalDocuments("Bearer $token", buildDeviceFingerprint()) }.getOrNull()
+      val items = resp?.body()?.items
+      if (resp != null && resp.isSuccessful && !items.isNullOrEmpty()) {
+        return items.map { LegalDocumentItem(it.id, it.title, it.lastUpdated, it.sections) }
+      }
+    }
+    return TelefamSettingsContentCatalog.legalDocuments
+  }
+
+  suspend fun checkAppForUpdates(): AppVersionCheckResult {
+    val nowMs = System.currentTimeMillis()
+    val installedVer = BuildConfig.VERSION_NAME
+    val installedCode = BuildConfig.VERSION_CODE
+    val session = identityStore.sessionFlow.first()
+    val api = apiService
+    val token = session.accessToken.orEmpty()
+    if (api != null && token.isNotBlank() && networkTier.value != NetworkTier.OFFLINE) {
+      val resp = runCatching {
+        api.checkAppVersion("Bearer $token", buildDeviceFingerprint(), installedVer)
+      }.getOrNull()
+      val body = resp?.body()
+      if (resp != null && resp.isSuccessful && body?.success == true) {
+        return AppVersionCheckResult(
+          installedVersion = installedVer,
+          installedBuild = installedCode,
+          latestVersion = body.latestVersion,
+          updateAvailable = body.updateAvailable,
+          releaseNotes = body.releaseNotes,
+          checkedAtMs = nowMs,
+        )
+      }
+    }
+    return AppVersionCheckResult(
+      installedVersion = installedVer,
+      installedBuild = installedCode,
+      latestVersion = installedVer,
+      updateAvailable = false,
+      releaseNotes = if (networkTier.value == NetworkTier.OFFLINE) "Connect to check server for newer builds." else "You are running the latest version.",
+      checkedAtMs = nowMs,
+    )
+  }
+
+  suspend fun flushPendingSettingsOps() {
+    val session = identityStore.sessionFlow.first()
+    val callerId = session.userId.orEmpty()
+    val token = session.accessToken.orEmpty()
+    val api = apiService ?: return
+    if (callerId.isBlank() || token.isBlank() || networkTier.value == NetworkTier.OFFLINE) return
+
+    val nowMs = System.currentTimeMillis()
+    val ready = dao.getReadySettingsOps(callerId, nowMs, 25)
+    for (op in ready) {
+      val ok = runCatching {
+        val dfp = buildDeviceFingerprint()
+        when (op.opKind) {
+          "privacy" -> {
+            val dto = moshi.adapter(PrivacySettingsDto::class.java).fromJson(op.payloadJson) ?: return@runCatching true
+            api.updatePrivacySettings("Bearer $token", dfp, dto).isSuccessful
+          }
+          "notifications" -> {
+            val dto = moshi.adapter(NotificationSettingsDto::class.java).fromJson(op.payloadJson) ?: return@runCatching true
+            api.updateNotificationSettings("Bearer $token", dfp, dto).isSuccessful
+          }
+          "content_prefs" -> {
+            val dto = moshi.adapter(ContentPreferencesDto::class.java).fromJson(op.payloadJson) ?: return@runCatching true
+            api.updateContentPreferences("Bearer $token", dfp, dto).isSuccessful
+          }
+          "mute" -> api.muteUser("Bearer $token", dfp, op.payloadJson).isSuccessful
+          "unmute" -> api.unmuteUser("Bearer $token", dfp, op.payloadJson).isSuccessful
+          "block" -> api.blockUser("Bearer $token", dfp, op.payloadJson).isSuccessful
+          "unblock" -> api.unblockUser("Bearer $token", dfp, op.payloadJson).isSuccessful
+          "report_problem" -> {
+            val dto = moshi.adapter(ProblemReportRequestDto::class.java).fromJson(op.payloadJson) ?: return@runCatching true
+            val resp = api.submitProblemReport("Bearer $token", dfp, dto)
+            val body = resp.body()
+            if (resp.isSuccessful && body?.success == true && body.ticket != null) {
+              val t = body.ticket
+              dao.upsertSupportTicket(
+                SupportTicketEntity(
+                  ticketId = t.ticketId.ifBlank { dto.clientOpId },
+                  userId = callerId,
+                  referenceNumber = body.referenceNumber,
+                  category = t.category,
+                  description = t.description,
+                  screenshotLocalPath = null,
+                  screenshotSha256 = t.screenshotSha256,
+                  status = t.status,
+                  resolutionNote = t.resolutionNote,
+                  isSynced = true,
+                  createdAtMs = t.createdAtMs,
+                ),
+              )
+            }
+            resp.isSuccessful
+          }
+          else -> true
+        }
+      }.getOrDefault(false)
+
+      if (ok) {
+        dao.deleteSettingsOp(op.opId)
+      } else {
+        val nextAttempt = op.retryCount + 1
+        dao.scheduleSettingsOpRetry(op.opId, nextAttempt, System.currentTimeMillis() + (nextAttempt * 5_000L).coerceAtMost(60_000L))
+      }
+    }
+  }
+
+  private suspend fun enqueueSettingsOp(userId: String, kind: String, payloadJson: String) {
+    val nowMs = System.currentTimeMillis()
+    dao.enqueueSettingsOp(
+      PendingSettingsOpEntity(
+        opId = "${kind}_${UUID.randomUUID()}",
+        userId = userId,
+        opKind = kind,
+        payloadJson = payloadJson,
+        createdAtMs = nowMs,
+        retryCount = 0,
+        nextRetryAtMs = nowMs,
+      ),
+    )
+  }
+
+  private suspend fun persistSettingsSnapshot(userId: String, snapshot: SettingsSnapshot) {
+    val pJson = moshi.adapter(PrivacySettingsDto::class.java).toJson(mapPrivacyStateToDto(snapshot.privacy))
+    val nJson = moshi.adapter(NotificationSettingsDto::class.java).toJson(mapNotificationStateToDto(snapshot.notifications))
+    val cJson = moshi.adapter(ContentPreferencesDto::class.java).toJson(mapContentPrefsStateToDto(snapshot.contentPreferences, false))
+    dao.upsertCachedSettings(
+      CachedSettingsEntity(
+        userId = userId,
+        privacyJson = pJson,
+        notificationsJson = nJson,
+        contentPrefsJson = cJson,
+        updatedAtMs = System.currentTimeMillis(),
+      ),
+    )
+  }
+
+  private fun mapEntityToSettingsSnapshot(entity: CachedSettingsEntity): SettingsSnapshot {
+    val pDto = runCatching { moshi.adapter(PrivacySettingsDto::class.java).fromJson(entity.privacyJson) }.getOrNull()
+    val nDto = runCatching { moshi.adapter(NotificationSettingsDto::class.java).fromJson(entity.notificationsJson) }.getOrNull()
+    val cDto = runCatching { moshi.adapter(ContentPreferencesDto::class.java).fromJson(entity.contentPrefsJson) }.getOrNull()
+    return SettingsSnapshot(
+      privacy = pDto?.let(::mapPrivacyDtoToState) ?: PrivacySettingsState(),
+      notifications = nDto?.let(::mapNotificationDtoToState) ?: NotificationSettingsState(),
+      contentPreferences = cDto?.let(::mapContentPrefsDtoToState) ?: ContentPreferencesState(),
+    )
+  }
+
+  private fun mapPrivacyDtoToState(dto: PrivacySettingsDto) = PrivacySettingsState(
+    isPrivateAccount = dto.isPrivateAccount,
+    whoCanComment = AudienceOption.fromApi(dto.whoCanComment),
+    whoCanMention = AudienceOption.fromApi(dto.whoCanMention),
+    whoCanFindYou = DiscoverabilityOption.fromApi(dto.whoCanFindYou),
+    showActivityStatus = dto.showActivityStatus,
+    likesVisibility = VisibilityOption.fromApi(dto.likesVisibility),
+    followingVisibility = VisibilityOption.fromApi(dto.followingVisibility),
+    dataSharingPersonalization = dto.dataSharingPersonalization,
+    analyticsSharing = dto.analyticsSharing,
+    essentialCookies = dto.essentialCookies,
+    personalizationCookies = dto.personalizationCookies,
+    updatedAtMs = dto.updatedAtMs,
+  )
+
+  private fun mapPrivacyStateToDto(s: PrivacySettingsState) = PrivacySettingsDto(
+    isPrivateAccount = s.isPrivateAccount,
+    whoCanComment = s.whoCanComment.apiValue,
+    whoCanMention = s.whoCanMention.apiValue,
+    whoCanFindYou = s.whoCanFindYou.apiValue,
+    showActivityStatus = s.showActivityStatus,
+    likesVisibility = s.likesVisibility.apiValue,
+    followingVisibility = s.followingVisibility.apiValue,
+    dataSharingPersonalization = s.dataSharingPersonalization,
+    analyticsSharing = s.analyticsSharing,
+    essentialCookies = true,
+    personalizationCookies = s.personalizationCookies,
+    updatedAtMs = s.updatedAtMs,
+  )
+
+  private fun mapNotificationDtoToState(dto: NotificationSettingsDto) = NotificationSettingsState(
+    masterPause = dto.masterPause,
+    channelPush = dto.channelPush,
+    channelEmail = dto.channelEmail,
+    channelSms = dto.channelSms,
+    typeMessages = dto.typeMessages,
+    typeComments = dto.typeComments,
+    typeFollowers = dto.typeFollowers,
+    typeProductUpdates = dto.typeProductUpdates,
+    quietHoursEnabled = dto.quietHoursEnabled,
+    quietStartMinutes = dto.quietStartMinutes,
+    quietEndMinutes = dto.quietEndMinutes,
+    updatedAtMs = dto.updatedAtMs,
+  )
+
+  private fun mapNotificationStateToDto(s: NotificationSettingsState) = NotificationSettingsDto(
+    masterPause = s.masterPause,
+    channelPush = s.channelPush,
+    channelEmail = s.channelEmail,
+    channelSms = s.channelSms,
+    typeMessages = s.typeMessages,
+    typeComments = s.typeComments,
+    typeFollowers = s.typeFollowers,
+    typeProductUpdates = s.typeProductUpdates,
+    quietHoursEnabled = s.quietHoursEnabled,
+    quietStartMinutes = s.quietStartMinutes,
+    quietEndMinutes = s.quietEndMinutes,
+    updatedAtMs = s.updatedAtMs,
+  )
+
+  private fun mapContentPrefsDtoToState(dto: ContentPreferencesDto) = ContentPreferencesState(
+    suggestedContentEnabled = dto.suggestedContentEnabled,
+    notInterestedTopics = dto.notInterestedTopics,
+    language = AppLanguageOption.fromCode(dto.languageCode),
+    autoplayVideos = dto.autoplayVideos,
+    videoQuality = VideoQualityOption.fromApi(dto.videoQuality),
+    dataSaver = dto.dataSaver,
+    captionsEnabled = dto.captionsEnabled,
+    reducedMotion = dto.reducedMotion,
+    updatedAtMs = dto.updatedAtMs,
+  )
+
+  private fun mapContentPrefsStateToDto(s: ContentPreferencesState, resetSuggestions: Boolean) = ContentPreferencesDto(
+    suggestedContentEnabled = s.suggestedContentEnabled,
+    notInterestedTopics = s.notInterestedTopics,
+    languageCode = s.language.code,
+    autoplayVideos = s.autoplayVideos,
+    videoQuality = s.videoQuality.apiValue,
+    dataSaver = s.dataSaver,
+    captionsEnabled = s.captionsEnabled,
+    reducedMotion = s.reducedMotion,
+    resetSuggestions = resetSuggestions,
+    updatedAtMs = s.updatedAtMs,
+  )
 
   private suspend fun completeSignIn(
     userId: String,

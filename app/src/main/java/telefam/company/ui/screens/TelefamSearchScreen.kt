@@ -110,6 +110,7 @@ fun TelefamSearchScreen(
   onNotInterested: (String) -> Unit,
   onReportPost: (String, String) -> Unit,
   onBlockAuthor: (String, String) -> Unit,
+  onMuteAuthor: (String) -> Unit = {},
   onEditOwnerPost: (FeedUiItem) -> Unit,
   onChangePostPrivacy: (String, PostPrivacy) -> Unit = { _, _ -> },
   onDeleteOwnerPost: (String) -> Unit,
@@ -117,6 +118,9 @@ fun TelefamSearchScreen(
   onTapAudio: (PostSongTrack, PostMode) -> Unit,
   onRecordWatchProgress: (String, Long, Long) -> Unit,
   onOpenAuthorProfile: (String) -> Unit = {},
+  autoplayVideos: Boolean = true,
+  captionsEnabled: Boolean = false,
+  reducedMotion: Boolean = false,
   onShowToast: (String) -> Unit,
 ) {
   val viewerItems = feedsState.searchViewerItems
@@ -151,6 +155,7 @@ fun TelefamSearchScreen(
       onNotInterested = onNotInterested,
       onReportPost = onReportPost,
       onBlockAuthor = onBlockAuthor,
+      onMuteAuthor = onMuteAuthor,
       onEditOwnerPost = onEditOwnerPost,
       onChangePostPrivacy = onChangePostPrivacy,
       onDeleteOwnerPost = onDeleteOwnerPost,
@@ -158,6 +163,9 @@ fun TelefamSearchScreen(
       onTapAudio = onTapAudio,
       onRecordWatchProgress = onRecordWatchProgress,
       onOpenAuthorProfile = onOpenAuthorProfile,
+      autoplayVideos = autoplayVideos,
+      captionsEnabled = captionsEnabled,
+      reducedMotion = reducedMotion,
       onShowToast = onShowToast,
     )
     return
@@ -299,7 +307,7 @@ fun TelefamSearchScreen(
 
         if (feedsState.isSearching && feedsState.searchResults.isEmpty()) {
           Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            TelefamTricolorSpinner(size = 42.dp)
+            TelefamTricolorSpinner(size = 42.dp, reducedMotion = reducedMotion)
           }
         } else if (feedsState.searchResults.isEmpty()) {
           Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -331,7 +339,7 @@ fun TelefamSearchScreen(
             ) { index, item ->
               SearchMutedAutoplayCard(
                 item = item,
-                enableLivePreviewPlayer = index < 4, // Autoplay muted streams cleanly on visible top cards
+                enableLivePreviewPlayer = index < 4 && autoplayVideos,
                 networkTier = networkTier,
                 streamAccessToken = feedsState.streamAccessToken,
                 streamDeviceFp = feedsState.streamDeviceFp,

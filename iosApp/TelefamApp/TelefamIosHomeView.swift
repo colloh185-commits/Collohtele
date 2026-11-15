@@ -29,6 +29,7 @@ struct TelefamIosHomeView: View {
     @ObservedObject var sessionStore: TelefamIosSessionStore
     @StateObject private var contactsStore: TelefamContactsStore
     @StateObject private var feedStore: TelefamIosFeedStore
+    @StateObject private var settingsStore: TelefamIosSettingsStore
     @Binding var themeMode: TelefamThemeMode
 
     private let serverURL: URL
@@ -53,6 +54,14 @@ struct TelefamIosHomeView: View {
         _feedStore = StateObject(
             wrappedValue: TelefamIosFeedStore(
                 baseURL: serverURL,
+                tokenProvider: { sessionStore.sessionToken },
+                deviceFingerprint: sessionStore.deviceFingerprint
+            )
+        )
+        _settingsStore = StateObject(
+            wrappedValue: TelefamIosSettingsStore(
+                baseURL: serverURL,
+                userIdProvider: { sessionStore.userId },
                 tokenProvider: { sessionStore.sessionToken },
                 deviceFingerprint: sessionStore.deviceFingerprint
             )
@@ -97,7 +106,7 @@ struct TelefamIosHomeView: View {
                 }
                 .background((activeTab == .feeds ? Color(red: 0.027, green: 0.031, blue: 0.043) : (activeTab == .profile ? TelefamPalette.background(colorScheme) : TelefamPalette.crimson)).ignoresSafeArea(edges: .top))
 
-                if let toast = feedStore.toastMessage ?? contactsStore.toastMessage ?? comingSoonBanner {
+                if let toast = settingsStore.toastMessage ?? feedStore.toastMessage ?? contactsStore.toastMessage ?? comingSoonBanner {
                     Text(toast)
                         .font(.system(size: 13.5, weight: .semibold))
                         .foregroundColor(.white)
@@ -117,10 +126,14 @@ struct TelefamIosHomeView: View {
                 }
             }
         }
+        .task {
+            await settingsStore.refreshAll()
+        }
         .fullScreenCover(isPresented: $showFeedSearch) {
             TelefamIosSearchView(
                 store: feedStore,
                 contactsStore: contactsStore,
+                settingsStore: settingsStore,
                 onEditOwnerPost: { item in
                     postLaunchTarget = .edit(item: item)
                 },
@@ -149,6 +162,7 @@ struct TelefamIosHomeView: View {
                     sessionStore: sessionStore,
                     contactsStore: contactsStore,
                     feedStore: feedStore,
+                    settingsStore: settingsStore,
                     themeMode: $themeMode,
                     onBack: {
                         if !profileBackStack.isEmpty {
@@ -186,6 +200,14 @@ struct TelefamIosHomeView: View {
     private func pushProfile(_ userId: String) {
         let trimmed = userId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        let ownId = sessionStore.userId.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed == "me" || (!ownId.isEmpty && trimmed == ownId) {
+            profileBackStack.removeAll()
+            showFeedSearch = false
+            activeTab = .profile
+            isBottomBarVisible = true
+            return
+        }
         if profileBackStack.last != trimmed {
             profileBackStack.append(trimmed)
         }
@@ -328,6 +350,7 @@ struct TelefamIosHomeView: View {
             TelefamIosFeedView(
                 store: feedStore,
                 contactsStore: contactsStore,
+                settingsStore: settingsStore,
                 items: feedStore.activeItems,
                 initialIndex: 0,
                 isStandaloneViewer: false,
@@ -355,6 +378,7 @@ struct TelefamIosHomeView: View {
                 sessionStore: sessionStore,
                 contactsStore: contactsStore,
                 feedStore: feedStore,
+                settingsStore: settingsStore,
                 themeMode: $themeMode,
                 onBack: {},
                 onOpenUserProfile: { uid in pushProfile(uid) },

@@ -314,3 +314,60 @@ data class PendingFeedInteractionEntity(
   val nextRetryAtMs: Long,
 )
 
+@Entity(tableName = "cached_settings")
+data class CachedSettingsEntity(
+  @PrimaryKey val userId: String,
+  val privacyJson: String,
+  val notificationsJson: String,
+  val contentPrefsJson: String,
+  val updatedAtMs: Long,
+)
+
+@Entity(
+  tableName = "cached_restricted_accounts",
+  indices = [Index(value = ["ownerUserId", "kind", "createdAtMs"])],
+)
+data class CachedRestrictedAccountEntity(
+  @PrimaryKey val compositeKey: String, // "$ownerUserId|$kind|$targetUserId"
+  val ownerUserId: String,
+  val kind: String, // "blocked" or "muted"
+  val targetUserId: String,
+  val fullName: String,
+  val username: String,
+  val avatarUrl: String?,
+  val avatarLocalPath: String?,
+  val createdAtMs: Long,
+)
+
+@Entity(
+  tableName = "support_tickets",
+  indices = [Index(value = ["userId", "createdAtMs"])],
+)
+data class SupportTicketEntity(
+  @PrimaryKey val ticketId: String,
+  val userId: String,
+  val referenceNumber: String,
+  val category: String,
+  val description: String,
+  val screenshotLocalPath: String?,
+  val screenshotSha256: String,
+  val status: String,
+  val resolutionNote: String,
+  val isSynced: Boolean,
+  val createdAtMs: Long,
+)
+
+@Entity(
+  tableName = "pending_settings_ops",
+  indices = [Index(value = ["nextRetryAtMs"])],
+)
+data class PendingSettingsOpEntity(
+  @PrimaryKey val opId: String,
+  val userId: String,
+  val opKind: String, // "privacy", "notifications", "content_prefs", "mute", "unmute", "block", "unblock", "report_problem"
+  val payloadJson: String,
+  val createdAtMs: Long,
+  val retryCount: Int,
+  val nextRetryAtMs: Long,
+)
+

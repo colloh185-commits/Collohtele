@@ -24,8 +24,12 @@ import androidx.room.RoomDatabase
     PendingFeedInteractionEntity::class,
     CachedUserProfileEntity::class,
     CachedUserConnectionEntity::class,
+    CachedSettingsEntity::class,
+    CachedRestrictedAccountEntity::class,
+    SupportTicketEntity::class,
+    PendingSettingsOpEntity::class,
   ],
-  version = 7,
+  version = 8,
   exportSchema = false,
 )
 abstract class TelefamDatabase : RoomDatabase() {

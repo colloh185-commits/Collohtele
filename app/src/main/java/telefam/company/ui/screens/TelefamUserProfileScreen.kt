@@ -148,6 +148,7 @@ fun TelefamUserProfileScreen(
   onOpenPostAtIndex: (List<FeedUiItem>, Int) -> Unit,
   onBlockUser: () -> Unit,
   onUnblockUser: () -> Unit,
+  onMuteToggle: () -> Unit = {},
   onReportUser: (reason: String, details: String) -> Unit,
   onShowToast: (String) -> Unit,
   onToggleTheme: () -> Unit = {},
@@ -156,6 +157,7 @@ fun TelefamUserProfileScreen(
   val context = LocalContext.current
   val isDark = LocalTelefamDarkTheme.current
   val accentCrimson = if (isDark) TelefamCrimsonBright else TelefamCrimson
+  val isPrivateRestricted = !profile.isOwner && profile.isPrivateAccount && !profile.isFollowing && !profile.isBlocked
 
   if (!isEmbeddedOwnProfileTab) {
     BackHandler(enabled = true) { onBack() }
@@ -271,12 +273,14 @@ fun TelefamUserProfileScreen(
           VisitorMoreMenuButton(
             expanded = showMoreMenu,
             isBlocked = profile.isBlocked,
+            isMuted = profile.isMuted,
             accentCrimson = accentCrimson,
             iconTint = MaterialTheme.colorScheme.onBackground,
             onOpen = { showMoreMenu = true },
             onDismiss = { showMoreMenu = false },
             onCopyLink = copyProfileLink,
             onInviteFriends = inviteFriendsShare,
+            onMuteToggle = onMuteToggle,
             onBlockToggle = { if (profile.isBlocked) onUnblockUser() else onBlockUser() },
             onReport = { showReportCategoryDialog = true },
           )
@@ -328,6 +332,7 @@ fun TelefamUserProfileScreen(
                   onDismissMoreMenu = { showMoreMenu = false },
                   onCopyLink = copyProfileLink,
                   onInviteFriends = inviteFriendsShare,
+                  onMuteToggle = onMuteToggle,
                   onBlockToggle = { if (profile.isBlocked) onUnblockUser() else onBlockUser() },
                   onReport = { showReportCategoryDialog = true },
                 )
@@ -368,7 +373,14 @@ fun TelefamUserProfileScreen(
                 ProfileStatColumn(
                   countText = formatProfileMetricCount(profile.followingCount),
                   label = stringResource(R.string.profile_stat_following),
-                  onClick = { onOpenConnections(false) },
+                  onClick = {
+                    when {
+                      isPrivateRestricted -> onShowToast(context.getString(R.string.profile_private_account_title))
+                      !profile.isOwner && profile.followingVisibility == "only_me" ->
+                        onShowToast(context.getString(R.string.profile_following_private_toast))
+                      else -> onOpenConnections(false)
+                    }
+                  },
                   testTag = "profile_stat_following",
                   modifier = Modifier.weight(1f),
                 )
@@ -381,7 +393,13 @@ fun TelefamUserProfileScreen(
                 ProfileStatColumn(
                   countText = formatProfileMetricCount(profile.followersCount),
                   label = stringResource(R.string.profile_stat_followers),
-                  onClick = { onOpenConnections(true) },
+                  onClick = {
+                    if (isPrivateRestricted) {
+                      onShowToast(context.getString(R.string.profile_private_account_title))
+                    } else {
+                      onOpenConnections(true)
+                    }
+                  },
                   testTag = "profile_stat_followers",
                   modifier = Modifier.weight(1f),
                 )
@@ -814,6 +832,41 @@ fun TelefamUserProfileScreen(
                 )
               }
             }
+          } else if (isPrivateRestricted) {
+            item(
+              key = "profile_private_account",
+              span = { GridItemSpan(maxLineSpan) },
+            ) {
+              Column(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .padding(vertical = 44.dp, horizontal = 24.dp)
+                  .testTag("profile_private_account_notice"),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+              ) {
+                Box(
+                  modifier = Modifier
+                    .size(56.dp)
+                    .clip(CircleShape)
+                    .background(accentCrimson.copy(alpha = 0.12f)),
+                  contentAlignment = Alignment.Center,
+                ) {
+                  ProfileLockSvgIcon(tint = accentCrimson, size = 24.dp)
+                }
+                Text(
+                  text = stringResource(R.string.profile_private_account_title),
+                  style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                  color = MaterialTheme.colorScheme.onBackground,
+                )
+                Text(
+                  text = stringResource(R.string.profile_private_account_subtitle),
+                  style = MaterialTheme.typography.bodyMedium,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                  textAlign = TextAlign.Center,
+                )
+              }
+            }
           } else if (!profile.isBlocked && filteredPosts.isEmpty()) {
             item(
               key = "profile_empty_posts",
@@ -1024,12 +1077,14 @@ fun TelefamUserProfileScreen(
 private fun VisitorMoreMenuButton(
   expanded: Boolean,
   isBlocked: Boolean,
+  isMuted: Boolean,
   accentCrimson: Color,
   iconTint: Color,
   onOpen: () -> Unit,
   onDismiss: () -> Unit,
   onCopyLink: () -> Unit,
   onInviteFriends: () -> Unit,
+  onMuteToggle: () -> Unit,
   onBlockToggle: () -> Unit,
   onReport: () -> Unit,
 ) {
@@ -1063,6 +1118,18 @@ private fun VisitorMoreMenuButton(
           onInviteFriends()
         },
         modifier = Modifier.testTag("profile_menu_invite"),
+      )
+      DropdownMenuItem(
+        text = {
+          Text(
+            text = if (isMuted) stringResource(R.string.profile_action_unmute) else stringResource(R.string.profile_action_mute),
+          )
+        },
+        onClick = {
+          onDismiss()
+          onMuteToggle()
+        },
+        modifier = Modifier.testTag("profile_menu_mute_toggle"),
       )
       DropdownMenuItem(
         text = {
@@ -1109,6 +1176,7 @@ private fun ProfileFadingHeroWithAvatar(
   onDismissMoreMenu: () -> Unit,
   onCopyLink: () -> Unit,
   onInviteFriends: () -> Unit,
+  onMuteToggle: () -> Unit,
   onBlockToggle: () -> Unit,
   onReport: () -> Unit,
 ) {
@@ -1312,12 +1380,14 @@ private fun ProfileFadingHeroWithAvatar(
             VisitorMoreMenuButton(
               expanded = showMoreMenu,
               isBlocked = profile.isBlocked,
+              isMuted = profile.isMuted,
               accentCrimson = accentCrimson,
               iconTint = Color.White,
               onOpen = onOpenMoreMenu,
               onDismiss = onDismissMoreMenu,
               onCopyLink = onCopyLink,
               onInviteFriends = onInviteFriends,
+              onMuteToggle = onMuteToggle,
               onBlockToggle = onBlockToggle,
               onReport = onReport,
             )

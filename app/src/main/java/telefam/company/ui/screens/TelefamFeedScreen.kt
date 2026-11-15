@@ -161,6 +161,7 @@ fun ReusableVideoFeedScreen(
   onNotInterested: (postId: String) -> Unit,
   onReportPost: (postId: String, reason: String) -> Unit,
   onBlockAuthor: (postId: String, authorUserId: String) -> Unit,
+  onMuteAuthor: (authorUserId: String) -> Unit = {},
   onEditOwnerPost: (FeedUiItem) -> Unit,
   onChangePostPrivacy: (postId: String, privacy: PostPrivacy) -> Unit = { _, _ -> },
   onDeleteOwnerPost: (postId: String) -> Unit,
@@ -168,6 +169,9 @@ fun ReusableVideoFeedScreen(
   onTapAudio: (song: PostSongTrack, mode: PostMode) -> Unit,
   onRecordWatchProgress: (postId: String, watchMs: Long, durationMs: Long) -> Unit,
   onOpenAuthorProfile: (userId: String) -> Unit = {},
+  autoplayVideos: Boolean = true,
+  captionsEnabled: Boolean = false,
+  reducedMotion: Boolean = false,
   onShowToast: (String) -> Unit,
 ) {
   val context = LocalContext.current
@@ -270,6 +274,20 @@ fun ReusableVideoFeedScreen(
     }
   }
 
+  LaunchedEffect(autoplayVideos) {
+    if (!autoplayVideos) {
+      userPausedCurrent = true
+      exoPlayer.playWhenReady = false
+      exoPlayer.pause()
+      songPlayer.playWhenReady = false
+      songPlayer.pause()
+    } else if (isHostActive) {
+      userPausedCurrent = false
+      if (exoPlayer.mediaItemCount > 0) exoPlayer.playWhenReady = true
+      if (songPlayer.mediaItemCount > 0) songPlayer.playWhenReady = true
+    }
+  }
+
   LaunchedEffect(networkTier) {
     TelefamVideoCacheManager.applyAdaptiveBitrate(exoPlayer, networkTier)
   }
@@ -293,7 +311,7 @@ fun ReusableVideoFeedScreen(
         contentAlignment = Alignment.Center,
       ) {
         if (isLoading || networkTier == NetworkTier.WEAK) {
-          TelefamTricolorSpinner(size = 46.dp)
+          TelefamTricolorSpinner(size = 46.dp, reducedMotion = reducedMotion)
         } else {
           Column(
             modifier = Modifier
@@ -355,7 +373,7 @@ fun ReusableVideoFeedScreen(
       LaunchedEffect(pagerState.currentPage, items, networkTier, streamAccessToken) {
         val pageIdx = pagerState.currentPage
         val active = items.getOrNull(pageIdx) ?: return@LaunchedEffect
-        userPausedCurrent = false
+        userPausedCurrent = !autoplayVideos
         isFastForward2x = false
         isVideoPlaybackFailed = false
         exoPlayer.setPlaybackParameters(PlaybackParameters(1.0f))
@@ -378,7 +396,7 @@ fun ReusableVideoFeedScreen(
           exoPlayer.volume = if (active.muteOriginalAudio || resolvedSongUrl.isNotBlank()) 0f else 1f
           exoPlayer.setMediaItem(TelefamVideoCacheManager.createMediaItem(streamUrl))
           exoPlayer.prepare()
-          exoPlayer.playWhenReady = isHostActive
+          exoPlayer.playWhenReady = isHostActive && autoplayVideos
         } else {
           fallbackPrimaryUrl = ""
           activeStreamUrl = ""
@@ -390,7 +408,7 @@ fun ReusableVideoFeedScreen(
           songPlayer.volume = 1f
           songPlayer.setMediaItem(TelefamVideoCacheManager.createMediaItem(resolvedSongUrl))
           songPlayer.prepare()
-          songPlayer.playWhenReady = isHostActive
+          songPlayer.playWhenReady = isHostActive && autoplayVideos
         } else {
           songPlayer.pause()
           songPlayer.clearMediaItems()
@@ -706,17 +724,48 @@ fun ReusableVideoFeedScreen(
 
             // Red/White/Green 3-dot spinner when buffering or on weak internet
             if (isActivePage && item.mode == PostMode.VIDEO && !isVideoPlaybackFailed && (isPlayerBuffering || (networkTier == NetworkTier.WEAK && !userPausedCurrent && !exoPlayer.isPlaying))) {
-              TelefamTricolorSpinner(size = 44.dp)
+              TelefamTricolorSpinner(size = 44.dp, reducedMotion = reducedMotion)
             }
 
             // Double-tap animated heart burst
             FeedDoubleTapHeartOverlay(visible = showDoubleTapHeart)
           }
 
+          // Live Closed Captions banner when Accessibility -> Captions is enabled
+          if (captionsEnabled && isActivePage) {
+            val ccText = item.caption.ifBlank {
+              item.song?.let { "${it.title} — ${it.artist}" } ?: item.textContent
+            }
+            if (ccText.isNotBlank()) {
+              Surface(
+                color = Color.Black.copy(alpha = 0.72f),
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier
+                  .align(Alignment.BottomCenter)
+                  .navigationBarsPadding()
+                  .padding(horizontal = 24.dp, vertical = 152.dp + bottomChromePadding)
+                  .widthIn(max = 420.dp)
+                  .testTag("feed_live_captions"),
+              ) {
+                Text(
+                  text = ccText,
+                  color = Color.White,
+                  fontSize = 13.sp,
+                  lineHeight = 18.sp,
+                  maxLines = 2,
+                  overflow = TextOverflow.Ellipsis,
+                  textAlign = TextAlign.Center,
+                  modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                )
+              }
+            }
+          }
+
           // Bottom-Left Metadata Column (non-overlapping with right rail & bottom nav)
           FeedBottomLeftMetadata(
             item = item,
             isPlayingAudio = isActivePage && !userPausedCurrent,
+            reducedMotion = reducedMotion,
             onClickAuthor = { onOpenAuthorProfile(item.authorUserId) },
             onTapHashtag = { tag -> onTapHashtag(tag, item.mode) },
             onTapAudio = { song -> onTapAudio(song, item.mode) },
@@ -749,6 +798,7 @@ fun ReusableVideoFeedScreen(
         TelefamTricolorSpinner(
           modifier = Modifier.align(Alignment.Center),
           size = 44.dp,
+          reducedMotion = reducedMotion,
         )
       }
     }
@@ -892,6 +942,7 @@ fun ReusableVideoFeedScreen(
       onRepost = { onToggleRepost(item.postId, item.isReposted) },
       onDownload = { onDownloadVideo(item) },
       onNotInterested = { onNotInterested(item.postId) },
+      onMute = { onMuteAuthor(item.authorUserId) },
       onReport = { reportTargetPostId = item.postId },
       onBlock = { onBlockAuthor(item.postId, item.authorUserId) },
       onEdit = { onEditOwnerPost(item) },
@@ -914,6 +965,7 @@ fun ReusableVideoFeedScreen(
 private fun FeedBottomLeftMetadata(
   item: FeedUiItem,
   isPlayingAudio: Boolean,
+  reducedMotion: Boolean = false,
   onClickAuthor: () -> Unit,
   onTapHashtag: (String) -> Unit,
   onTapAudio: (PostSongTrack) -> Unit,
@@ -1105,7 +1157,7 @@ private fun FeedBottomLeftMetadata(
         modifier = Modifier.widthIn(max = 220.dp),
       )
       Spacer(modifier = Modifier.width(10.dp))
-      AnimatedAudioBarsIcon(isPlaying = isPlayingAudio, tint = Color.White)
+      AnimatedAudioBarsIcon(isPlaying = isPlayingAudio, tint = Color.White, reducedMotion = reducedMotion)
     }
   }
 }

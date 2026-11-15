@@ -28,27 +28,40 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import telefam.company.core.AdaptiveStreamSelector
+import telefam.company.core.AppVersionCheckResult
 import telefam.company.core.ContactFilterTab
 import telefam.company.core.ContactRelationshipState
+import telefam.company.core.ContentPreferencesState
+import telefam.company.core.FaqEntry
 import telefam.company.core.FeedInteractionAction
 import telefam.company.core.FeedSearchShortcut
 import telefam.company.core.FeedTab
 import telefam.company.core.FeedVideoRendition
 import telefam.company.core.HashtagItem
+import telefam.company.core.LegalDocumentItem
 import telefam.company.core.NetworkTier
+import telefam.company.core.NotificationSettingsState
 import telefam.company.core.OwnerProfileTab
 import telefam.company.core.PostFontOption
 import telefam.company.core.PostMode
 import telefam.company.core.PostPrivacy
 import telefam.company.core.PostSongTrack
 import telefam.company.core.PostUploadStatus
+import telefam.company.core.PrivacySettingsState
 import telefam.company.core.ProfileBackgroundItem
 import telefam.company.core.ProfilePostFilter
 import telefam.company.core.ProfilePostSort
+import telefam.company.core.RestrictedAccountItem
+import telefam.company.core.SettingsDestination
+import telefam.company.core.SettingsSnapshot
+import telefam.company.core.SupportTicketItem
+import telefam.company.core.SystemServiceStatusItem
 import telefam.company.core.TelefamContactsRules
 import telefam.company.core.TelefamCoreEngine
 import telefam.company.core.TelefamPostRules
 import telefam.company.core.TelefamProfileSanitizer
+import telefam.company.core.TelefamSettingsContentCatalog
+import telefam.company.core.VideoQualityOption
 import telefam.company.data.local.CachedFeedPostEntity
 import telefam.company.data.model.CountryCatalog
 import telefam.company.data.model.CountryDialOption
@@ -189,6 +202,13 @@ data class UserProfileScreenState(
   val followsYou: Boolean = false,
   val isOwner: Boolean = false,
   val isBlocked: Boolean = false,
+  val isMuted: Boolean = false,
+  val isPrivateAccount: Boolean = false,
+  val whoCanComment: String = "everyone",
+  val whoCanMention: String = "everyone",
+  val likesVisibility: String = "everyone",
+  val followingVisibility: String = "everyone",
+  val showActivityStatus: Boolean = true,
   val relationshipState: ContactRelationshipState = ContactRelationshipState.FOLLOW,
   val activeOwnerTab: OwnerProfileTab = OwnerProfileTab.POSTS,
   val posts: List<FeedUiItem> = emptyList(),
@@ -334,6 +354,28 @@ data class TelefamUiState(
   val profileToastMessage: String? = null,
   val comingSoonMessage: String? = null,
   val showSettingsModal: Boolean = false,
+  val settings: SettingsSnapshot = SettingsSnapshot(),
+  val settingsBackStack: List<SettingsDestination> = emptyList(),
+  val settingsSearchQuery: String = "",
+  val restrictedAccountsTab: Int = 0,
+  val restrictedAccountsQuery: String = "",
+  val blockedAccounts: List<RestrictedAccountItem> = emptyList(),
+  val mutedAccounts: List<RestrictedAccountItem> = emptyList(),
+  val isLoadingRestrictedAccounts: Boolean = false,
+  val supportTickets: List<SupportTicketItem> = emptyList(),
+  val isLoadingSupportTickets: Boolean = false,
+  val faqSearchQuery: String = "",
+  val faqItems: List<FaqEntry> = TelefamSettingsContentCatalog.defaultFaqs,
+  val systemStatuses: List<SystemServiceStatusItem> = emptyList(),
+  val isLoadingSystemStatus: Boolean = false,
+  val legalDocuments: List<LegalDocumentItem> = TelefamSettingsContentCatalog.legalDocuments,
+  val selectedLegalDocId: String = "terms",
+  val appVersionCheck: AppVersionCheckResult? = null,
+  val isCheckingAppUpdates: Boolean = false,
+  val isSubmittingProblemReport: Boolean = false,
+  val lastCreatedTicket: SupportTicketItem? = null,
+  val showLogoutConfirmDialog: Boolean = false,
+  val logoutAllDevicesChoice: Boolean = false,
   val showBackgroundsModal: Boolean = false,
   val isUploadingBackground: Boolean = false,
   val backgroundError: String? = null,
@@ -345,6 +387,19 @@ data class TelefamUiState(
 ) {
   val activeUserProfile: UserProfileScreenState?
     get() = profileBackStack.lastOrNull()
+
+  val activeSettingsDestination: SettingsDestination?
+    get() = settingsBackStack.lastOrNull() ?: if (showSettingsModal) SettingsDestination.HUB else null
+
+  val effectiveNetworkTierForFeeds: NetworkTier
+    get() {
+      val prefs = settings.contentPreferences
+      return if (prefs.dataSaver || prefs.videoQuality == VideoQualityOption.DATA_SAVER) {
+        if (networkTier == NetworkTier.OFFLINE) NetworkTier.OFFLINE else NetworkTier.WEAK
+      } else {
+        networkTier
+      }
+    }
 }
 
 @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
@@ -362,6 +417,8 @@ class TelefamViewModel(
   private var songSearchJob: Job? = null
   private var hashtagSearchJob: Job? = null
   private var previewPlayer: ExoPlayer? = null
+  private var lastInitializedSettingsUid: String = ""
+  private val profileMutationEpoch = mutableMapOf<String, Long>()
 
   init {
     viewModelScope.launch {
@@ -439,11 +496,33 @@ class TelefamViewModel(
           if (rem > 0L) startCountdown(rem)
         }
 
+        if (isAuthenticated && userId.isNotBlank() && lastInitializedSettingsUid != userId) {
+          lastInitializedSettingsUid = userId
+          val cachedSettings = runCatching { repository.loadCachedSettings() }.getOrDefault(_uiState.value.settings)
+          val cachedBlocked = runCatching { repository.listRestrictedAccounts(isMuted = false) }.getOrDefault(emptyList())
+          val cachedMuted = runCatching { repository.listRestrictedAccounts(isMuted = true) }.getOrDefault(emptyList())
+          _uiState.update {
+            it.copy(
+              settings = cachedSettings,
+              blockedAccounts = cachedBlocked,
+              mutedAccounts = cachedMuted,
+            )
+          }
+          if (tier != NetworkTier.OFFLINE) {
+            launch { refreshAllSettingsFromServer() }
+          }
+        } else if (!isAuthenticated) {
+          lastInitializedSettingsUid = ""
+        }
+
         if (wasOffline && tier != NetworkTier.OFFLINE && isAuthenticated) {
           repository.flushOfflineQueue()
+          repository.flushPendingSettingsOps()
+          refreshAllSettingsFromServer()
           when (_uiState.value.activeHomeTab) {
             HomeTab.CONTACTS -> refreshContacts()
             HomeTab.FEEDS -> refreshFeeds()
+            HomeTab.PROFILE -> loadOwnProfile()
             else -> Unit
           }
         }
@@ -546,21 +625,43 @@ class TelefamViewModel(
       }
     }
 
-    // Observe cached For You + Following feeds adaptively
+    // Observe cached For You + Following feeds adaptively with live content-preference & mute/block filtering
     viewModelScope.launch {
       combine(
-        _uiState.map { Triple(it.userId, it.isAuthenticated, it.networkTier) }.distinctUntilChanged(),
+        _uiState.map {
+          FeedFilterSignal(
+            userId = it.userId,
+            isAuthenticated = it.isAuthenticated,
+            tier = it.effectiveNetworkTierForFeeds,
+            notInterestedTopics = it.settings.contentPreferences.notInterestedTopics
+              .map { t -> t.trim().lowercase().removePrefix("#") }
+              .filter { t -> t.isNotBlank() }
+              .toSet(),
+            restrictedUserIds = (it.mutedAccounts.map { m -> m.userId } + it.blockedAccounts.map { b -> b.userId }).toSet(),
+          )
+        }.distinctUntilChanged(),
         repository.observeFeedPosts(FeedTab.FOR_YOU),
         repository.observeFeedPosts(FeedTab.FOLLOWING),
-      ) { (_, authed, tier), forYouEntities, followingEntities ->
-        if (!authed) {
-          Triple(emptyList<FeedUiItem>(), emptyList<FeedUiItem>(), tier)
+      ) { signal, forYouEntities, followingEntities ->
+        if (!signal.isAuthenticated) {
+          Triple(emptyList<FeedUiItem>(), emptyList<FeedUiItem>(), signal.tier)
         } else {
-          Triple(
-            forYouEntities.map { mapFeedEntityToUi(it, tier) },
-            followingEntities.map { mapFeedEntityToUi(it, tier) },
-            tier,
-          )
+          fun matchesFilters(item: FeedUiItem): Boolean {
+            if (!item.isOwner && item.authorUserId in signal.restrictedUserIds) return false
+            if (signal.notInterestedTopics.isNotEmpty()) {
+              val itemTags = item.hashtags.map { it.trim().lowercase().removePrefix("#") }
+              val captionLower = item.caption.lowercase()
+              if (itemTags.any { it in signal.notInterestedTopics } ||
+                signal.notInterestedTopics.any { t -> captionLower.contains("#$t") || captionLower.contains(" $t ") }
+              ) {
+                return false
+              }
+            }
+            return true
+          }
+          val forYouUi = forYouEntities.map { mapFeedEntityToUi(it, signal.tier) }.filter(::matchesFilters)
+          val followingUi = followingEntities.map { mapFeedEntityToUi(it, signal.tier) }.filter(::matchesFilters)
+          Triple(forYouUi, followingUi, signal.tier)
         }
       }.collect { (forYouUi, followingUi, _) ->
         _uiState.update { state ->
@@ -1537,6 +1638,8 @@ class TelefamViewModel(
     val avatarResolved = dto.avatarUrl.trim().takeIf { it.isNotBlank() }?.let {
       AdaptiveStreamSelector.resolveMediaUrl(baseUrl, it)
     }
+    val isOwnerProfile = dto.isOwner || dto.userId == _uiState.value.userId
+    val ownerPrivacy = _uiState.value.settings.privacy
     return UserProfileScreenState(
       userId = dto.userId,
       fullName = dto.fullName.ifBlank { existing?.fullName ?: "User" },
@@ -1556,8 +1659,15 @@ class TelefamViewModel(
       likesCount = dto.likesCount,
       isFollowing = dto.isFollowing,
       followsYou = dto.followsYou,
-      isOwner = dto.isOwner || dto.userId == _uiState.value.userId,
+      isOwner = isOwnerProfile,
       isBlocked = dto.isBlocked,
+      isMuted = dto.isMuted,
+      isPrivateAccount = if (isOwnerProfile) ownerPrivacy.isPrivateAccount else dto.isPrivateAccount,
+      whoCanComment = if (isOwnerProfile) ownerPrivacy.whoCanComment.apiValue else dto.whoCanComment,
+      whoCanMention = if (isOwnerProfile) ownerPrivacy.whoCanMention.apiValue else dto.whoCanMention,
+      likesVisibility = if (isOwnerProfile) ownerPrivacy.likesVisibility.apiValue else dto.likesVisibility,
+      followingVisibility = if (isOwnerProfile) ownerPrivacy.followingVisibility.apiValue else dto.followingVisibility,
+      showActivityStatus = if (isOwnerProfile) ownerPrivacy.showActivityStatus else dto.showActivityStatus,
       relationshipState = ContactRelationshipState.compute(dto.isFollowing, dto.followsYou),
       activeOwnerTab = existing?.activeOwnerTab ?: OwnerProfileTab.POSTS,
       posts = posts,
@@ -2286,6 +2396,29 @@ class TelefamViewModel(
   fun openUserProfile(userId: String) {
     val cleanId = userId.trim()
     if (cleanId.isBlank() || !_uiState.value.isAuthenticated) return
+
+    // Single own-profile invariant: navigating to self always switches to the single bottom-tab Own Profile
+    if (cleanId == _uiState.value.userId) {
+      _uiState.update { s ->
+        s.copy(
+          activeHomeTab = HomeTab.PROFILE,
+          isBottomBarVisible = true,
+          profileBackStack = emptyList(),
+          profileViewerItems = null,
+          showSettingsModal = false,
+          settingsBackStack = emptyList(),
+          feedsState = s.feedsState.copy(
+            isSearchOpen = false,
+            searchViewerItems = null,
+          ),
+          ownProfileState = s.ownProfileState?.copy(activeConnectionsType = null),
+        )
+      }
+      loadOwnProfile()
+      logClientAction("own_profile_focused")
+      return
+    }
+
     val currentTop = _uiState.value.profileBackStack.lastOrNull()
     if (currentTop?.userId == cleanId) return
 
@@ -2301,7 +2434,7 @@ class TelefamViewModel(
       location = contactSeed?.countryDisplay.orEmpty(),
       isFollowing = contactSeed?.isFollowing ?: feedSeed?.isFollowingAuthor ?: false,
       followsYou = contactSeed?.followsYou ?: false,
-      isOwner = cleanId == _uiState.value.userId,
+      isOwner = false,
       relationshipState = contactSeed?.relationshipState ?: if (feedSeed?.isFollowingAuthor == true) {
         ContactRelationshipState.FOLLOWING
       } else {
@@ -2335,9 +2468,13 @@ class TelefamViewModel(
   fun refreshUserProfile(userId: String) {
     val cleanId = userId.trim()
     if (cleanId.isBlank()) return
+    val startEpoch = profileMutationEpoch[cleanId] ?: 0L
     viewModelScope.launch {
       val (tok, fp) = repository.getStreamCredentials()
       val fetched = repository.fetchUserProfile(cleanId)
+      if ((profileMutationEpoch[cleanId] ?: 0L) != startEpoch) {
+        return@launch
+      }
       val tier = _uiState.value.networkTier
       _uiState.update { s ->
         val updatedStack = s.profileBackStack.map { entry ->
@@ -2503,11 +2640,312 @@ class TelefamViewModel(
   }
 
   fun openOwnerSettingsModal() {
-    _uiState.update { it.copy(showSettingsModal = true) }
+    _uiState.update {
+      it.copy(
+        showSettingsModal = true,
+        settingsBackStack = listOf(SettingsDestination.HUB),
+        settingsSearchQuery = "",
+      )
+    }
+    viewModelScope.launch {
+      refreshAllSettingsFromServer()
+    }
   }
 
   fun dismissOwnerSettingsModal() {
-    _uiState.update { it.copy(showSettingsModal = false) }
+    _uiState.update {
+      it.copy(
+        showSettingsModal = false,
+        settingsBackStack = emptyList(),
+        settingsSearchQuery = "",
+        lastCreatedTicket = null,
+      )
+    }
+  }
+
+  fun navigateToSettings(destination: SettingsDestination) {
+    _uiState.update { s ->
+      val current = s.settingsBackStack.ifEmpty { listOf(SettingsDestination.HUB) }
+      val next = if (destination == SettingsDestination.HUB) {
+        listOf(SettingsDestination.HUB)
+      } else if (current.lastOrNull() == destination) {
+        current
+      } else {
+        current + destination
+      }
+      s.copy(
+        showSettingsModal = true,
+        settingsBackStack = next,
+        lastCreatedTicket = null,
+      )
+    }
+    when (destination) {
+      SettingsDestination.BLOCKED_ACCOUNTS -> refreshRestrictedAccounts()
+      SettingsDestination.HELP_SUPPORT -> {
+        refreshSupportTickets()
+        searchFaqs(_uiState.value.faqSearchQuery)
+        refreshSystemStatus()
+      }
+      SettingsDestination.TERMS_POLICIES -> loadLegalDocuments()
+      SettingsDestination.ABOUT -> checkAppUpdates()
+      else -> Unit
+    }
+  }
+
+  fun navigateSettingsBack() {
+    _uiState.update { s ->
+      if (s.settingsBackStack.size > 1) {
+        s.copy(settingsBackStack = s.settingsBackStack.dropLast(1), lastCreatedTicket = null)
+      } else {
+        s.copy(showSettingsModal = false, settingsBackStack = emptyList(), lastCreatedTicket = null)
+      }
+    }
+  }
+
+  fun onSettingsSearchQueryChanged(query: String) {
+    _uiState.update { it.copy(settingsSearchQuery = query.take(64)) }
+  }
+
+  private suspend fun refreshAllSettingsFromServer() {
+    val fetched = repository.fetchSettings()
+    val blocked = repository.listRestrictedAccounts(isMuted = false, query = _uiState.value.restrictedAccountsQuery)
+    val muted = repository.listRestrictedAccounts(isMuted = true, query = _uiState.value.restrictedAccountsQuery)
+    _uiState.update { s ->
+      s.copy(
+        settings = fetched,
+        blockedAccounts = blocked,
+        mutedAccounts = muted,
+        ownProfileState = s.ownProfileState?.copy(
+          isPrivateAccount = fetched.privacy.isPrivateAccount,
+          whoCanComment = fetched.privacy.whoCanComment.apiValue,
+          whoCanMention = fetched.privacy.whoCanMention.apiValue,
+          likesVisibility = fetched.privacy.likesVisibility.apiValue,
+          followingVisibility = fetched.privacy.followingVisibility.apiValue,
+          showActivityStatus = fetched.privacy.showActivityStatus,
+        ),
+      )
+    }
+  }
+
+  fun updatePrivacySettings(next: PrivacySettingsState) {
+    val stamped = next.copy(updatedAtMs = System.currentTimeMillis())
+    _uiState.update { s ->
+      s.copy(
+        settings = s.settings.copy(privacy = stamped),
+        ownProfileState = s.ownProfileState?.copy(
+          isPrivateAccount = stamped.isPrivateAccount,
+          whoCanComment = stamped.whoCanComment.apiValue,
+          whoCanMention = stamped.whoCanMention.apiValue,
+          likesVisibility = stamped.likesVisibility.apiValue,
+          followingVisibility = stamped.followingVisibility.apiValue,
+          showActivityStatus = stamped.showActivityStatus,
+        ),
+      )
+    }
+    viewModelScope.launch {
+      repository.savePrivacySettings(stamped)
+    }
+  }
+
+  fun updateNotificationSettings(next: NotificationSettingsState) {
+    val stamped = next.copy(updatedAtMs = System.currentTimeMillis())
+    _uiState.update { s ->
+      s.copy(settings = s.settings.copy(notifications = stamped))
+    }
+    viewModelScope.launch {
+      repository.saveNotificationSettings(stamped)
+    }
+  }
+
+  fun updateContentPreferences(next: ContentPreferencesState, resetSuggestions: Boolean = false) {
+    val stamped = next.copy(updatedAtMs = System.currentTimeMillis())
+    _uiState.update { s ->
+      s.copy(
+        settings = s.settings.copy(contentPreferences = stamped),
+        profileToastMessage = if (resetSuggestions) "Suggestions reset" else s.profileToastMessage,
+      )
+    }
+    viewModelScope.launch {
+      repository.saveContentPreferences(stamped, resetSuggestions = resetSuggestions)
+      if (resetSuggestions) {
+        refreshFeeds()
+      }
+    }
+  }
+
+  fun onRestrictedAccountsTabSelected(tab: Int) {
+    _uiState.update { it.copy(restrictedAccountsTab = tab.coerceIn(0, 1)) }
+    refreshRestrictedAccounts()
+  }
+
+  fun onRestrictedAccountsQueryChanged(query: String) {
+    _uiState.update { it.copy(restrictedAccountsQuery = query.take(64)) }
+    refreshRestrictedAccounts()
+  }
+
+  fun refreshRestrictedAccounts() {
+    val query = _uiState.value.restrictedAccountsQuery
+    _uiState.update { it.copy(isLoadingRestrictedAccounts = true) }
+    viewModelScope.launch {
+      val blocked = repository.listRestrictedAccounts(isMuted = false, query = query)
+      val muted = repository.listRestrictedAccounts(isMuted = true, query = query)
+      _uiState.update {
+        it.copy(
+          blockedAccounts = blocked,
+          mutedAccounts = muted,
+          isLoadingRestrictedAccounts = false,
+        )
+      }
+    }
+  }
+
+  fun unblockAccountFromSettings(userId: String) {
+    val cleanId = userId.trim()
+    if (cleanId.isBlank()) return
+    _uiState.update { s ->
+      s.copy(
+        blockedAccounts = s.blockedAccounts.filterNot { it.userId == cleanId },
+        profileToastMessage = "Account unblocked",
+      )
+    }
+    updateProfileInState(cleanId) { it.copy(isBlocked = false) }
+    viewModelScope.launch {
+      repository.unblockUserProfile(cleanId)
+      refreshFeeds()
+    }
+  }
+
+  fun muteUserAccount(userId: String) {
+    val cleanId = userId.trim()
+    if (cleanId.isBlank() || cleanId == _uiState.value.userId) return
+    updateProfileInState(cleanId) { it.copy(isMuted = true) }
+    _uiState.update { s ->
+      val existing = s.mutedAccounts.any { it.userId == cleanId }
+      val targetProfile = s.profileBackStack.lastOrNull { it.userId == cleanId }
+      val appended = if (!existing) {
+        s.mutedAccounts + RestrictedAccountItem(
+          userId = cleanId,
+          fullName = targetProfile?.fullName.orEmpty().ifBlank { cleanId },
+          username = targetProfile?.username.orEmpty().ifBlank { cleanId },
+          avatarUrl = targetProfile?.avatarUrl,
+          isMuted = true,
+          createdAtMs = System.currentTimeMillis(),
+        )
+      } else {
+        s.mutedAccounts
+      }
+      s.copy(
+        mutedAccounts = appended,
+        feedsState = s.feedsState.copy(
+          searchResults = s.feedsState.searchResults.filterNot { it.authorUserId == cleanId },
+          searchViewerItems = s.feedsState.searchViewerItems?.filterNot { it.authorUserId == cleanId },
+          toastMessage = "Account muted",
+        ),
+        profileToastMessage = "Account muted",
+      )
+    }
+    viewModelScope.launch {
+      repository.muteUserAccount(cleanId)
+      refreshRestrictedAccounts()
+    }
+  }
+
+  fun unmuteAccountFromSettings(userId: String) {
+    val cleanId = userId.trim()
+    if (cleanId.isBlank()) return
+    _uiState.update { s ->
+      s.copy(
+        mutedAccounts = s.mutedAccounts.filterNot { it.userId == cleanId },
+        profileToastMessage = "Account unmuted",
+      )
+    }
+    updateProfileInState(cleanId) { it.copy(isMuted = false) }
+    viewModelScope.launch {
+      repository.unmuteUserAccount(cleanId)
+      refreshFeeds()
+    }
+  }
+
+  fun submitProblemReport(category: String, description: String, screenshotUri: Uri?) {
+    if (_uiState.value.isSubmittingProblemReport) return
+    _uiState.update { it.copy(isSubmittingProblemReport = true) }
+    viewModelScope.launch {
+      val created = repository.submitProblemReport(category, description, screenshotUri)
+      val tickets = repository.fetchSupportTickets()
+      _uiState.update { s ->
+        s.copy(
+          isSubmittingProblemReport = false,
+          lastCreatedTicket = created,
+          supportTickets = tickets,
+          profileToastMessage = if (created == null) "Enter at least 5 characters" else null,
+        )
+      }
+    }
+  }
+
+  fun clearLastCreatedTicket() {
+    _uiState.update { it.copy(lastCreatedTicket = null) }
+  }
+
+  fun refreshSupportTickets() {
+    _uiState.update { it.copy(isLoadingSupportTickets = true) }
+    viewModelScope.launch {
+      val tickets = repository.fetchSupportTickets()
+      _uiState.update { it.copy(supportTickets = tickets, isLoadingSupportTickets = false) }
+    }
+  }
+
+  fun searchFaqs(query: String) {
+    _uiState.update { it.copy(faqSearchQuery = query) }
+    viewModelScope.launch {
+      val faqs = repository.fetchFaqs(query)
+      _uiState.update { it.copy(faqItems = faqs) }
+    }
+  }
+
+  fun refreshSystemStatus() {
+    _uiState.update { it.copy(isLoadingSystemStatus = true) }
+    viewModelScope.launch {
+      val status = repository.fetchSystemStatus()
+      _uiState.update { it.copy(systemStatuses = status, isLoadingSystemStatus = false) }
+    }
+  }
+
+  fun loadLegalDocuments() {
+    viewModelScope.launch {
+      val docs = repository.fetchLegalDocuments()
+      _uiState.update { it.copy(legalDocuments = docs) }
+    }
+  }
+
+  fun selectLegalDocument(docId: String) {
+    _uiState.update { it.copy(selectedLegalDocId = docId) }
+  }
+
+  fun checkAppUpdates() {
+    _uiState.update { it.copy(isCheckingAppUpdates = true) }
+    viewModelScope.launch {
+      val res = repository.checkAppForUpdates()
+      _uiState.update { it.copy(appVersionCheck = res, isCheckingAppUpdates = false) }
+    }
+  }
+
+  fun requestLogoutConfirmation() {
+    _uiState.update { it.copy(showLogoutConfirmDialog = true, logoutAllDevicesChoice = false) }
+  }
+
+  fun dismissLogoutConfirmation() {
+    _uiState.update { it.copy(showLogoutConfirmDialog = false) }
+  }
+
+  fun setLogoutAllDevicesChoice(allDevices: Boolean) {
+    _uiState.update { it.copy(logoutAllDevicesChoice = allDevices) }
+  }
+
+  fun confirmSignOut() {
+    val allDevices = _uiState.value.logoutAllDevicesChoice
+    _uiState.update { it.copy(showLogoutConfirmDialog = false) }
+    signOut(allDevices = allDevices)
   }
 
   fun openOwnerBackgroundsModal() {
@@ -2750,6 +3188,7 @@ class TelefamViewModel(
   fun blockUserFromProfile(userId: String) {
     val cleanId = userId.trim()
     if (cleanId.isBlank() || cleanId == _uiState.value.userId) return
+    profileMutationEpoch[cleanId] = (profileMutationEpoch[cleanId] ?: 0L) + 1L
     updateProfileInState(cleanId) { p ->
       p.copy(
         isBlocked = true,
@@ -2776,6 +3215,7 @@ class TelefamViewModel(
   fun unblockUserFromProfile(userId: String) {
     val cleanId = userId.trim()
     if (cleanId.isBlank()) return
+    profileMutationEpoch[cleanId] = (profileMutationEpoch[cleanId] ?: 0L) + 1L
     updateProfileInState(cleanId) { p -> p.copy(isBlocked = false, isLoading = true) }
     viewModelScope.launch {
       repository.unblockUserProfile(cleanId)
@@ -2848,10 +3288,13 @@ class TelefamViewModel(
     _uiState.update { it.copy(comingSoonMessage = null) }
   }
 
-  fun signOut() {
+  fun signOut() = signOut(allDevices = false)
+
+  fun signOut(allDevices: Boolean) {
     countdownJob?.cancel()
+    lastInitializedSettingsUid = ""
     viewModelScope.launch {
-      repository.signOut()
+      repository.signOut(allDevices = allDevices)
       _uiState.update {
         TelefamUiState(isSessionInitialized = true, themeMode = it.themeMode, networkTier = it.networkTier)
       }
@@ -2921,3 +3364,11 @@ class TelefamViewModel(
     }
   }
 }
+
+private data class FeedFilterSignal(
+  val userId: String,
+  val isAuthenticated: Boolean,
+  val tier: NetworkTier,
+  val notInterestedTopics: Set<String>,
+  val restrictedUserIds: Set<String>,
+)

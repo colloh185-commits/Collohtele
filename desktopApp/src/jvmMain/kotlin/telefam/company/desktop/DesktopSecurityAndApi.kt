@@ -389,6 +389,11 @@ data class DesktopUserProfile(
   val followsYou: Boolean,
   val isOwner: Boolean,
   val isBlocked: Boolean,
+  val isMuted: Boolean = false,
+  val isPrivateRestricted: Boolean = false,
+  val likesVisibility: String = "everyone",
+  val followingVisibility: String = "everyone",
+  val showActivityStatus: Boolean = true,
   val riskScore: Double,
   val posts: List<DesktopFeedPost>,
   val savedPosts: List<DesktopFeedPost> = emptyList(),
@@ -526,7 +531,17 @@ class DesktopApiClient(
     onSessionUpdated(updated)
   }
 
-  fun signOut() {
+  fun signOut(allDevices: Boolean = false) {
+    val curToken = session.accessToken
+    if (curToken.isNotBlank()) {
+      runCatching {
+        executeRaw("POST", "/v1/auth/logout", "{\"all_devices\":$allDevices}".toByteArray(StandardCharsets.UTF_8), auth = true, allowRefreshRetry = false)
+      }
+    }
+    runCatching {
+      cacheKeyFile("settings_${session.userId}.json").delete()
+      cacheKeyFile("settings_outbox_${session.userId}.json").delete()
+    }
     val updated = session.copy(
       userId = "",
       accessToken = "",
@@ -1244,6 +1259,437 @@ class DesktopApiClient(
     return DesktopApiOutcome.Ok(true)
   }
 
+  fun muteUser(userId: String): DesktopApiOutcome<Boolean> {
+    val cleanId = userId.trim()
+    val encId = URLEncoder.encode(cleanId, StandardCharsets.UTF_8)
+    val resp = executeRaw("POST", "/v1/users/$encId/mute", null, auth = true)
+    if (resp != null && resp.first in 200..299) {
+      return DesktopApiOutcome.Ok(true)
+    }
+    enqueueSettingsOp("mute", "{\"user_id\":\"${DesktopJson.escape(cleanId)}\"}")
+    return DesktopApiOutcome.Ok(true)
+  }
+
+  fun unmuteUser(userId: String): DesktopApiOutcome<Boolean> {
+    val cleanId = userId.trim()
+    val encId = URLEncoder.encode(cleanId, StandardCharsets.UTF_8)
+    val resp = executeRaw("POST", "/v1/users/$encId/unmute", null, auth = true)
+    if (resp != null && resp.first in 200..299) {
+      return DesktopApiOutcome.Ok(false)
+    }
+    enqueueSettingsOp("unmute", "{\"user_id\":\"${DesktopJson.escape(cleanId)}\"}")
+    return DesktopApiOutcome.Ok(false)
+  }
+
+  fun loadCachedSettingsBundle(): DesktopSettingsBundle {
+    val uid = session.userId.ifBlank { "default" }
+    val raw = loadCachedText("settings_$uid.json") ?: return DesktopSettingsBundle()
+    val map = DesktopJson.parseObject(raw)
+    return if (map.isEmpty()) DesktopSettingsBundle() else parseSettingsBundle(map)
+  }
+
+  private fun saveCachedSettingsBundle(bundle: DesktopSettingsBundle) {
+    val uid = session.userId.ifBlank { "default" }
+    val json = buildString {
+      append('{')
+      append("\"privacy\":").append(encodePrivacyJson(bundle.privacy)).append(',')
+      append("\"notifications\":").append(encodeNotificationsJson(bundle.notifications)).append(',')
+      append("\"content_preferences\":").append(encodeContentPrefsJson(bundle.contentPreferences, resetSuggestions = false))
+      append('}')
+    }
+    saveCachedText("settings_$uid.json", json)
+  }
+
+  private fun loadPendingSettingsOps(): MutableList<DesktopPendingSettingsOp> {
+    val uid = session.userId.ifBlank { "default" }
+    val raw = loadCachedText("settings_outbox_$uid.json") ?: return mutableListOf()
+    val map = DesktopJson.parseObject(raw)
+    return DesktopJson.objList(map, "ops").mapNotNull { item ->
+      val id = DesktopJson.str(item, "op_id")
+      val kind = DesktopJson.str(item, "op_kind")
+      val payload = DesktopJson.str(item, "payload_json")
+      if (id.isBlank() || kind.isBlank()) null
+      else DesktopPendingSettingsOp(id, kind, payload, DesktopJson.long(item, "created_at_ms", 0L))
+    }.toMutableList()
+  }
+
+  private fun savePendingSettingsOps(ops: List<DesktopPendingSettingsOp>) {
+    val uid = session.userId.ifBlank { "default" }
+    val json = buildString {
+      append("{\"ops\":[")
+      ops.forEachIndexed { idx, op ->
+        if (idx > 0) append(',')
+        append('{')
+        append("\"op_id\":\"").append(DesktopJson.escape(op.opId)).append("\",")
+        append("\"op_kind\":\"").append(DesktopJson.escape(op.opKind)).append("\",")
+        append("\"payload_json\":\"").append(DesktopJson.escape(op.payloadJson)).append("\",")
+        append("\"created_at_ms\":").append(op.createdAtMs)
+        append('}')
+      }
+      append("]}")
+    }
+    saveCachedText("settings_outbox_$uid.json", json)
+  }
+
+  private fun enqueueSettingsOp(kind: String, payloadJson: String) {
+    val list = loadPendingSettingsOps()
+    list.add(
+      DesktopPendingSettingsOp(
+        opId = "${kind}_${UUID.randomUUID()}",
+        opKind = kind,
+        payloadJson = payloadJson,
+        createdAtMs = System.currentTimeMillis(),
+      ),
+    )
+    savePendingSettingsOps(list)
+  }
+
+  fun flushSettingsOutbox() {
+    if (session.accessToken.isBlank()) return
+    val ops = loadPendingSettingsOps()
+    if (ops.isEmpty()) return
+    val remaining = mutableListOf<DesktopPendingSettingsOp>()
+    for (op in ops) {
+      val ok = when (op.opKind) {
+        "privacy" -> {
+          val r = executeRaw("PUT", "/v1/settings/privacy", op.payloadJson.toByteArray(StandardCharsets.UTF_8), auth = true)
+          r != null && r.first in 200..299
+        }
+        "notifications" -> {
+          val r = executeRaw("PUT", "/v1/settings/notifications", op.payloadJson.toByteArray(StandardCharsets.UTF_8), auth = true)
+          r != null && r.first in 200..299
+        }
+        "content_prefs" -> {
+          val r = executeRaw("PUT", "/v1/settings/content-preferences", op.payloadJson.toByteArray(StandardCharsets.UTF_8), auth = true)
+          r != null && r.first in 200..299
+        }
+        "mute" -> {
+          val uid = DesktopJson.str(DesktopJson.parseObject(op.payloadJson), "user_id")
+          if (uid.isBlank()) true else {
+            val r = executeRaw("POST", "/v1/users/${URLEncoder.encode(uid, StandardCharsets.UTF_8)}/mute", null, auth = true)
+            r != null && r.first in 200..299
+          }
+        }
+        "unmute" -> {
+          val uid = DesktopJson.str(DesktopJson.parseObject(op.payloadJson), "user_id")
+          if (uid.isBlank()) true else {
+            val r = executeRaw("POST", "/v1/users/${URLEncoder.encode(uid, StandardCharsets.UTF_8)}/unmute", null, auth = true)
+            r != null && r.first in 200..299
+          }
+        }
+        "unblock" -> {
+          val uid = DesktopJson.str(DesktopJson.parseObject(op.payloadJson), "user_id")
+          if (uid.isBlank()) true else {
+            val r = executeRaw("POST", "/v1/users/${URLEncoder.encode(uid, StandardCharsets.UTF_8)}/unblock", null, auth = true)
+            r != null && r.first in 200..299
+          }
+        }
+        "report_problem" -> {
+          val r = executeRaw("POST", "/v1/support/reports", op.payloadJson.toByteArray(StandardCharsets.UTF_8), auth = true)
+          r != null && r.first in 200..299
+        }
+        else -> true
+      }
+      if (!ok) remaining.add(op)
+    }
+    savePendingSettingsOps(remaining)
+  }
+
+  fun getSettings(): DesktopSettingsBundle {
+    flushSettingsOutbox()
+    val resp = executeRaw("GET", "/v1/settings", null, auth = true)
+    if (resp != null && resp.first in 200..299) {
+      val map = DesktopJson.parseObject(resp.second)
+      if (DesktopJson.bool(map, "success")) {
+        val parsed = parseSettingsBundle(map)
+        saveCachedSettingsBundle(parsed)
+        return parsed
+      }
+    }
+    return loadCachedSettingsBundle()
+  }
+
+  fun updatePrivacySettings(next: DesktopPrivacySettings): DesktopSettingsBundle {
+    val cur = loadCachedSettingsBundle()
+    val stamped = next.copy(updatedAtMs = System.currentTimeMillis())
+    val updated = cur.copy(privacy = stamped)
+    saveCachedSettingsBundle(updated)
+    val payload = encodePrivacyJson(stamped)
+    val resp = executeRaw("PUT", "/v1/settings/privacy", payload.toByteArray(StandardCharsets.UTF_8), auth = true)
+    if (resp != null && resp.first in 200..299) {
+      val parsed = parseSettingsBundle(DesktopJson.parseObject(resp.second))
+      saveCachedSettingsBundle(parsed)
+      return parsed
+    }
+    enqueueSettingsOp("privacy", payload)
+    return updated
+  }
+
+  fun updateNotificationSettings(next: DesktopNotificationSettings): DesktopSettingsBundle {
+    val cur = loadCachedSettingsBundle()
+    val stamped = next.copy(updatedAtMs = System.currentTimeMillis())
+    val updated = cur.copy(notifications = stamped)
+    saveCachedSettingsBundle(updated)
+    val payload = encodeNotificationsJson(stamped)
+    val resp = executeRaw("PUT", "/v1/settings/notifications", payload.toByteArray(StandardCharsets.UTF_8), auth = true)
+    if (resp != null && resp.first in 200..299) {
+      val parsed = parseSettingsBundle(DesktopJson.parseObject(resp.second))
+      saveCachedSettingsBundle(parsed)
+      return parsed
+    }
+    enqueueSettingsOp("notifications", payload)
+    return updated
+  }
+
+  fun updateContentPreferences(next: DesktopContentPreferences, resetSuggestions: Boolean = false): DesktopSettingsBundle {
+    val cur = loadCachedSettingsBundle()
+    val stamped = next.copy(updatedAtMs = System.currentTimeMillis())
+    val updated = cur.copy(contentPreferences = stamped)
+    saveCachedSettingsBundle(updated)
+    val payload = encodeContentPrefsJson(stamped, resetSuggestions)
+    val resp = executeRaw("PUT", "/v1/settings/content-preferences", payload.toByteArray(StandardCharsets.UTF_8), auth = true)
+    if (resp != null && resp.first in 200..299) {
+      val parsed = parseSettingsBundle(DesktopJson.parseObject(resp.second))
+      saveCachedSettingsBundle(parsed)
+      return parsed
+    }
+    enqueueSettingsOp("content_prefs", payload)
+    return updated
+  }
+
+  fun listBlockedAccounts(query: String): List<DesktopRestrictedAccount> =
+    listRestrictedAccounts(isMuted = false, query = query)
+
+  fun listMutedAccounts(query: String): List<DesktopRestrictedAccount> =
+    listRestrictedAccounts(isMuted = true, query = query)
+
+  private fun listRestrictedAccounts(isMuted: Boolean, query: String): List<DesktopRestrictedAccount> {
+    val uid = session.userId.ifBlank { "default" }
+    val kind = if (isMuted) "muted" else "blocked"
+    val qEnc = URLEncoder.encode(query.trim(), StandardCharsets.UTF_8)
+    val path = if (isMuted) "/v1/settings/muted-accounts?q=$qEnc" else "/v1/settings/blocked-accounts?q=$qEnc"
+    val resp = executeRaw("GET", path, null, auth = true)
+    val items = if (resp != null && resp.first in 200..299) {
+      val map = DesktopJson.parseObject(resp.second)
+      if (query.isBlank()) saveCachedText("restricted_${kind}_$uid.json", resp.second)
+      DesktopJson.objList(map, "items").mapNotNull { m -> parseRestrictedAccount(m, isMuted) }
+    } else {
+      val cached = loadCachedText("restricted_${kind}_$uid.json")?.let { DesktopJson.parseObject(it) }
+      cached?.let { c -> DesktopJson.objList(c, "items").mapNotNull { m -> parseRestrictedAccount(m, isMuted) } } ?: emptyList()
+    }
+    val qLow = query.trim().lowercase()
+    return if (qLow.isEmpty()) items else items.filter {
+      it.fullName.lowercase().contains(qLow) || it.username.lowercase().contains(qLow)
+    }
+  }
+
+  fun submitProblemReport(
+    category: String,
+    description: String,
+    screenshotBytes: ByteArray?,
+  ): DesktopSupportTicket {
+    val opId = UUID.randomUUID().toString()
+    val nowMs = System.currentTimeMillis()
+    val dateStr = java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.US).format(java.util.Date(nowMs))
+    val localRef = "TF-$dateStr-${opId.take(6).uppercase()}"
+    var mediaId = ""
+    var sha256 = if (screenshotBytes != null && screenshotBytes.isNotEmpty()) desktopBytesSha256(screenshotBytes) else ""
+
+    if (screenshotBytes != null && screenshotBytes.isNotEmpty()) {
+      val up = uploadPostPhoto(screenshotBytes)
+      if (up is DesktopApiOutcome.Ok) {
+        mediaId = up.data.mediaId
+      }
+    }
+
+    val payload = buildString {
+      append('{')
+      append("\"client_op_id\":\"").append(DesktopJson.escape(opId)).append("\",")
+      append("\"category\":\"").append(DesktopJson.escape(category.trim())).append("\",")
+      append("\"description\":\"").append(DesktopJson.escape(description.trim())).append("\",")
+      append("\"screenshot_media_id\":\"").append(DesktopJson.escape(mediaId)).append("\",")
+      append("\"screenshot_sha256\":\"").append(DesktopJson.escape(sha256)).append('"')
+      append('}')
+    }
+    val resp = executeRaw("POST", "/v1/support/reports", payload.toByteArray(StandardCharsets.UTF_8), auth = true)
+    if (resp != null && resp.first in 200..299) {
+      val map = DesktopJson.parseObject(resp.second)
+      val srv = DesktopJson.objOrNull(map, "ticket")
+      val ticket = DesktopSupportTicket(
+        ticketId = srv?.let { DesktopJson.str(it, "ticket_id") }?.ifBlank { opId } ?: opId,
+        referenceNumber = DesktopJson.str(map, "reference_number").ifBlank { localRef },
+        category = srv?.let { DesktopJson.str(it, "category") }?.ifBlank { category } ?: category,
+        description = srv?.let { DesktopJson.str(it, "description") }?.ifBlank { description } ?: description,
+        screenshotSha256 = sha256,
+        status = srv?.let { DesktopJson.str(it, "status") }?.ifBlank { "open" } ?: "open",
+        resolutionNote = srv?.let { DesktopJson.str(it, "resolution_note") } ?: "Submitted to Trust & Support",
+        isSynced = true,
+        createdAtMs = srv?.let { DesktopJson.long(it, "created_at_ms", nowMs) } ?: nowMs,
+      )
+      appendCachedTicket(ticket)
+      return ticket
+    }
+
+    enqueueSettingsOp("report_problem", payload)
+    val offlineTicket = DesktopSupportTicket(
+      ticketId = opId,
+      referenceNumber = localRef,
+      category = category.trim(),
+      description = description.trim(),
+      screenshotSha256 = sha256,
+      status = "queued_offline",
+      resolutionNote = "Saved offline. Will sync automatically on reconnect.",
+      isSynced = false,
+      createdAtMs = nowMs,
+    )
+    appendCachedTicket(offlineTicket)
+    return offlineTicket
+  }
+
+  private fun appendCachedTicket(ticket: DesktopSupportTicket) {
+    val uid = session.userId.ifBlank { "default" }
+    val cur = loadCachedTickets().filterNot { it.ticketId == ticket.ticketId }
+    saveCachedTickets(listOf(ticket) + cur)
+    val _u = uid
+  }
+
+  private fun saveCachedTickets(list: List<DesktopSupportTicket>) {
+    val uid = session.userId.ifBlank { "default" }
+    val json = buildString {
+      append("{\"items\":[")
+      list.forEachIndexed { idx, t ->
+        if (idx > 0) append(',')
+        append('{')
+        append("\"ticket_id\":\"").append(DesktopJson.escape(t.ticketId)).append("\",")
+        append("\"reference_number\":\"").append(DesktopJson.escape(t.referenceNumber)).append("\",")
+        append("\"category\":\"").append(DesktopJson.escape(t.category)).append("\",")
+        append("\"description\":\"").append(DesktopJson.escape(t.description)).append("\",")
+        append("\"screenshot_sha256\":\"").append(DesktopJson.escape(t.screenshotSha256)).append("\",")
+        append("\"status\":\"").append(DesktopJson.escape(t.status)).append("\",")
+        append("\"resolution_note\":\"").append(DesktopJson.escape(t.resolutionNote)).append("\",")
+        append("\"created_at_ms\":").append(t.createdAtMs)
+        append('}')
+      }
+      append("]}")
+    }
+    saveCachedText("tickets_$uid.json", json)
+  }
+
+  private fun loadCachedTickets(): List<DesktopSupportTicket> {
+    val uid = session.userId.ifBlank { "default" }
+    val raw = loadCachedText("tickets_$uid.json") ?: return emptyList()
+    val map = DesktopJson.parseObject(raw)
+    return DesktopJson.objList(map, "items").map { parseTicket(it, synced = false) }
+  }
+
+  fun listSupportTickets(): List<DesktopSupportTicket> {
+    flushSettingsOutbox()
+    val resp = executeRaw("GET", "/v1/support/tickets", null, auth = true)
+    if (resp != null && resp.first in 200..299) {
+      val map = DesktopJson.parseObject(resp.second)
+      val serverItems = DesktopJson.objList(map, "items").map { parseTicket(it, synced = true) }
+      val localQueued = loadCachedTickets().filter { !it.isSynced && serverItems.none { s -> s.ticketId == it.ticketId } }
+      val merged = (localQueued + serverItems).sortedByDescending { it.createdAtMs }
+      saveCachedTickets(merged)
+      return merged
+    }
+    return loadCachedTickets()
+  }
+
+  fun searchFaqs(query: String): List<DesktopFaqEntry> {
+    val qEnc = URLEncoder.encode(query.trim(), StandardCharsets.UTF_8)
+    val resp = executeRaw("GET", "/v1/support/faqs?q=$qEnc", null, auth = true)
+    if (resp != null && resp.first in 200..299) {
+      val map = DesktopJson.parseObject(resp.second)
+      val remote = DesktopJson.objList(map, "items").mapNotNull { m ->
+        val id = DesktopJson.str(m, "id")
+        val q = DesktopJson.str(m, "question")
+        if (q.isBlank()) null else DesktopFaqEntry(
+          id = id.ifBlank { q },
+          category = DesktopJson.str(m, "category").ifBlank { "General" },
+          question = q,
+          answer = DesktopJson.str(m, "answer"),
+        )
+      }
+      if (remote.isNotEmpty()) return remote
+    }
+    val low = query.trim().lowercase()
+    return DesktopSettingsCatalog.defaultFaqs.filter {
+      low.isEmpty() || it.question.lowercase().contains(low) || it.answer.lowercase().contains(low) || it.category.lowercase().contains(low)
+    }
+  }
+
+  fun getSystemStatus(): List<DesktopSystemServiceStatus> {
+    val resp = executeRaw("GET", "/v1/settings/system-status", null, auth = true)
+    if (resp != null && resp.first in 200..299) {
+      val map = DesktopJson.parseObject(resp.second)
+      val services = DesktopJson.objList(map, "services").mapNotNull { m ->
+        val name = DesktopJson.str(m, "service_name")
+        if (name.isBlank()) null else DesktopSystemServiceStatus(
+          serviceName = name,
+          status = DesktopJson.str(m, "status").ifBlank { "operational" },
+          latencyMs = DesktopJson.long(m, "latency_ms", 0L).toInt(),
+          summary = DesktopJson.str(m, "summary"),
+        )
+      }
+      if (services.isNotEmpty()) return services
+    }
+    return listOf(
+      DesktopSystemServiceStatus(
+        serviceName = "Device Sync & Connectivity",
+        status = "offline",
+        latencyMs = 0,
+        summary = "Offline or server unreachable. Encrypted local cache is active.",
+      ),
+    )
+  }
+
+  fun getLegalDocuments(): List<DesktopLegalDoc> {
+    val resp = executeRaw("GET", "/v1/legal/documents", null, auth = true)
+    if (resp != null && resp.first in 200..299) {
+      val map = DesktopJson.parseObject(resp.second)
+      val docs = DesktopJson.objList(map, "items").mapNotNull { m ->
+        val title = DesktopJson.str(m, "title")
+        if (title.isBlank()) null else DesktopLegalDoc(
+          id = DesktopJson.str(m, "id").ifBlank { title.lowercase() },
+          title = title,
+          lastUpdated = DesktopJson.str(m, "last_updated").ifBlank { "November 14, 2026" },
+          sections = DesktopJson.stringList(m, "sections"),
+        )
+      }
+      if (docs.isNotEmpty()) return docs
+    }
+    return DesktopSettingsCatalog.legalDocuments
+  }
+
+  fun checkAppVersion(): DesktopVersionCheckResult {
+    val nowMs = System.currentTimeMillis()
+    val curVer = DesktopSettingsCatalog.APP_VERSION
+    val curBuild = DesktopSettingsCatalog.APP_BUILD
+    val resp = executeRaw("GET", "/v1/app/version?version=$curVer", null, auth = true)
+    if (resp != null && resp.first in 200..299) {
+      val map = DesktopJson.parseObject(resp.second)
+      if (DesktopJson.bool(map, "success")) {
+        return DesktopVersionCheckResult(
+          installedVersion = curVer,
+          installedBuild = curBuild,
+          latestVersion = DesktopJson.str(map, "latest_version").ifBlank { curVer },
+          updateAvailable = DesktopJson.bool(map, "update_available"),
+          releaseNotes = DesktopJson.str(map, "release_notes").ifBlank { "You are up to date." },
+          checkedAtMs = nowMs,
+        )
+      }
+    }
+    return DesktopVersionCheckResult(
+      installedVersion = curVer,
+      installedBuild = curBuild,
+      latestVersion = curVer,
+      updateAvailable = false,
+      releaseNotes = "Offline or unreachable. Running Telefam Desktop v$curVer.",
+      checkedAtMs = nowMs,
+    )
+  }
+
   private fun parseConnectionsPage(map: Map<String, Any?>, fallbackPage: Int): DesktopUserConnectionsPage {
     val items = DesktopJson.objList(map, "items").mapNotNull { item ->
       val uid = DesktopJson.str(item, "user_id")
@@ -1308,11 +1754,140 @@ class DesktopApiClient(
       followsYou = DesktopJson.bool(map, "follows_you"),
       isOwner = DesktopJson.bool(map, "is_owner"),
       isBlocked = DesktopJson.bool(map, "is_blocked"),
+      isMuted = DesktopJson.bool(map, "is_muted"),
+      isPrivateRestricted = DesktopJson.bool(map, "is_private_restricted"),
+      likesVisibility = DesktopJson.str(map, "likes_visibility").ifBlank { "everyone" },
+      followingVisibility = DesktopJson.str(map, "following_visibility").ifBlank { "everyone" },
+      showActivityStatus = if (map.containsKey("show_activity_status")) DesktopJson.bool(map, "show_activity_status") else true,
       riskScore = DesktopJson.double(map, "risk_score", 0.0),
       posts = DesktopJson.objList(map, "posts").map(::parseFeedPost),
       savedPosts = DesktopJson.objList(map, "saved_posts").map(::parseFeedPost),
       repostedPosts = DesktopJson.objList(map, "reposted_posts").map(::parseFeedPost),
       lockedPosts = DesktopJson.objList(map, "locked_posts").map(::parseFeedPost),
+    )
+  }
+
+  private fun parseSettingsBundle(map: Map<String, Any?>): DesktopSettingsBundle {
+    val pMap = DesktopJson.objOrNull(map, "privacy")
+    val nMap = DesktopJson.objOrNull(map, "notifications")
+    val cMap = DesktopJson.objOrNull(map, "content_preferences")
+    return DesktopSettingsBundle(
+      privacy = if (pMap == null) DesktopPrivacySettings() else DesktopPrivacySettings(
+        isPrivateAccount = DesktopJson.bool(pMap, "is_private_account"),
+        whoCanComment = DesktopAudienceOption.fromApi(DesktopJson.str(pMap, "who_can_comment")),
+        whoCanMention = DesktopAudienceOption.fromApi(DesktopJson.str(pMap, "who_can_mention")),
+        whoCanFindYou = DesktopDiscoverabilityOption.fromApi(DesktopJson.str(pMap, "who_can_find_you")),
+        showActivityStatus = if (pMap.containsKey("show_activity_status")) DesktopJson.bool(pMap, "show_activity_status") else true,
+        likesVisibility = DesktopVisibilityOption.fromApi(DesktopJson.str(pMap, "likes_visibility")),
+        followingVisibility = DesktopVisibilityOption.fromApi(DesktopJson.str(pMap, "following_visibility")),
+        dataSharingPersonalization = if (pMap.containsKey("data_sharing_personalization")) DesktopJson.bool(pMap, "data_sharing_personalization") else true,
+        analyticsSharing = if (pMap.containsKey("analytics_sharing")) DesktopJson.bool(pMap, "analytics_sharing") else true,
+        essentialCookies = true,
+        personalizationCookies = if (pMap.containsKey("personalization_cookies")) DesktopJson.bool(pMap, "personalization_cookies") else true,
+        updatedAtMs = DesktopJson.long(pMap, "updated_at_ms", 0L),
+      ),
+      notifications = if (nMap == null) DesktopNotificationSettings() else DesktopNotificationSettings(
+        masterPause = DesktopJson.bool(nMap, "master_pause"),
+        channelPush = if (nMap.containsKey("channel_push")) DesktopJson.bool(nMap, "channel_push") else true,
+        channelEmail = if (nMap.containsKey("channel_email")) DesktopJson.bool(nMap, "channel_email") else true,
+        channelSms = DesktopJson.bool(nMap, "channel_sms"),
+        typeMessages = if (nMap.containsKey("type_messages")) DesktopJson.bool(nMap, "type_messages") else true,
+        typeComments = if (nMap.containsKey("type_comments")) DesktopJson.bool(nMap, "type_comments") else true,
+        typeFollowers = if (nMap.containsKey("type_followers")) DesktopJson.bool(nMap, "type_followers") else true,
+        typeProductUpdates = DesktopJson.bool(nMap, "type_product_updates"),
+        quietHoursEnabled = DesktopJson.bool(nMap, "quiet_hours_enabled"),
+        quietStartMinutes = DesktopJson.long(nMap, "quiet_start_minutes", 22L * 60L).toInt(),
+        quietEndMinutes = DesktopJson.long(nMap, "quiet_end_minutes", 7L * 60L).toInt(),
+        updatedAtMs = DesktopJson.long(nMap, "updated_at_ms", 0L),
+      ),
+      contentPreferences = if (cMap == null) DesktopContentPreferences() else DesktopContentPreferences(
+        suggestedContentEnabled = if (cMap.containsKey("suggested_content_enabled")) DesktopJson.bool(cMap, "suggested_content_enabled") else true,
+        notInterestedTopics = DesktopJson.stringList(cMap, "not_interested_topics"),
+        language = DesktopAppLanguageOption.fromCode(DesktopJson.str(cMap, "language_code")),
+        autoplayVideos = if (cMap.containsKey("autoplay_videos")) DesktopJson.bool(cMap, "autoplay_videos") else true,
+        videoQuality = DesktopVideoQualityOption.fromApi(DesktopJson.str(cMap, "video_quality")),
+        dataSaver = DesktopJson.bool(cMap, "data_saver"),
+        captionsEnabled = DesktopJson.bool(cMap, "captions_enabled"),
+        reducedMotion = DesktopJson.bool(cMap, "reduced_motion"),
+        updatedAtMs = DesktopJson.long(cMap, "updated_at_ms", 0L),
+      ),
+    )
+  }
+
+  private fun encodePrivacyJson(s: DesktopPrivacySettings): String = buildString {
+    append('{')
+    append("\"is_private_account\":").append(s.isPrivateAccount).append(',')
+    append("\"who_can_comment\":\"").append(s.whoCanComment.apiValue).append("\",")
+    append("\"who_can_mention\":\"").append(s.whoCanMention.apiValue).append("\",")
+    append("\"who_can_find_you\":\"").append(s.whoCanFindYou.apiValue).append("\",")
+    append("\"show_activity_status\":").append(s.showActivityStatus).append(',')
+    append("\"likes_visibility\":\"").append(s.likesVisibility.apiValue).append("\",")
+    append("\"following_visibility\":\"").append(s.followingVisibility.apiValue).append("\",")
+    append("\"data_sharing_personalization\":").append(s.dataSharingPersonalization).append(',')
+    append("\"analytics_sharing\":").append(s.analyticsSharing).append(',')
+    append("\"essential_cookies\":true,")
+    append("\"personalization_cookies\":").append(s.personalizationCookies).append(',')
+    append("\"updated_at_ms\":").append(s.updatedAtMs)
+    append('}')
+  }
+
+  private fun encodeNotificationsJson(s: DesktopNotificationSettings): String = buildString {
+    append('{')
+    append("\"master_pause\":").append(s.masterPause).append(',')
+    append("\"channel_push\":").append(s.channelPush).append(',')
+    append("\"channel_email\":").append(s.channelEmail).append(',')
+    append("\"channel_sms\":").append(s.channelSms).append(',')
+    append("\"type_messages\":").append(s.typeMessages).append(',')
+    append("\"type_comments\":").append(s.typeComments).append(',')
+    append("\"type_followers\":").append(s.typeFollowers).append(',')
+    append("\"type_product_updates\":").append(s.typeProductUpdates).append(',')
+    append("\"quiet_hours_enabled\":").append(s.quietHoursEnabled).append(',')
+    append("\"quiet_start_minutes\":").append(s.quietStartMinutes).append(',')
+    append("\"quiet_end_minutes\":").append(s.quietEndMinutes).append(',')
+    append("\"updated_at_ms\":").append(s.updatedAtMs)
+    append('}')
+  }
+
+  private fun encodeContentPrefsJson(s: DesktopContentPreferences, resetSuggestions: Boolean): String = buildString {
+    append('{')
+    append("\"suggested_content_enabled\":").append(s.suggestedContentEnabled).append(',')
+    append("\"not_interested_topics\":[").append(s.notInterestedTopics.joinToString(",") { "\"${DesktopJson.escape(it)}\"" }).append("],")
+    append("\"language_code\":\"").append(s.language.code).append("\",")
+    append("\"autoplay_videos\":").append(s.autoplayVideos).append(',')
+    append("\"video_quality\":\"").append(s.videoQuality.apiValue).append("\",")
+    append("\"data_saver\":").append(s.dataSaver).append(',')
+    append("\"captions_enabled\":").append(s.captionsEnabled).append(',')
+    append("\"reduced_motion\":").append(s.reducedMotion).append(',')
+    append("\"reset_suggestions\":").append(resetSuggestions).append(',')
+    append("\"updated_at_ms\":").append(s.updatedAtMs)
+    append('}')
+  }
+
+  private fun parseRestrictedAccount(m: Map<String, Any?>, isMuted: Boolean): DesktopRestrictedAccount? {
+    val uid = DesktopJson.str(m, "user_id")
+    if (uid.isBlank()) return null
+    return DesktopRestrictedAccount(
+      userId = uid,
+      fullName = DesktopJson.str(m, "full_name"),
+      username = DesktopJson.str(m, "username"),
+      avatarUrl = DesktopJson.str(m, "avatar_url"),
+      isMuted = isMuted,
+      createdAtMs = DesktopJson.long(m, "created_at_ms", 0L),
+    )
+  }
+
+  private fun parseTicket(m: Map<String, Any?>, synced: Boolean): DesktopSupportTicket {
+    val id = DesktopJson.str(m, "ticket_id").ifBlank { DesktopJson.str(m, "reference_number") }
+    return DesktopSupportTicket(
+      ticketId = id,
+      referenceNumber = DesktopJson.str(m, "reference_number").ifBlank { id },
+      category = DesktopJson.str(m, "category"),
+      description = DesktopJson.str(m, "description"),
+      screenshotSha256 = DesktopJson.str(m, "screenshot_sha256"),
+      status = DesktopJson.str(m, "status").ifBlank { "open" },
+      resolutionNote = DesktopJson.str(m, "resolution_note"),
+      isSynced = synced,
+      createdAtMs = DesktopJson.long(m, "created_at_ms", 0L),
     )
   }
 

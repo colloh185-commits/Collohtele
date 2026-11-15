@@ -30,7 +30,6 @@ import kotlinx.coroutines.delay
 import android.widget.Toast
 import telefam.company.ui.components.EditBackgroundsBottomSheet
 import telefam.company.ui.components.EditProfileModalSheet
-import telefam.company.ui.components.OwnerProfileSettingsSheet
 import telefam.company.ui.components.TelefamAnimatedSplashOverlay
 import telefam.company.ui.screens.ReusableVideoFeedScreen
 import telefam.company.ui.screens.TelefamAuthScreen
@@ -38,6 +37,7 @@ import telefam.company.ui.screens.TelefamHomeScreen
 import telefam.company.ui.screens.TelefamPostScreen
 import telefam.company.ui.screens.TelefamProfileSetupScreen
 import telefam.company.ui.screens.TelefamSearchScreen
+import telefam.company.ui.screens.TelefamSettingsScreen
 import telefam.company.ui.screens.TelefamUserProfileScreen
 import telefam.company.ui.theme.TelefamTheme
 import telefam.company.ui.theme.ThemeMode
@@ -94,9 +94,11 @@ class TelefamMainActivity : ComponentActivity() {
         uiState.activeUserProfile != null,
         uiState.profileViewerItems != null,
         uiState.postComposer.isOpen,
+        uiState.activeSettingsDestination != null,
       ) {
         val statusBarIsDark = when {
           uiState.postComposer.isOpen -> true
+          route == AppRootRoute.HOME && uiState.activeSettingsDestination != null -> true
           route == AppRootRoute.HOME && uiState.profileViewerItems != null -> true
           route == AppRootRoute.HOME && uiState.activeUserProfile != null -> {
             val activeProf = uiState.activeUserProfile
@@ -219,6 +221,7 @@ class TelefamMainActivity : ComponentActivity() {
                   onNotInterestedFeedPost = viewModel::onNotInterestedFeedPost,
                   onReportFeedPost = { postId, reason -> viewModel.onReportFeedPost(postId, reason) },
                   onBlockFeedAuthor = viewModel::onBlockFeedAuthor,
+                  onMuteFeedAuthor = viewModel::muteUserAccount,
                   onEditOwnerFeedPost = viewModel::openPostForEdit,
                   onChangeFeedPostPrivacy = viewModel::onChangeFeedPostPrivacy,
                   onDeleteOwnerFeedPost = viewModel::onDeleteOwnerFeedPost,
@@ -259,8 +262,8 @@ class TelefamMainActivity : ComponentActivity() {
           ) {
             TelefamSearchScreen(
               feedsState = uiState.feedsState,
-              networkTier = uiState.networkTier,
-              isHostActive = uiState.activeUserProfile == null && !uiState.postComposer.isOpen,
+              networkTier = uiState.effectiveNetworkTierForFeeds,
+              isHostActive = uiState.activeUserProfile == null && !uiState.postComposer.isOpen && uiState.activeSettingsDestination == null,
               onQueryChanged = viewModel::onFeedSearchQueryChanged,
               onShortcutSelected = viewModel::onFeedSearchShortcutSelected,
               onOpenCardAtIndex = viewModel::openSearchResultViewer,
@@ -277,6 +280,7 @@ class TelefamMainActivity : ComponentActivity() {
               onNotInterested = viewModel::onNotInterestedFeedPost,
               onReportPost = { postId, reason -> viewModel.onReportFeedPost(postId, reason) },
               onBlockAuthor = viewModel::onBlockFeedAuthor,
+              onMuteAuthor = viewModel::muteUserAccount,
               onEditOwnerPost = viewModel::openPostForEdit,
               onChangePostPrivacy = viewModel::onChangeFeedPostPrivacy,
               onDeleteOwnerPost = viewModel::onDeleteOwnerFeedPost,
@@ -287,6 +291,9 @@ class TelefamMainActivity : ComponentActivity() {
                 viewModel.closeSearchResultViewer()
                 viewModel.openUserProfile(uid)
               },
+              autoplayVideos = uiState.settings.contentPreferences.autoplayVideos,
+              captionsEnabled = uiState.settings.contentPreferences.captionsEnabled,
+              reducedMotion = uiState.settings.contentPreferences.reducedMotion,
               onShowToast = viewModel::showFeedToast,
             )
           }
@@ -328,6 +335,13 @@ class TelefamMainActivity : ComponentActivity() {
                 onOpenPostAtIndex = viewModel::openProfilePostViewer,
                 onBlockUser = { viewModel.blockUserFromProfile(activeProfile.userId) },
                 onUnblockUser = { viewModel.unblockUserFromProfile(activeProfile.userId) },
+                onMuteToggle = {
+                  if (activeProfile.isMuted) {
+                    viewModel.unmuteAccountFromSettings(activeProfile.userId)
+                  } else {
+                    viewModel.muteUserAccount(activeProfile.userId)
+                  }
+                },
                 onReportUser = { reason, details -> viewModel.reportUserFromProfile(activeProfile.userId, reason, details) },
                 onShowToast = viewModel::showProfileToast,
                 onToggleTheme = viewModel::cycleThemeMode,
@@ -350,8 +364,8 @@ class TelefamMainActivity : ComponentActivity() {
                 items = viewerList,
                 initialIndex = uiState.profileViewerInitialIndex,
                 isStandaloneViewer = true,
-                isHostActive = !uiState.postComposer.isOpen,
-                networkTier = uiState.networkTier,
+                isHostActive = !uiState.postComposer.isOpen && uiState.activeSettingsDestination == null,
+                networkTier = uiState.effectiveNetworkTierForFeeds,
                 streamAccessToken = uiState.feedsState.streamAccessToken,
                 streamDeviceFp = uiState.feedsState.streamDeviceFp,
                 bottomChromePadding = 0.dp,
@@ -371,6 +385,7 @@ class TelefamMainActivity : ComponentActivity() {
                 onNotInterested = viewModel::onNotInterestedFeedPost,
                 onReportPost = { postId, reason -> viewModel.onReportFeedPost(postId, reason) },
                 onBlockAuthor = viewModel::onBlockFeedAuthor,
+                onMuteAuthor = viewModel::muteUserAccount,
                 onEditOwnerPost = { item ->
                   viewModel.closeProfilePostViewer()
                   viewModel.openPostForEdit(item)
@@ -393,6 +408,9 @@ class TelefamMainActivity : ComponentActivity() {
                   viewModel.closeProfilePostViewer()
                   viewModel.openUserProfile(uid)
                 },
+                autoplayVideos = uiState.settings.contentPreferences.autoplayVideos,
+                captionsEnabled = uiState.settings.contentPreferences.captionsEnabled,
+                reducedMotion = uiState.settings.contentPreferences.reducedMotion,
                 onShowToast = viewModel::showFeedToast,
               )
             }
@@ -439,14 +457,36 @@ class TelefamMainActivity : ComponentActivity() {
 
           val activeOwnerProfileForModals = uiState.activeUserProfile?.takeIf { it.isOwner } ?: uiState.ownProfileState
 
-          if (route == AppRootRoute.HOME && uiState.showSettingsModal) {
-            OwnerProfileSettingsSheet(
-              themeMode = uiState.themeMode,
-              username = activeOwnerProfileForModals?.username ?: uiState.profileForm.username,
-              email = uiState.emailInput,
-              onSignOut = viewModel::signOut,
+          AnimatedVisibility(
+            visible = route == AppRootRoute.HOME && uiState.activeSettingsDestination != null,
+            enter = slideInVertically(initialOffsetY = { it / 6 }) + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { it / 6 }) + fadeOut(),
+          ) {
+            TelefamSettingsScreen(
+              uiState = uiState,
+              onNavigateBack = viewModel::navigateSettingsBack,
+              onOpenDestination = viewModel::navigateToSettings,
+              onSearchQueryChanged = viewModel::onSettingsSearchQueryChanged,
               onToggleTheme = viewModel::cycleThemeMode,
-              onDismiss = viewModel::dismissOwnerSettingsModal,
+              onUpdatePrivacy = viewModel::updatePrivacySettings,
+              onUpdateNotifications = viewModel::updateNotificationSettings,
+              onUpdateContentPreferences = viewModel::updateContentPreferences,
+              onRestrictedTabSelected = viewModel::onRestrictedAccountsTabSelected,
+              onRestrictedQueryChanged = viewModel::onRestrictedAccountsQueryChanged,
+              onUnblockAccount = viewModel::unblockAccountFromSettings,
+              onUnmuteAccount = viewModel::unmuteAccountFromSettings,
+              onSubmitProblemReport = viewModel::submitProblemReport,
+              onClearLastCreatedTicket = viewModel::clearLastCreatedTicket,
+              onSearchFaq = viewModel::searchFaqs,
+              onRefreshTickets = viewModel::refreshSupportTickets,
+              onRefreshStatus = viewModel::refreshSystemStatus,
+              onSelectLegalDoc = viewModel::selectLegalDocument,
+              onCheckAppUpdates = viewModel::checkAppUpdates,
+              onShowToast = viewModel::showProfileToast,
+              onRequestLogout = viewModel::requestLogoutConfirmation,
+              onDismissLogoutDialog = viewModel::dismissLogoutConfirmation,
+              onToggleLogoutAllDevices = viewModel::setLogoutAllDevicesChoice,
+              onConfirmLogout = viewModel::confirmSignOut,
             )
           }
 
