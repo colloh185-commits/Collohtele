@@ -29,7 +29,11 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import telefam.company.core.AdaptiveStreamSelector
 import telefam.company.core.AppVersionCheckResult
+import telefam.company.core.ChatAudienceOption
+import telefam.company.core.ChatPrivacyRoute
+import telefam.company.core.ChatPrivacySettingsState
 import telefam.company.core.ContactFilterTab
+import telefam.company.core.TelefamChatPrivacyCatalog
 import telefam.company.core.ContactRelationshipState
 import telefam.company.core.ContentPreferencesState
 import telefam.company.core.FaqEntry
@@ -71,6 +75,7 @@ import telefam.company.data.network.ProfileBackgroundItemDto
 import telefam.company.data.network.UserProfileResponseDto
 import telefam.company.data.repository.AuthActionResult
 import telefam.company.data.repository.ContactToggleResult
+import telefam.company.data.repository.LoginApprovalPollOutcome
 import telefam.company.data.repository.PostPublishResult
 import telefam.company.data.repository.PostSubmissionInput
 import telefam.company.data.repository.ProfileActionResult
@@ -89,7 +94,36 @@ import java.io.File
 enum class AuthStep {
   EMAIL_INPUT,
   OTP_VERIFICATION,
+  DEVICE_APPROVAL_WAIT,
+  DEVICE_APPROVAL_DENIED,
 }
+
+data class DeviceApprovalWaitState(
+  val email: String,
+  val requestId: String,
+  val pollToken: String,
+  val targetDeviceName: String,
+  val targetLocation: String,
+  val requestTimeMs: Long,
+  val remainingSeconds: Long,
+  val expiresInSeconds: Long = 60L,
+  val tryAnotherWayProvider: String = "google",
+)
+
+data class IncomingLoginRequestState(
+  val requestId: String,
+  val deviceName: String,
+  val location: String,
+  val ipAddressMasked: String,
+  val requestedAtMs: Long,
+  val remainingSeconds: Long,
+)
+
+data class LoginApprovedOverlayState(
+  val deviceName: String,
+  val location: String,
+  val requestedAtMs: Long,
+)
 
 enum class HomeTab {
   CHATS,
@@ -384,12 +418,24 @@ data class TelefamUiState(
   val editProfileError: String? = null,
   val editProfileCropBitmap: Bitmap? = null,
   val editProfileProcessedAvatar: ProcessedAvatarMedia? = null,
+  val pendingLoginApprovalWait: DeviceApprovalWaitState? = null,
+  val incomingLoginRequest: IncomingLoginRequestState? = null,
+  val loginApprovedOverlay: LoginApprovedOverlayState? = null,
+  val isRespondingToLoginRequest: Boolean = false,
+  val loginRequestActionError: String? = null,
+  val tryAnotherWayGoogleExpectedEmail: String? = null,
+  val tryAnotherWayApprovalRequestId: String? = null,
+  val chatPrivacy: ChatPrivacySettingsState = ChatPrivacySettingsState(),
+  val chatPrivacyBackStack: List<ChatPrivacyRoute> = emptyList(),
 ) {
   val activeUserProfile: UserProfileScreenState?
     get() = profileBackStack.lastOrNull()
 
   val activeSettingsDestination: SettingsDestination?
     get() = settingsBackStack.lastOrNull() ?: if (showSettingsModal) SettingsDestination.HUB else null
+
+  val activeChatPrivacyRoute: ChatPrivacyRoute?
+    get() = chatPrivacyBackStack.lastOrNull()
 
   val effectiveNetworkTierForFeeds: NetworkTier
     get() {
@@ -411,6 +457,9 @@ class TelefamViewModel(
   val uiState: StateFlow<TelefamUiState> = _uiState.asStateFlow()
 
   private var countdownJob: Job? = null
+  private var deviceApprovalPollJob: Job? = null
+  private var incomingLoginPollerJob: Job? = null
+  private var incomingCountdownJob: Job? = null
   private var usernameCheckJob: Job? = null
   private var contactsSearchJob: Job? = null
   private var feedSearchJob: Job? = null
@@ -499,26 +548,37 @@ class TelefamViewModel(
         if (isAuthenticated && userId.isNotBlank() && lastInitializedSettingsUid != userId) {
           lastInitializedSettingsUid = userId
           val cachedSettings = runCatching { repository.loadCachedSettings() }.getOrDefault(_uiState.value.settings)
+          val cachedChatPrivacy = runCatching { repository.loadCachedChatPrivacy() }.getOrDefault(_uiState.value.chatPrivacy)
           val cachedBlocked = runCatching { repository.listRestrictedAccounts(isMuted = false) }.getOrDefault(emptyList())
           val cachedMuted = runCatching { repository.listRestrictedAccounts(isMuted = true) }.getOrDefault(emptyList())
           _uiState.update {
             it.copy(
               settings = cachedSettings,
+              chatPrivacy = cachedChatPrivacy,
               blockedAccounts = cachedBlocked,
               mutedAccounts = cachedMuted,
             )
           }
           if (tier != NetworkTier.OFFLINE) {
             launch { refreshAllSettingsFromServer() }
+            launch { repository.captureAndSyncDeviceContext(force = true) }
+          } else {
+            launch { repository.captureAndSyncDeviceContext(force = false) }
           }
+          startIncomingLoginRequestPoller()
         } else if (!isAuthenticated) {
           lastInitializedSettingsUid = ""
+          incomingLoginPollerJob?.cancel()
+          incomingLoginPollerJob = null
+          incomingCountdownJob?.cancel()
         }
 
         if (wasOffline && tier != NetworkTier.OFFLINE && isAuthenticated) {
           repository.flushOfflineQueue()
           repository.flushPendingSettingsOps()
+          launch { repository.flushPendingDeviceContext(force = true) }
           refreshAllSettingsFromServer()
+          refreshIncomingLoginRequests()
           when (_uiState.value.activeHomeTab) {
             HomeTab.CONTACTS -> refreshContacts()
             HomeTab.FEEDS -> refreshFeeds()
@@ -726,27 +786,146 @@ class TelefamViewModel(
               errorMessage = null,
               cooldownRemainingSeconds = result.cooldownSeconds,
               activeCooldownDurationSeconds = result.totalCooldownDurationSeconds,
+              pendingLoginApprovalWait = null,
             )
           }
           startCountdown(result.cooldownSeconds)
+        }
+
+        is AuthActionResult.RequiresDeviceApproval -> {
+          val waitState = DeviceApprovalWaitState(
+            email = result.email,
+            requestId = result.requestId,
+            pollToken = result.pollToken,
+            targetDeviceName = result.targetDeviceName,
+            targetLocation = result.targetLocation,
+            requestTimeMs = result.requestTimeMs,
+            remainingSeconds = result.expiresInSeconds,
+            expiresInSeconds = result.expiresInSeconds,
+            tryAnotherWayProvider = result.tryAnotherWayProvider,
+          )
+          _uiState.update {
+            it.copy(
+              isLoading = false,
+              authStep = AuthStep.DEVICE_APPROVAL_WAIT,
+              emailInput = result.email,
+              otpCode = "",
+              errorMessage = null,
+              pendingLoginApprovalWait = waitState,
+              tryAnotherWayGoogleExpectedEmail = result.email,
+              tryAnotherWayApprovalRequestId = result.requestId,
+            )
+          }
+          startDeviceApprovalPolling(waitState)
         }
 
         is AuthActionResult.SanitizedFailure -> {
           val rem = result.remainingCooldownSeconds
           val (_, total) = repository.getCurrentCooldownForEmail(email)
           _uiState.update {
+            val nextStep = when {
+              result.isDeviceBlocked -> AuthStep.DEVICE_APPROVAL_DENIED
+              rem > 0L -> AuthStep.OTP_VERIFICATION
+              else -> it.authStep
+            }
+            val blockedWait = if (result.isDeviceBlocked && it.pendingLoginApprovalWait == null) {
+              DeviceApprovalWaitState(
+                email = email,
+                requestId = it.tryAnotherWayApprovalRequestId.orEmpty(),
+                pollToken = "",
+                targetDeviceName = "Your trusted device",
+                targetLocation = "",
+                requestTimeMs = System.currentTimeMillis(),
+                remainingSeconds = 0L,
+              )
+            } else {
+              it.pendingLoginApprovalWait
+            }
             it.copy(
               isLoading = false,
               errorMessage = if (rem > 0L) null else result.message,
-              authStep = if (rem > 0L) AuthStep.OTP_VERIFICATION else it.authStep,
+              authStep = nextStep,
               cooldownRemainingSeconds = if (rem > 0L) rem else it.cooldownRemainingSeconds,
               activeCooldownDurationSeconds = total,
+              pendingLoginApprovalWait = blockedWait,
+              tryAnotherWayGoogleExpectedEmail = if (result.isDeviceBlocked) email else it.tryAnotherWayGoogleExpectedEmail,
             )
           }
           if (rem > 0L) startCountdown(rem)
         }
 
         is AuthActionResult.Verified -> _uiState.update { it.copy(isLoading = false) }
+      }
+    }
+  }
+
+  private fun startDeviceApprovalPolling(waitState: DeviceApprovalWaitState) {
+    deviceApprovalPollJob?.cancel()
+    deviceApprovalPollJob = viewModelScope.launch {
+      var tick = 0
+      while (true) {
+        delay(1_000L)
+        tick++
+        val cur = _uiState.value
+        if (cur.isAuthenticated || cur.authStep != AuthStep.DEVICE_APPROVAL_WAIT) break
+        val currentWait = cur.pendingLoginApprovalWait ?: break
+
+        val decremented = (currentWait.remainingSeconds - 1L).coerceAtLeast(0L)
+        _uiState.update {
+          it.copy(pendingLoginApprovalWait = it.pendingLoginApprovalWait?.copy(remainingSeconds = decremented))
+        }
+
+        if (tick % 2 == 0 || decremented == 0L) {
+          when (
+            val poll = repository.pollLoginRequestStatus(
+              requestId = currentWait.requestId,
+              pollToken = currentWait.pollToken,
+              email = currentWait.email,
+            )
+          ) {
+            is LoginApprovalPollOutcome.Pending -> {
+              _uiState.update {
+                it.copy(
+                  pendingLoginApprovalWait = it.pendingLoginApprovalWait?.copy(
+                    remainingSeconds = poll.remainingSeconds,
+                    targetDeviceName = poll.targetDeviceName.ifBlank { currentWait.targetDeviceName },
+                    targetLocation = poll.targetLocation.ifBlank { currentWait.targetLocation },
+                  ),
+                )
+              }
+            }
+            is LoginApprovalPollOutcome.Approved -> {
+              onAuthVerified(poll.verified)
+              break
+            }
+            LoginApprovalPollOutcome.DeniedBlocked -> {
+              _uiState.update {
+                it.copy(
+                  authStep = AuthStep.DEVICE_APPROVAL_DENIED,
+                  errorMessage = "Your trusted device denied this login request.",
+                )
+              }
+              break
+            }
+            LoginApprovalPollOutcome.Expired -> {
+              _uiState.update {
+                it.copy(
+                  authStep = AuthStep.EMAIL_INPUT,
+                  pendingLoginApprovalWait = null,
+                  tryAnotherWayGoogleExpectedEmail = null,
+                  tryAnotherWayApprovalRequestId = null,
+                  errorMessage = "The approval request timed out. Please try again.",
+                )
+              }
+              break
+            }
+            is LoginApprovalPollOutcome.Error -> {
+              if (decremented <= 0L) {
+                _uiState.update { it.copy(errorMessage = poll.message) }
+              }
+            }
+          }
+        }
       }
     }
   }
@@ -771,7 +950,7 @@ class TelefamViewModel(
         is AuthActionResult.SanitizedFailure -> {
           _uiState.update { it.copy(isLoading = false, errorMessage = result.message) }
         }
-        is AuthActionResult.OtpSent -> Unit
+        is AuthActionResult.OtpSent, is AuthActionResult.RequiresDeviceApproval -> Unit
       }
     }
   }
@@ -784,20 +963,51 @@ class TelefamViewModel(
         is AuthActionResult.SanitizedFailure -> {
           _uiState.update { it.copy(isLoading = false, errorMessage = result.message) }
         }
-        is AuthActionResult.OtpSent -> Unit
+        is AuthActionResult.OtpSent, is AuthActionResult.RequiresDeviceApproval -> Unit
       }
+    }
+  }
+
+  fun prepareTryAnotherWayGoogleSignIn() {
+    val cur = _uiState.value
+    val expected = cur.pendingLoginApprovalWait?.email?.ifBlank { cur.emailInput } ?: cur.emailInput
+    val reqId = cur.pendingLoginApprovalWait?.requestId
+    _uiState.update {
+      it.copy(
+        tryAnotherWayGoogleExpectedEmail = expected.trim().lowercase().takeIf { e -> e.isNotBlank() },
+        tryAnotherWayApprovalRequestId = reqId?.takeIf { id -> id.isNotBlank() },
+        errorMessage = null,
+      )
     }
   }
 
   fun onGoogleSignInSuccess(idToken: String, email: String) {
     viewModelScope.launch {
+      val cur = _uiState.value
+      val expectedEmail = if (cur.authStep == AuthStep.DEVICE_APPROVAL_WAIT || cur.authStep == AuthStep.DEVICE_APPROVAL_DENIED) {
+        cur.tryAnotherWayGoogleExpectedEmail ?: cur.pendingLoginApprovalWait?.email ?: cur.emailInput
+      } else {
+        null
+      }
+      val approvalReqId = if (cur.authStep == AuthStep.DEVICE_APPROVAL_WAIT || cur.authStep == AuthStep.DEVICE_APPROVAL_DENIED) {
+        cur.tryAnotherWayApprovalRequestId ?: cur.pendingLoginApprovalWait?.requestId
+      } else {
+        null
+      }
       _uiState.update { it.copy(isLoading = true, errorMessage = null) }
-      when (val result = repository.authenticateWithGoogle(idToken, email)) {
+      when (
+        val result = repository.authenticateWithGoogle(
+          idToken = idToken,
+          email = email,
+          expectedEmail = expectedEmail,
+          approvalRequestId = approvalReqId,
+        )
+      ) {
         is AuthActionResult.Verified -> onAuthVerified(result)
         is AuthActionResult.SanitizedFailure -> {
           _uiState.update { it.copy(isLoading = false, errorMessage = result.message) }
         }
-        is AuthActionResult.OtpSent -> Unit
+        is AuthActionResult.OtpSent, is AuthActionResult.RequiresDeviceApproval -> Unit
       }
     }
   }
@@ -810,6 +1020,7 @@ class TelefamViewModel(
 
   fun changeEmail() {
     countdownJob?.cancel()
+    deviceApprovalPollJob?.cancel()
     viewModelScope.launch { repository.savePendingOtpEmail(null) }
     _uiState.update {
       it.copy(
@@ -817,8 +1028,122 @@ class TelefamViewModel(
         otpCode = "",
         errorMessage = null,
         cooldownRemainingSeconds = 0L,
+        pendingLoginApprovalWait = null,
+        tryAnotherWayGoogleExpectedEmail = null,
+        tryAnotherWayApprovalRequestId = null,
       )
     }
+  }
+
+  private fun startIncomingLoginRequestPoller() {
+    if (incomingLoginPollerJob?.isActive == true) return
+    incomingLoginPollerJob = viewModelScope.launch {
+      while (true) {
+        if (_uiState.value.isAuthenticated && _uiState.value.profileCompleted) {
+          refreshIncomingLoginRequests()
+        }
+        delay(4_000L)
+      }
+    }
+  }
+
+  fun refreshIncomingLoginRequests() {
+    viewModelScope.launch {
+      val list = repository.fetchPendingIncomingLoginRequests()
+      val top = list.firstOrNull()
+      if (top == null) {
+        if (_uiState.value.incomingLoginRequest != null && !_uiState.value.isRespondingToLoginRequest) {
+          incomingCountdownJob?.cancel()
+          _uiState.update { it.copy(incomingLoginRequest = null) }
+        }
+        return@launch
+      }
+      val next = IncomingLoginRequestState(
+        requestId = top.requestId,
+        deviceName = top.deviceName.ifBlank { "New Device" },
+        location = top.location.ifBlank { "Unknown location" },
+        ipAddressMasked = top.ipAddressMasked.ifBlank { "XX.XX.XXX.XX" },
+        requestedAtMs = top.requestedAtMs.takeIf { it > 0L } ?: System.currentTimeMillis(),
+        remainingSeconds = top.remainingSeconds.coerceAtLeast(1L),
+      )
+      val prevId = _uiState.value.incomingLoginRequest?.requestId
+      _uiState.update {
+        it.copy(
+          incomingLoginRequest = next,
+          loginRequestActionError = if (prevId != next.requestId) null else it.loginRequestActionError,
+        )
+      }
+      if (prevId != next.requestId || incomingCountdownJob?.isActive != true) {
+        startIncomingRequestCountdown(next.requestId, next.remainingSeconds)
+      }
+    }
+  }
+
+  private fun startIncomingRequestCountdown(requestId: String, initialSeconds: Long) {
+    incomingCountdownJob?.cancel()
+    incomingCountdownJob = viewModelScope.launch {
+      var remaining = initialSeconds
+      while (remaining > 0L) {
+        delay(1_000L)
+        remaining--
+        val cur = _uiState.value.incomingLoginRequest
+        if (cur == null || cur.requestId != requestId) break
+        _uiState.update {
+          it.copy(incomingLoginRequest = cur.copy(remainingSeconds = remaining))
+        }
+      }
+      val latest = _uiState.value.incomingLoginRequest
+      if (latest != null && latest.requestId == requestId && remaining <= 0L) {
+        _uiState.update { it.copy(incomingLoginRequest = null) }
+      }
+    }
+  }
+
+  fun respondToIncomingLoginRequest(accept: Boolean) {
+    val req = _uiState.value.incomingLoginRequest ?: return
+    if (_uiState.value.isRespondingToLoginRequest) return
+    viewModelScope.launch {
+      _uiState.update { it.copy(isRespondingToLoginRequest = true, loginRequestActionError = null) }
+      val res = repository.respondToIncomingLoginRequest(req.requestId, accept)
+      if (!res.success) {
+        _uiState.update {
+          it.copy(
+            isRespondingToLoginRequest = false,
+            loginRequestActionError = res.message ?: "Unable to process request.",
+          )
+        }
+        return@launch
+      }
+      incomingCountdownJob?.cancel()
+      if (accept) {
+        _uiState.update {
+          it.copy(
+            isRespondingToLoginRequest = false,
+            incomingLoginRequest = null,
+            loginRequestActionError = null,
+            loginApprovedOverlay = LoginApprovedOverlayState(
+              deviceName = res.deviceName.ifBlank { req.deviceName },
+              location = res.location.ifBlank { req.location },
+              requestedAtMs = res.requestedAtMs.takeIf { ts -> ts > 0L } ?: req.requestedAtMs,
+            ),
+          )
+        }
+      } else {
+        _uiState.update {
+          it.copy(
+            isRespondingToLoginRequest = false,
+            incomingLoginRequest = null,
+            loginRequestActionError = null,
+            profileToastMessage = "Login request denied and device blocked.",
+          )
+        }
+      }
+    }
+  }
+
+  fun dismissLoginApprovedOverlay() {
+    _uiState.update { it.copy(loginApprovedOverlay = null) }
+    refreshIncomingLoginRequests()
   }
 
   // Profile Setup handlers
@@ -2515,10 +2840,13 @@ class TelefamViewModel(
       )
     }
 
+    val cleanId = userId.trim()
+    val startEpoch = profileMutationEpoch[cleanId] ?: 0L
+
     viewModelScope.launch {
-      when (val res = repository.toggleFollowAuthorFromFeed(userId, currentlyFollowing)) {
+      when (val res = repository.toggleFollowAuthorFromFeed(cleanId, currentlyFollowing)) {
         is ContactToggleResult.RateLimited -> {
-          updateProfileInState(userId) { p ->
+          updateProfileInState(cleanId) { p ->
             p.copy(
               isFollowing = currentlyFollowing,
               followersCount = (p.followersCount - delta).coerceAtLeast(0L),
@@ -2528,7 +2856,9 @@ class TelefamViewModel(
           _uiState.update { it.copy(profileToastMessage = res.message) }
         }
         else -> {
-          refreshUserProfile(userId)
+          if ((profileMutationEpoch[cleanId] ?: 0L) == startEpoch) {
+            refreshUserProfile(cleanId)
+          }
         }
       }
     }
@@ -2708,11 +3038,13 @@ class TelefamViewModel(
 
   private suspend fun refreshAllSettingsFromServer() {
     val fetched = repository.fetchSettings()
+    val fetchedChatPrivacy = repository.fetchChatPrivacy()
     val blocked = repository.listRestrictedAccounts(isMuted = false, query = _uiState.value.restrictedAccountsQuery)
     val muted = repository.listRestrictedAccounts(isMuted = true, query = _uiState.value.restrictedAccountsQuery)
     _uiState.update { s ->
       s.copy(
         settings = fetched,
+        chatPrivacy = fetchedChatPrivacy,
         blockedAccounts = blocked,
         mutedAccounts = muted,
         ownProfileState = s.ownProfileState?.copy(
@@ -2724,6 +3056,91 @@ class TelefamViewModel(
           showActivityStatus = fetched.privacy.showActivityStatus,
         ),
       )
+    }
+  }
+
+  fun openChatPrivacy() {
+    _uiState.update {
+      it.copy(chatPrivacyBackStack = listOf(ChatPrivacyRoute.PRIVACY))
+    }
+    viewModelScope.launch {
+      val fetched = repository.fetchChatPrivacy()
+      _uiState.update { it.copy(chatPrivacy = fetched) }
+    }
+  }
+
+  fun openChatsThemePicker() {
+    _uiState.update { s ->
+      val base = if (s.chatPrivacyBackStack.isEmpty()) listOf(ChatPrivacyRoute.PRIVACY) else s.chatPrivacyBackStack
+      val next = if (base.lastOrNull() == ChatPrivacyRoute.CHATS_THEME) base else base + ChatPrivacyRoute.CHATS_THEME
+      s.copy(chatPrivacyBackStack = next)
+    }
+  }
+
+  fun openBubbleColorPicker() {
+    _uiState.update { s ->
+      val base = if (s.chatPrivacyBackStack.isEmpty()) listOf(ChatPrivacyRoute.PRIVACY) else s.chatPrivacyBackStack
+      val next = if (base.lastOrNull() == ChatPrivacyRoute.BUBBLE_COLORS) base else base + ChatPrivacyRoute.BUBBLE_COLORS
+      s.copy(chatPrivacyBackStack = next)
+    }
+  }
+
+  fun navigateChatPrivacyBack() {
+    _uiState.update { s ->
+      if (s.chatPrivacyBackStack.size > 1) {
+        s.copy(chatPrivacyBackStack = s.chatPrivacyBackStack.dropLast(1))
+      } else {
+        s.copy(chatPrivacyBackStack = emptyList())
+      }
+    }
+  }
+
+  fun closeAllChatPrivacy() {
+    _uiState.update { it.copy(chatPrivacyBackStack = emptyList()) }
+  }
+
+  fun updateChatPrivacy(next: ChatPrivacySettingsState) {
+    val stamped = next.copy(
+      chatThemeId = TelefamChatPrivacyCatalog.themeById(next.chatThemeId).themeId,
+      bubbleColorId = TelefamChatPrivacyCatalog.bubbleColorById(next.bubbleColorId).colorId,
+      updatedAtMs = System.currentTimeMillis(),
+    )
+    _uiState.update { it.copy(chatPrivacy = stamped) }
+    viewModelScope.launch {
+      val persisted = repository.saveChatPrivacy(stamped)
+      _uiState.update { it.copy(chatPrivacy = persisted) }
+    }
+  }
+
+  fun selectChatTheme(themeId: String) {
+    val cleanId = TelefamChatPrivacyCatalog.themeById(themeId).themeId
+    _uiState.update { s ->
+      s.copy(
+        chatPrivacy = s.chatPrivacy.copy(
+          chatThemeId = cleanId,
+          updatedAtMs = System.currentTimeMillis(),
+        ),
+      )
+    }
+    viewModelScope.launch {
+      val persisted = repository.saveChatThemeAndBubbleColor(themeId = cleanId)
+      _uiState.update { it.copy(chatPrivacy = persisted) }
+    }
+  }
+
+  fun selectBubbleColor(colorId: String) {
+    val cleanId = TelefamChatPrivacyCatalog.bubbleColorById(colorId).colorId
+    _uiState.update { s ->
+      s.copy(
+        chatPrivacy = s.chatPrivacy.copy(
+          bubbleColorId = cleanId,
+          updatedAtMs = System.currentTimeMillis(),
+        ),
+      )
+    }
+    viewModelScope.launch {
+      val persisted = repository.saveChatThemeAndBubbleColor(bubbleColorId = cleanId)
+      _uiState.update { it.copy(chatPrivacy = persisted) }
     }
   }
 
@@ -3292,6 +3709,9 @@ class TelefamViewModel(
 
   fun signOut(allDevices: Boolean) {
     countdownJob?.cancel()
+    deviceApprovalPollJob?.cancel()
+    incomingLoginPollerJob?.cancel()
+    incomingCountdownJob?.cancel()
     lastInitializedSettingsUid = ""
     viewModelScope.launch {
       repository.signOut(allDevices = allDevices)
@@ -3303,6 +3723,7 @@ class TelefamViewModel(
 
   private fun onAuthVerified(result: AuthActionResult.Verified) {
     countdownJob?.cancel()
+    deviceApprovalPollJob?.cancel()
     val (autoName, autoUser) = TelefamProfileSanitizer.autofillFromEmail(result.email)
     _uiState.update {
       it.copy(
@@ -3311,9 +3732,13 @@ class TelefamViewModel(
         profileCompleted = result.profileCompleted,
         userId = result.userId,
         userEmail = result.email,
+        authStep = AuthStep.EMAIL_INPUT,
         errorMessage = null,
         otpCode = "",
         cooldownRemainingSeconds = 0L,
+        pendingLoginApprovalWait = null,
+        tryAnotherWayGoogleExpectedEmail = null,
+        tryAnotherWayApprovalRequestId = null,
         profileForm = if (result.profileCompleted) {
           it.profileForm
         } else {
@@ -3324,6 +3749,15 @@ class TelefamViewModel(
           )
         },
       )
+    }
+    if (result.profileCompleted) {
+      viewModelScope.launch {
+        loadOwnProfile()
+        refreshFeeds()
+        refreshContacts()
+        refreshAllSettingsFromServer()
+        repository.captureAndSyncDeviceContext(force = true)
+      }
     }
   }
 

@@ -132,6 +132,140 @@ data class SettingsSnapshot(
   val contentPreferences: ContentPreferencesState = ContentPreferencesState(),
 )
 
+enum class ChatPrivacyRoute {
+  PRIVACY,
+  CHATS_THEME,
+  BUBBLE_COLORS,
+}
+
+enum class ChatAudienceOption(val apiValue: String, val label: String) {
+  ANYONE("anyone", "Anyone"),
+  FRIENDS("friends", "Friends"),
+  CONTACTS("contacts", "Contacts"),
+  NOBODY("nobody", "Nobody");
+
+  companion object {
+    fun fromApi(raw: String?, allowContacts: Boolean = true, fallback: ChatAudienceOption = ANYONE): ChatAudienceOption {
+      val clean = raw?.trim()?.lowercase().orEmpty()
+      val matched = when (clean) {
+        "anyone", "everyone" -> ANYONE
+        "friends" -> FRIENDS
+        "contacts", "contacts_only" -> if (allowContacts) CONTACTS else FRIENDS
+        "nobody", "no_one", "only_me" -> NOBODY
+        else -> fallback
+      }
+      return if (!allowContacts && matched == CONTACTS) FRIENDS else matched
+    }
+  }
+}
+
+enum class ChatPatternKind(val apiValue: String) {
+  CLEAN("clean"),
+  HOME("home"),
+  MEADOW("meadow"),
+  WINTER("winter"),
+  OCEAN("ocean"),
+  MATH("math"),
+  BOTANICAL("botanical"),
+  ROMANCE("romance"),
+  FIRESIDE("fireside"),
+  ARCADE("arcade"),
+  COSMIC("cosmic"),
+  SAFARI("safari"),
+  TELEFAM("telefam");
+
+  companion object {
+    fun fromApi(raw: String?): ChatPatternKind =
+      entries.firstOrNull { it.apiValue.equals(raw?.trim(), ignoreCase = true) } ?: CLEAN
+  }
+}
+
+data class ChatThemeSpec(
+  val themeId: String,
+  val title: String,
+  val patternKind: ChatPatternKind,
+  val lightBgHex: Long,
+  val darkBgHex: Long,
+  val lightPatternAlpha: Float,
+  val darkPatternAlpha: Float,
+  val accentStartHex: Long,
+  val accentEndHex: Long,
+  val selectionHex: Long,
+)
+
+data class ChatBubbleColorOption(
+  val colorId: String,
+  val label: String,
+  val lightStartHex: Long,
+  val lightEndHex: Long,
+  val darkStartHex: Long,
+  val darkEndHex: Long,
+)
+
+data class ChatPrivacySettingsState(
+  val messageRequests: ChatAudienceOption = ChatAudienceOption.ANYONE,
+  val whoCanCall: ChatAudienceOption = ChatAudienceOption.ANYONE,
+  val whoCanScreenshot: ChatAudienceOption = ChatAudienceOption.NOBODY,
+  val whoCanShareChats: ChatAudienceOption = ChatAudienceOption.NOBODY,
+  val whoCanCopyMessages: ChatAudienceOption = ChatAudienceOption.NOBODY,
+  val whoCanDownloadMedia: ChatAudienceOption = ChatAudienceOption.ANYONE,
+  val chatThemeId: String = "none",
+  val bubbleColorId: String = "cyan",
+  val readReceipts: ChatAudienceOption = ChatAudienceOption.ANYONE,
+  val typingIndicators: ChatAudienceOption = ChatAudienceOption.NOBODY,
+  val onlineIndicators: ChatAudienceOption = ChatAudienceOption.NOBODY,
+  val updatedAtMs: Long = 0L,
+) {
+  val blocksScreenshots: Boolean
+    get() = whoCanScreenshot == ChatAudienceOption.NOBODY
+}
+
+object TelefamChatPrivacyCatalog {
+  val audienceOptions4: List<ChatAudienceOption> = listOf(
+    ChatAudienceOption.ANYONE,
+    ChatAudienceOption.FRIENDS,
+    ChatAudienceOption.CONTACTS,
+    ChatAudienceOption.NOBODY,
+  )
+
+  val audienceOptions3: List<ChatAudienceOption> = listOf(
+    ChatAudienceOption.ANYONE,
+    ChatAudienceOption.FRIENDS,
+    ChatAudienceOption.NOBODY,
+  )
+
+  val themes: List<ChatThemeSpec> = listOf(
+    ChatThemeSpec("none", "Default", ChatPatternKind.CLEAN, 0xFFF9FAFB, 0xFF0E1014, 0.04f, 0.04f, 0xFFD91E2A, 0xFFE11319, 0xFFD91E2A),
+    ChatThemeSpec("classic_home", "Cozy Home", ChatPatternKind.HOME, 0xFFEAF3FC, 0xFF0C1219, 0.14f, 0.14f, 0xFF0EA5E9, 0xFF0284C7, 0xFF38BDF8),
+    ChatThemeSpec("spring_meadow", "Spring Meadow", ChatPatternKind.MEADOW, 0xFFEAF5EE, 0xFF0C140E, 0.16f, 0.15f, 0xFF16A34A, 0xFF22C55E, 0xFF7ED957),
+    ChatThemeSpec("arctic_snow", "Arctic Frost", ChatPatternKind.WINTER, 0xFFEBF3F9, 0xFF0B131A, 0.15f, 0.14f, 0xFF2B7A9E, 0xFF5BA4CF, 0xFF60A5FA),
+    ChatThemeSpec("deep_sea", "Crystal Ocean", ChatPatternKind.OCEAN, 0xFFE9F2F8, 0xFF09121C, 0.15f, 0.14f, 0xFF3B82F6, 0xFF06B6D4, 0xFF22D3EE),
+    ChatThemeSpec("academia_math", "Academia", ChatPatternKind.MATH, 0xFFEBF5F2, 0xFF0B1412, 0.14f, 0.14f, 0xFF0D9488, 0xFF2DD4BF, 0xFF2DD4BF),
+    ChatThemeSpec("botanical_tulip", "Botanical", ChatPatternKind.BOTANICAL, 0xFFFAF0F3, 0xFF150C10, 0.14f, 0.14f, 0xFFE14D6A, 0xFFA855F7, 0xFFF472B6),
+    ChatThemeSpec("neon_romance", "Velvet Heart", ChatPatternKind.ROMANCE, 0xFFF5EFFA, 0xFF130C18, 0.14f, 0.14f, 0xFF7C3AED, 0xFFEC4899, 0xFFC084FC),
+    ChatThemeSpec("festive_fireside", "Warm Hearth", ChatPatternKind.FIRESIDE, 0xFFFBF2EB, 0xFF15100B, 0.14f, 0.14f, 0xFFD97706, 0xFFEA580C, 0xFFFB923C),
+    ChatThemeSpec("retro_arcade", "Retro Arcade", ChatPatternKind.ARCADE, 0xFFF3EFFB, 0xFF0D0B18, 0.14f, 0.14f, 0xFFA855F7, 0xFFF59E0B, 0xFFF472B6),
+    ChatThemeSpec("cosmic_nebula", "Cosmic Orbit", ChatPatternKind.COSMIC, 0xFFEEF1FA, 0xFF0A0D18, 0.14f, 0.14f, 0xFF4F46E5, 0xFF06B6D4, 0xFF818CF8),
+    ChatThemeSpec("safari_sunset", "Savanna Dusk", ChatPatternKind.SAFARI, 0xFFFBF1EC, 0xFF170E0B, 0.14f, 0.14f, 0xFFB45309, 0xFFE11D48, 0xFFF97316),
+    ChatThemeSpec("telefam_crimson", "Telefam Ruby", ChatPatternKind.TELEFAM, 0xFFFDF0F1, 0xFF14090B, 0.14f, 0.14f, 0xFFC80A0F, 0xFFEF233C, 0xFFEF4444),
+  )
+
+  val bubbleColors: List<ChatBubbleColorOption> = listOf(
+    ChatBubbleColorOption("cyan", "Lagoon Cyan", 0xFF0097A7, 0xFF00BCD4, 0xFF00ACC1, 0xFF26C6DA),
+    ChatBubbleColorOption("crimson", "Telefam Crimson", 0xFFC80A0F, 0xFFE11319, 0xFFD91E2A, 0xFFEF4444),
+    ChatBubbleColorOption("emerald", "Emerald Spring", 0xFF15803D, 0xFF22C55E, 0xFF1B8E4B, 0xFF2DB866),
+    ChatBubbleColorOption("azure", "Ocean Azure", 0xFF0284C7, 0xFF38BDF8, 0xFF1D9BF0, 0xFF0EA5E9),
+    ChatBubbleColorOption("violet", "Royal Violet", 0xFF6D28D9, 0xFF8B5CF6, 0xFF7C3AED, 0xFFA78BFA),
+    ChatBubbleColorOption("amber", "Sunset Amber", 0xFFC2410C, 0xFFF97316, 0xFFD97706, 0xFFF59E0B),
+  )
+
+  fun themeById(id: String?): ChatThemeSpec =
+    themes.firstOrNull { it.themeId.equals(id?.trim(), ignoreCase = true) } ?: themes.first()
+
+  fun bubbleColorById(id: String?): ChatBubbleColorOption =
+    bubbleColors.firstOrNull { it.colorId.equals(id?.trim(), ignoreCase = true) } ?: bubbleColors.first()
+}
+
 data class RestrictedAccountItem(
   val userId: String,
   val fullName: String,

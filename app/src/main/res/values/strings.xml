@@ -276,4 +276,39 @@
     <string name="settings_logout_dialog_title">Log out of this device?</string>
     <string name="settings_logout_all_devices">Log out of all devices</string>
     <string name="settings_cancel">Cancel</string>
+
+    <!-- Chats Privacy, Themes & Bubble Colours -->
+    <string name="chat_privacy_title">Privacy</string>
+    <string name="chat_privacy_subtitle">Control who can interact with you and your messages.</string>
+    <string name="chat_privacy_message_requests">Message Requests</string>
+    <string name="chat_privacy_message_requests_sub">Set who can send you message requests.</string>
+    <string name="chat_privacy_who_can_call">Who Can Call Me</string>
+    <string name="chat_privacy_who_can_call_sub">Control who can call you.</string>
+    <string name="chat_privacy_screenshot">Who Can Screenshot Chats</string>
+    <string name="chat_privacy_screenshot_sub">Choose who can take screenshots of your chats.</string>
+    <string name="chat_privacy_share_chats">Who Can ShareChats</string>
+    <string name="chat_privacy_share_chats_sub">Control who can share your chats.</string>
+    <string name="chat_privacy_copy_messages">Who Can Copy Messages</string>
+    <string name="chat_privacy_copy_messages_sub">Control who can copy your messages.</string>
+    <string name="chat_privacy_download_media">Who Can Download My Media</string>
+    <string name="chat_privacy_download_media_sub">Control who can download your photos, videos and files.</string>
+    <string name="chat_privacy_theme">Chats Theme</string>
+    <string name="chat_privacy_theme_sub">Choose your chat background theme.</string>
+    <string name="chat_privacy_bubble_colour">Message Bubbles Colour</string>
+    <string name="chat_privacy_bubble_colour_sub">Choose the colour of your message bubbles.</string>
+    <string name="chat_privacy_read_receipts">Read Receipts</string>
+    <string name="chat_privacy_read_receipts_sub">Control who can see if you read messages.</string>
+    <string name="chat_privacy_typing_indicators">Typing Indicators</string>
+    <string name="chat_privacy_typing_indicators_sub">Control who can see when you are typing.</string>
+    <string name="chat_privacy_online_indicators">Online Indicators</string>
+    <string name="chat_privacy_online_indicators_sub">Control who can see when you are online.</string>
+    <string name="chat_theme_select_title">Select theme</string>
+    <string name="chat_theme_preview_sender">Executive officer</string>
+    <string name="chat_theme_preview_line1">Good morning!</string>
+    <string name="chat_theme_preview_line2">Do you know what time it is?</string>
+    <string name="chat_theme_preview_reply">It\'s morning in Tokyo</string>
+    <string name="chat_theme_apply">Apply theme</string>
+    <string name="chat_theme_reset">Reset to default</string>
+    <string name="chat_bubble_select_title">Message Bubbles Colour</string>
+    <string name="chat_bubble_select_sub">Choose how your outgoing chat bubbles look in light and dark mode.</string>
 </resources>

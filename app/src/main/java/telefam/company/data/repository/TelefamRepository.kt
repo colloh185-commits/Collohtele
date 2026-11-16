@@ -8,12 +8,15 @@ import com.squareup.moshi.Moshi
 import com.squareup.moshi.Types
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import com.telefam.company.app.BuildConfig
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
@@ -22,6 +25,8 @@ import telefam.company.core.AdaptiveStreamSelector
 import telefam.company.core.AppLanguageOption
 import telefam.company.core.AppVersionCheckResult
 import telefam.company.core.AudienceOption
+import telefam.company.core.ChatAudienceOption
+import telefam.company.core.ChatPrivacySettingsState
 import telefam.company.core.ContactFilterTab
 import telefam.company.core.ContentPreferencesState
 import telefam.company.core.DiscoverabilityOption
@@ -43,6 +48,7 @@ import telefam.company.core.RestrictedAccountItem
 import telefam.company.core.SettingsSnapshot
 import telefam.company.core.SupportTicketItem
 import telefam.company.core.SystemServiceStatusItem
+import telefam.company.core.TelefamChatPrivacyCatalog
 import telefam.company.core.TelefamContactsRules
 import telefam.company.core.TelefamCoreEngine
 import telefam.company.core.TelefamPostRules
@@ -51,6 +57,7 @@ import telefam.company.core.TelefamSettingsContentCatalog
 import telefam.company.core.VideoQualityOption
 import telefam.company.core.VisibilityOption
 import telefam.company.data.local.AuditLogEntity
+import telefam.company.data.local.CachedChatPrivacyEntity
 import telefam.company.data.local.CachedContactEntity
 import telefam.company.data.local.CachedFeedPostEntity
 import telefam.company.data.local.CachedHashtagEntity
@@ -75,12 +82,14 @@ import telefam.company.data.local.SupportTicketEntity
 import telefam.company.data.local.TelefamDao
 import telefam.company.data.local.UserProfileEntity
 import telefam.company.data.network.AuditEventDto
+import telefam.company.data.network.ChatPrivacySettingsDto
 import telefam.company.data.network.ContactActionDto
 import telefam.company.data.network.ContactItemDto
 import telefam.company.data.network.ContactSyncActionDto
 import telefam.company.data.network.ContactSyncBatchRequestDto
 import telefam.company.data.network.ContentPreferencesDto
 import telefam.company.data.network.CreatePostRequestDto
+import telefam.company.data.network.DeviceContextTelemetryDto
 import telefam.company.data.network.FeedInteractionBatchRequestDto
 import telefam.company.data.network.FeedInteractionRequestDto
 import telefam.company.data.network.FeedItemDto
@@ -89,6 +98,7 @@ import telefam.company.data.network.LogoutRequestDto
 import telefam.company.data.network.NetworkQualityMonitor
 import telefam.company.data.network.NotificationSettingsDto
 import telefam.company.data.network.OAuthDto
+import telefam.company.data.network.PendingLoginRequestItemDto
 import telefam.company.data.network.PrivacySettingsDto
 import telefam.company.data.network.ProblemReportRequestDto
 import telefam.company.data.network.ProfileBackgroundItemDto
@@ -98,10 +108,12 @@ import telefam.company.data.network.ProfileUpdateRequestDto
 import telefam.company.data.network.ProgressFileRequestBody
 import telefam.company.data.network.RefreshTokenDto
 import telefam.company.data.network.RequestOtpDto
+import telefam.company.data.network.RespondLoginRequestDto
 import telefam.company.data.network.SongTrackDto
 import telefam.company.data.network.SyncBatchRequestDto
 import telefam.company.data.network.SyncOperationDto
 import telefam.company.data.network.TelefamApiService
+import telefam.company.data.network.UpdateChatThemeRequestDto
 import telefam.company.data.network.UpdatePostRequestDto
 import telefam.company.data.network.UserProfileResponseDto
 import telefam.company.data.network.UserReportRequestDto
@@ -111,6 +123,8 @@ import telefam.company.media.MediaUploadProcessor
 import telefam.company.media.ProcessedAvatarMedia
 import telefam.company.media.ProcessedPostPhoto
 import telefam.company.media.VideoPrepareResult
+import telefam.company.security.DeviceContextCollector
+import telefam.company.security.DeviceContextSnapshot
 import telefam.company.security.EncryptedTokenVault
 import telefam.company.security.SecurityIntegrityGuard
 import telefam.company.ui.theme.ThemeMode
@@ -127,6 +141,17 @@ sealed class AuthActionResult {
     val totalCooldownDurationSeconds: Long,
   ) : AuthActionResult()
 
+  data class RequiresDeviceApproval(
+    val email: String,
+    val requestId: String,
+    val pollToken: String,
+    val targetDeviceName: String,
+    val targetLocation: String,
+    val requestTimeMs: Long,
+    val expiresInSeconds: Long,
+    val tryAnotherWayProvider: String,
+  ) : AuthActionResult()
+
   data class Verified(
     val userId: String,
     val email: String,
@@ -136,8 +161,34 @@ sealed class AuthActionResult {
   data class SanitizedFailure(
     val message: String,
     val remainingCooldownSeconds: Long = 0L,
+    val isDeviceBlocked: Boolean = false,
   ) : AuthActionResult()
 }
+
+sealed class LoginApprovalPollOutcome {
+  data class Pending(
+    val remainingSeconds: Long,
+    val targetDeviceName: String,
+    val targetLocation: String,
+  ) : LoginApprovalPollOutcome()
+
+  data class Approved(
+    val verified: AuthActionResult.Verified,
+  ) : LoginApprovalPollOutcome()
+
+  data object DeniedBlocked : LoginApprovalPollOutcome()
+  data object Expired : LoginApprovalPollOutcome()
+  data class Error(val message: String) : LoginApprovalPollOutcome()
+}
+
+data class RespondLoginApprovalResult(
+  val success: Boolean,
+  val status: String = "",
+  val deviceName: String = "",
+  val location: String = "",
+  val requestedAtMs: Long = 0L,
+  val message: String? = null,
+)
 
 sealed class ProfileActionResult {
   data object Saved : ProfileActionResult()
@@ -231,7 +282,9 @@ class TelefamRepository(
   private val profileBgListAdapter = moshi.adapter<List<ProfileBackgroundItemDto>>(
     Types.newParameterizedType(List::class.java, ProfileBackgroundItemDto::class.java),
   )
+  private val deviceContextAdapter = moshi.adapter(DeviceContextSnapshot::class.java)
   private val songAdapter = moshi.adapter(SongTrackDto::class.java)
+  private val telemetryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
   val networkTier: StateFlow<NetworkTier> = networkMonitor.networkTier
   val sessionFlow: Flow<StoredSession> = identityStore.sessionFlow
@@ -615,6 +668,12 @@ class TelefamRepository(
     } ?: return AuthActionResult.SanitizedFailure(TelefamCoreEngine.sanitizeServerError(503))
 
     if (!remoteResult.isSuccessful) {
+      if (remoteResult.code() == 403) {
+        return AuthActionResult.SanitizedFailure(
+          message = "This sign-in attempt was denied from your trusted device. Try another way to verify.",
+          isDeviceBlocked = true,
+        )
+      }
       return AuthActionResult.SanitizedFailure(
         TelefamCoreEngine.sanitizeServerError(remoteResult.code(), remoteResult.errorBody()?.string()),
       )
@@ -623,6 +682,22 @@ class TelefamRepository(
     if (body == null || !body.success) {
       return AuthActionResult.SanitizedFailure(TelefamCoreEngine.sanitizeServerError(500))
     }
+
+    if (body.requiresDeviceApproval && body.requestId.isNotBlank() && body.pollToken.isNotBlank()) {
+      identityStore.savePendingOtpEmail(null)
+      logAudit(accountHash, "device_login_approval_requested", "{\"request_id\":\"${body.requestId}\"}")
+      return AuthActionResult.RequiresDeviceApproval(
+        email = email,
+        requestId = body.requestId,
+        pollToken = body.pollToken,
+        targetDeviceName = body.targetDeviceName.ifBlank { "Your trusted device" },
+        targetLocation = body.targetLocation.ifBlank { "Unknown location" },
+        requestTimeMs = body.requestTimeMs.takeIf { it > 0L } ?: nowMs,
+        expiresInSeconds = body.expiresInSeconds.coerceAtLeast(15L),
+        tryAnotherWayProvider = body.tryAnotherWayProvider.ifBlank { "google" },
+      )
+    }
+
     if (body.cooldownSeconds > 0L) {
       serverCooldown = maxOf(serverCooldown, body.cooldownSeconds)
     }
@@ -650,6 +725,127 @@ class TelefamRepository(
       email = email,
       cooldownSeconds = serverCooldown,
       totalCooldownDurationSeconds = serverCooldown,
+    )
+  }
+
+  suspend fun pollLoginRequestStatus(
+    requestId: String,
+    pollToken: String,
+    email: String,
+  ): LoginApprovalPollOutcome {
+    val cleanId = requestId.trim()
+    val cleanToken = pollToken.trim()
+    val cleanEmail = email.trim().lowercase()
+    if (cleanId.isBlank() || cleanToken.isBlank()) {
+      return LoginApprovalPollOutcome.Error("Missing verification request reference.")
+    }
+    val api = apiService ?: return LoginApprovalPollOutcome.Error(TelefamCoreEngine.sanitizeServerError(503))
+    networkMonitor.refreshStatus()
+    if (networkTier.value == NetworkTier.OFFLINE) {
+      return LoginApprovalPollOutcome.Pending(remainingSeconds = 60L, targetDeviceName = "", targetLocation = "")
+    }
+    val deviceFp = buildDeviceFingerprint()
+    val resp = runCatching { api.getLoginRequestStatus(deviceFp, cleanToken, cleanId) }.getOrNull()
+      ?: return LoginApprovalPollOutcome.Error("Unable to check approval status.")
+    if (!resp.isSuccessful) {
+      return if (resp.code() == 404 || resp.code() == 410) {
+        LoginApprovalPollOutcome.Expired
+      } else if (resp.code() == 403) {
+        LoginApprovalPollOutcome.DeniedBlocked
+      } else {
+        LoginApprovalPollOutcome.Error(TelefamCoreEngine.sanitizeServerError(resp.code()))
+      }
+    }
+    val body = resp.body() ?: return LoginApprovalPollOutcome.Error("Empty response")
+    return when (body.status.lowercase()) {
+      "pending" -> LoginApprovalPollOutcome.Pending(
+        remainingSeconds = body.remainingSeconds.coerceAtLeast(0L),
+        targetDeviceName = body.targetDeviceName,
+        targetLocation = body.targetLocation,
+      )
+      "denied" -> LoginApprovalPollOutcome.DeniedBlocked
+      "expired" -> LoginApprovalPollOutcome.Expired
+      "approved" -> {
+        val resolvedEmail = body.email.ifBlank { cleanEmail }
+        val resolvedUserId = body.userId.ifBlank { TelefamCoreEngine.hashAccountEmail(resolvedEmail) }
+        val existingProfile = dao.getProfileByUserId(resolvedUserId)
+        val profileDone = body.profileCompleted || existingProfile != null
+        val refreshTok = body.refreshToken.ifBlank { "tfr_${UUID.randomUUID()}" }
+        completeSignIn(
+          userId = resolvedUserId,
+          email = resolvedEmail,
+          accessToken = body.sessionToken,
+          refreshToken = refreshTok,
+          accessExpSec = body.accessExpiresInSec,
+          refreshExpSec = body.refreshExpiresInSec,
+          compositeKey = "$resolvedUserId:$deviceFp",
+          profileCompleted = profileDone,
+        )
+        if (profileDone && existingProfile == null) {
+          hydrateExistingProfileAfterSignIn(resolvedUserId, resolvedEmail)
+        }
+        captureAndSyncDeviceContext(force = true)
+        LoginApprovalPollOutcome.Approved(
+          AuthActionResult.Verified(
+            userId = resolvedUserId,
+            email = resolvedEmail,
+            profileCompleted = profileDone,
+          ),
+        )
+      }
+      else -> LoginApprovalPollOutcome.Error("Verification request status unavailable.")
+    }
+  }
+
+  suspend fun fetchPendingIncomingLoginRequests(): List<PendingLoginRequestItemDto> {
+    val session = identityStore.sessionFlow.first()
+    val token = session.accessToken.orEmpty()
+    val api = apiService
+    if (api == null || token.isBlank() || networkTier.value == NetworkTier.OFFLINE) {
+      return emptyList()
+    }
+    val deviceFp = buildDeviceFingerprint()
+    val resp = runCatching { api.getPendingLoginRequests("Bearer $token", deviceFp) }.getOrNull()
+    val body = if (resp != null && resp.isSuccessful) resp.body() else null
+    return if (body?.success == true) body.requests else emptyList()
+  }
+
+  suspend fun respondToIncomingLoginRequest(
+    requestId: String,
+    accept: Boolean,
+  ): RespondLoginApprovalResult {
+    val cleanId = requestId.trim()
+    if (cleanId.isBlank()) {
+      return RespondLoginApprovalResult(success = false, message = "Invalid request.")
+    }
+    val session = identityStore.sessionFlow.first()
+    val token = session.accessToken.orEmpty()
+    val api = apiService ?: return RespondLoginApprovalResult(success = false, message = "Network unavailable.")
+    if (token.isBlank() || networkTier.value == NetworkTier.OFFLINE) {
+      return RespondLoginApprovalResult(success = false, message = "Internet connection required to respond.")
+    }
+    val deviceFp = buildDeviceFingerprint()
+    val action = if (accept) "accept" else "deny"
+    val resp = executeWithWeakNetworkRetry {
+      api.respondToLoginRequest("Bearer $token", deviceFp, cleanId, RespondLoginRequestDto(action))
+    }
+    if (resp == null || !resp.isSuccessful || resp.body()?.success != true) {
+      return RespondLoginApprovalResult(
+        success = false,
+        message = TelefamCoreEngine.sanitizeServerError(resp?.code() ?: 503),
+      )
+    }
+    val body = resp.body()!!
+    val userId = session.userId.orEmpty()
+    if (userId.isNotBlank()) {
+      logAudit(userId, if (accept) "device_login_request_accepted" else "device_login_request_denied", "{\"request_id\":\"$cleanId\"}")
+    }
+    return RespondLoginApprovalResult(
+      success = true,
+      status = body.status.ifBlank { if (accept) "approved" else "denied" },
+      deviceName = body.deviceName,
+      location = body.location,
+      requestedAtMs = body.requestedAtMs,
     )
   }
 
@@ -700,22 +896,28 @@ class TelefamRepository(
     val refreshToken = body.refreshToken.ifBlank { "tfr_${UUID.randomUUID()}" }
     val accessExp = body.accessExpiresInSec
     val refreshExp = body.refreshExpiresInSec
+    val resolvedUserId = body.userId.ifBlank { accountHash }
 
-    val existingProfile = dao.getProfileByUserId(accountHash)
+    val existingProfile = dao.getProfileByUserId(resolvedUserId) ?: dao.getProfileByUserId(accountHash)
+    val profileDone = body.profileCompleted || existingProfile != null
     completeSignIn(
-      userId = accountHash,
+      userId = resolvedUserId,
       email = email,
       accessToken = accessToken,
       refreshToken = refreshToken,
       accessExpSec = accessExp,
       refreshExpSec = refreshExp,
       compositeKey = "$accountHash:$deviceFp",
-      profileCompleted = existingProfile != null,
+      profileCompleted = profileDone,
     )
+    if (profileDone && existingProfile == null) {
+      hydrateExistingProfileAfterSignIn(resolvedUserId, email)
+    }
+    captureAndSyncDeviceContext(force = true)
     return AuthActionResult.Verified(
-      userId = accountHash,
+      userId = resolvedUserId,
       email = email,
-      profileCompleted = existingProfile != null,
+      profileCompleted = profileDone,
     )
   }
 
@@ -746,28 +948,45 @@ class TelefamRepository(
     }
 
     val accountHash = TelefamCoreEngine.hashAccountEmail(resolvedEmail)
-    val existingProfile = dao.getProfileByUserId(accountHash)
+    val resolvedUserId = body.userId.ifBlank { accountHash }
+    val existingProfile = dao.getProfileByUserId(resolvedUserId) ?: dao.getProfileByUserId(accountHash)
+    val profileDone = body.profileCompleted || existingProfile != null
     completeSignIn(
-      userId = accountHash,
+      userId = resolvedUserId,
       email = resolvedEmail,
       accessToken = accessToken,
       refreshToken = refreshToken,
       accessExpSec = body.accessExpiresInSec,
       refreshExpSec = body.refreshExpiresInSec,
       compositeKey = "$accountHash:$deviceFp",
-      profileCompleted = existingProfile != null,
+      profileCompleted = profileDone,
     )
+    if (profileDone && existingProfile == null) {
+      hydrateExistingProfileAfterSignIn(resolvedUserId, resolvedEmail)
+    }
+    captureAndSyncDeviceContext(force = true)
     return AuthActionResult.Verified(
-      userId = accountHash,
+      userId = resolvedUserId,
       email = resolvedEmail,
-      profileCompleted = existingProfile != null,
+      profileCompleted = profileDone,
     )
   }
 
-  suspend fun authenticateWithGoogle(idToken: String, email: String): AuthActionResult {
+  suspend fun authenticateWithGoogle(
+    idToken: String,
+    email: String,
+    expectedEmail: String? = null,
+    approvalRequestId: String? = null,
+  ): AuthActionResult {
     val cleanEmail = email.trim().lowercase()
+    val cleanExpected = expectedEmail?.trim()?.lowercase()?.takeIf { it.isNotBlank() }
     if (cleanEmail.isBlank() || idToken.isBlank()) {
       return AuthActionResult.SanitizedFailure(TelefamCoreEngine.sanitizeServerError(400))
+    }
+    if (cleanExpected != null && !cleanEmail.equals(cleanExpected, ignoreCase = true)) {
+      return AuthActionResult.SanitizedFailure(
+        "Please sign in with the Google account for $cleanExpected to verify this device.",
+      )
     }
     val api = apiService
       ?: return AuthActionResult.SanitizedFailure(TelefamCoreEngine.sanitizeServerError(503))
@@ -780,31 +999,151 @@ class TelefamRepository(
     val accountHash = TelefamCoreEngine.hashAccountEmail(cleanEmail)
 
     val resp = executeWithWeakNetworkRetry {
-      api.verifyGoogleOAuth(deviceFp, ipFp, OAuthDto(provider = "google", identityToken = idToken))
+      api.verifyGoogleOAuth(
+        deviceFp,
+        ipFp,
+        OAuthDto(
+          provider = "google",
+          identityToken = idToken,
+          expectedEmail = cleanExpected,
+          approvalRequestId = approvalRequestId?.takeIf { it.isNotBlank() },
+        ),
+      )
     }
     if (resp == null || !resp.isSuccessful || resp.body()?.success != true) {
+      if (resp?.code() == 403 && cleanExpected != null) {
+        return AuthActionResult.SanitizedFailure(
+          "Signed-in Google account does not match $cleanExpected.",
+        )
+      }
       return AuthActionResult.SanitizedFailure(TelefamCoreEngine.sanitizeServerError(resp?.code() ?: 503))
     }
     val body = resp.body()!!
     val accessToken = body.sessionToken
     val refreshToken = body.refreshToken.ifBlank { "tfr_${UUID.randomUUID()}" }
+    val resolvedEmail = body.email.ifBlank { cleanEmail }
+    val resolvedUserId = body.userId.ifBlank { accountHash }
 
-    val existingProfile = dao.getProfileByUserId(accountHash)
+    val existingProfile = dao.getProfileByUserId(resolvedUserId) ?: dao.getProfileByUserId(accountHash)
+    val profileDone = body.profileCompleted || existingProfile != null
     completeSignIn(
-      userId = accountHash,
-      email = cleanEmail,
+      userId = resolvedUserId,
+      email = resolvedEmail,
       accessToken = accessToken,
       refreshToken = refreshToken,
       accessExpSec = body.accessExpiresInSec,
       refreshExpSec = body.refreshExpiresInSec,
       compositeKey = "$accountHash:$deviceFp",
-      profileCompleted = existingProfile != null,
+      profileCompleted = profileDone,
     )
+    if (profileDone && existingProfile == null) {
+      hydrateExistingProfileAfterSignIn(resolvedUserId, resolvedEmail)
+    }
+    captureAndSyncDeviceContext(force = true)
     return AuthActionResult.Verified(
-      userId = accountHash,
-      email = cleanEmail,
-      profileCompleted = existingProfile != null,
+      userId = resolvedUserId,
+      email = resolvedEmail,
+      profileCompleted = profileDone,
     )
+  }
+
+  private suspend fun hydrateExistingProfileAfterSignIn(userId: String, email: String) {
+    val profileDto = runCatching { fetchUserProfile(userId) }.getOrNull() ?: return
+    if (profileDto.username.isBlank() && profileDto.fullName.isBlank()) return
+    val nowMs = System.currentTimeMillis()
+    dao.upsertProfile(
+      UserProfileEntity(
+        userId = profileDto.userId.ifBlank { userId },
+        email = email,
+        fullName = profileDto.fullName,
+        username = profileDto.username,
+        usernameLower = profileDto.username.lowercase(),
+        phoneE164 = profileDto.phoneNumber,
+        countryIso = profileDto.countryIso.ifBlank { "KE" },
+        gender = profileDto.gender,
+        dateOfBirthIso = profileDto.dateOfBirth,
+        location = profileDto.location,
+        bio = profileDto.bio,
+        avatarMediaId = null,
+        avatarLocalPath = profileDto.avatarUrl.takeIf { it.isNotBlank() },
+        avatarSha256 = null,
+        avatarDHash = null,
+        usernameChangedAtMs = profileDto.usernameChangedAtMs,
+        updatedAtMs = nowMs,
+      ),
+    )
+    identityStore.markProfileCompleted(true)
+  }
+
+  fun onDeviceLocationModeChangedAsync() {
+    telemetryScope.launch {
+      captureAndSyncDeviceContext(force = true)
+    }
+  }
+
+  suspend fun captureAndSyncDeviceContext(force: Boolean = false): String {
+    val snapshot = DeviceContextCollector.collectSnapshot(appContext)
+    val snapshotJson = runCatching { deviceContextAdapter.toJson(snapshot) }.getOrNull()
+    if (!snapshotJson.isNullOrBlank()) {
+      identityStore.savePendingDeviceContextJson(snapshotJson)
+    }
+    return flushPendingDeviceContext(snapshot = snapshot, force = force)
+  }
+
+  suspend fun flushPendingDeviceContext(
+    snapshot: DeviceContextSnapshot? = null,
+    force: Boolean = false,
+  ): String {
+    val pendingJson = identityStore.getPendingDeviceContextJson()
+    val payloadSnap = snapshot ?: pendingJson?.let {
+      runCatching { deviceContextAdapter.fromJson(it) }.getOrNull()
+    } ?: if (force) DeviceContextCollector.collectSnapshot(appContext) else return ""
+
+    val session = identityStore.sessionFlow.first()
+    val userId = session.userId.orEmpty()
+    val token = session.accessToken.orEmpty()
+    val api = apiService
+    networkMonitor.refreshStatus()
+    if (userId.isBlank() || token.isBlank() || api == null || networkTier.value == NetworkTier.OFFLINE) {
+      return identityStore.getLastSyncedCountryIso()
+    }
+
+    val resp = runCatching {
+      api.syncDeviceContext(
+        bearer = "Bearer $token",
+        deviceFingerprint = buildDeviceFingerprint(),
+        body = DeviceContextTelemetryDto(
+          deviceName = payloadSnap.deviceName,
+          platform = payloadSnap.platform,
+          hardwareModel = payloadSnap.hardwareModel,
+          carrierCountryIso = payloadSnap.carrierCountryIso,
+          simCountryIso = payloadSnap.simCountryIso,
+          gpsCountryIso = payloadSnap.gpsCountryIso,
+          gpsCity = payloadSnap.gpsCity,
+          localeCountryIso = payloadSnap.localeCountryIso,
+          timezone = payloadSnap.timezone,
+          latBucket = payloadSnap.latBucket,
+          lonBucket = payloadSnap.lonBucket,
+          signalSource = payloadSnap.signalSource,
+          capturedAtMs = payloadSnap.capturedAtMs,
+        ),
+      )
+    }.getOrNull()
+
+    val body = if (resp != null && resp.isSuccessful) resp.body() else null
+    if (body?.success == true) {
+      identityStore.savePendingDeviceContextJson(null)
+      val effective = body.effectiveCountryIso.trim().uppercase()
+      if (effective.length == 2) {
+        identityStore.saveLastSyncedCountryIso(effective)
+        val localProf = dao.getProfileByUserId(userId)
+        if (localProf != null && localProf.countryIso != effective) {
+          dao.upsertProfile(localProf.copy(countryIso = effective, updatedAtMs = System.currentTimeMillis()))
+        }
+      }
+      return effective
+    }
+    return identityStore.getLastSyncedCountryIso()
   }
 
   suspend fun isUsernameAvailable(rawUsername: String, currentUserId: String): Boolean {
@@ -2922,10 +3261,116 @@ class TelefamRepository(
           contentPreferences = body.contentPreferences?.let(::mapContentPrefsDtoToState) ?: local.contentPreferences,
         )
         persistSettingsSnapshot(callerId, merged)
+        body.chatPrivacy?.let { cpDto ->
+          dao.upsertCachedChatPrivacy(mapChatPrivacyStateToEntity(callerId, mapChatPrivacyDtoToState(cpDto)))
+        }
         return merged
       }
     }
     return local
+  }
+
+  suspend fun loadCachedChatPrivacy(): ChatPrivacySettingsState {
+    val callerId = identityStore.sessionFlow.first().userId.orEmpty()
+    if (callerId.isBlank()) return ChatPrivacySettingsState()
+    return dao.getCachedChatPrivacy(callerId)?.let(::mapChatPrivacyEntityToState) ?: ChatPrivacySettingsState()
+  }
+
+  suspend fun fetchChatPrivacy(): ChatPrivacySettingsState {
+    val session = identityStore.sessionFlow.first()
+    val callerId = session.userId.orEmpty()
+    if (callerId.isBlank()) return ChatPrivacySettingsState()
+    val local = dao.getCachedChatPrivacy(callerId)?.let(::mapChatPrivacyEntityToState) ?: ChatPrivacySettingsState()
+
+    val api = apiService
+    val token = session.accessToken.orEmpty()
+    if (api != null && token.isNotBlank() && networkTier.value != NetworkTier.OFFLINE) {
+      flushPendingSettingsOps()
+      val resp = executeWithWeakNetworkRetry { api.getChatPrivacy("Bearer $token", buildDeviceFingerprint()) }
+      val body = resp?.body()
+      if (resp != null && resp.isSuccessful && body?.success == true && body.chatPrivacy != null) {
+        val remote = mapChatPrivacyDtoToState(body.chatPrivacy)
+        dao.upsertCachedChatPrivacy(mapChatPrivacyStateToEntity(callerId, remote))
+        return remote
+      }
+    }
+    return local
+  }
+
+  suspend fun saveChatPrivacy(next: ChatPrivacySettingsState): ChatPrivacySettingsState {
+    val session = identityStore.sessionFlow.first()
+    val callerId = session.userId.orEmpty()
+    val stamped = next.copy(
+      chatThemeId = TelefamChatPrivacyCatalog.themeById(next.chatThemeId).themeId,
+      bubbleColorId = TelefamChatPrivacyCatalog.bubbleColorById(next.bubbleColorId).colorId,
+      updatedAtMs = System.currentTimeMillis(),
+    )
+    if (callerId.isNotBlank()) {
+      dao.upsertCachedChatPrivacy(mapChatPrivacyStateToEntity(callerId, stamped))
+    }
+
+    val dto = mapChatPrivacyStateToDto(stamped)
+    val api = apiService
+    val token = session.accessToken.orEmpty()
+    if (api != null && token.isNotBlank() && networkTier.value != NetworkTier.OFFLINE) {
+      val resp = executeWithWeakNetworkRetry { api.updateChatPrivacy("Bearer $token", buildDeviceFingerprint(), dto) }
+      if (resp != null && resp.isSuccessful && resp.body()?.success == true) {
+        resp.body()?.chatPrivacy?.let { srv ->
+          val merged = mapChatPrivacyDtoToState(srv)
+          if (callerId.isNotBlank()) {
+            dao.upsertCachedChatPrivacy(mapChatPrivacyStateToEntity(callerId, merged))
+          }
+          return merged
+        }
+        return stamped
+      }
+    }
+    if (callerId.isNotBlank()) {
+      val json = moshi.adapter(ChatPrivacySettingsDto::class.java).toJson(dto)
+      enqueueSettingsOp(callerId, "chat_privacy", json)
+    }
+    return stamped
+  }
+
+  suspend fun saveChatThemeAndBubbleColor(themeId: String? = null, bubbleColorId: String? = null): ChatPrivacySettingsState {
+    val session = identityStore.sessionFlow.first()
+    val callerId = session.userId.orEmpty()
+    val current = if (callerId.isNotBlank()) loadCachedChatPrivacy() else ChatPrivacySettingsState()
+    val nextTheme = themeId?.let { TelefamChatPrivacyCatalog.themeById(it).themeId } ?: current.chatThemeId
+    val nextBubble = bubbleColorId?.let { TelefamChatPrivacyCatalog.bubbleColorById(it).colorId } ?: current.bubbleColorId
+    val updated = current.copy(
+      chatThemeId = nextTheme,
+      bubbleColorId = nextBubble,
+      updatedAtMs = System.currentTimeMillis(),
+    )
+    if (callerId.isNotBlank()) {
+      dao.upsertCachedChatPrivacy(mapChatPrivacyStateToEntity(callerId, updated))
+    }
+
+    val req = UpdateChatThemeRequestDto(
+      chatThemeId = nextTheme,
+      bubbleColorId = nextBubble,
+    )
+    val api = apiService
+    val token = session.accessToken.orEmpty()
+    if (api != null && token.isNotBlank() && networkTier.value != NetworkTier.OFFLINE) {
+      val resp = executeWithWeakNetworkRetry { api.updateChatTheme("Bearer $token", buildDeviceFingerprint(), req) }
+      if (resp != null && resp.isSuccessful && resp.body()?.success == true) {
+        resp.body()?.chatPrivacy?.let { srv ->
+          val merged = mapChatPrivacyDtoToState(srv)
+          if (callerId.isNotBlank()) {
+            dao.upsertCachedChatPrivacy(mapChatPrivacyStateToEntity(callerId, merged))
+          }
+          return merged
+        }
+        return updated
+      }
+    }
+    if (callerId.isNotBlank()) {
+      val json = moshi.adapter(UpdateChatThemeRequestDto::class.java).toJson(req)
+      enqueueSettingsOp(callerId, "chat_theme", json)
+    }
+    return updated
   }
 
   suspend fun savePrivacySettings(next: PrivacySettingsState): SettingsSnapshot {
@@ -3403,6 +3848,14 @@ class TelefamRepository(
             val dto = moshi.adapter(ContentPreferencesDto::class.java).fromJson(op.payloadJson) ?: return@runCatching true
             api.updateContentPreferences("Bearer $token", dfp, dto).isSuccessful
           }
+          "chat_privacy" -> {
+            val dto = moshi.adapter(ChatPrivacySettingsDto::class.java).fromJson(op.payloadJson) ?: return@runCatching true
+            api.updateChatPrivacy("Bearer $token", dfp, dto).isSuccessful
+          }
+          "chat_theme" -> {
+            val dto = moshi.adapter(UpdateChatThemeRequestDto::class.java).fromJson(op.payloadJson) ?: return@runCatching true
+            api.updateChatTheme("Bearer $token", dfp, dto).isSuccessful
+          }
           "mute" -> api.muteUser("Bearer $token", dfp, op.payloadJson).isSuccessful
           "unmute" -> api.unmuteUser("Bearer $token", dfp, op.payloadJson).isSuccessful
           "block" -> api.blockUser("Bearer $token", dfp, op.payloadJson).isSuccessful
@@ -3568,6 +4021,67 @@ class TelefamRepository(
     reducedMotion = s.reducedMotion,
     resetSuggestions = resetSuggestions,
     updatedAtMs = s.updatedAtMs,
+  )
+
+  private fun mapChatPrivacyDtoToState(dto: ChatPrivacySettingsDto) = ChatPrivacySettingsState(
+    messageRequests = ChatAudienceOption.fromApi(dto.messageRequests, allowContacts = true, fallback = ChatAudienceOption.ANYONE),
+    whoCanCall = ChatAudienceOption.fromApi(dto.whoCanCall, allowContacts = true, fallback = ChatAudienceOption.ANYONE),
+    whoCanScreenshot = ChatAudienceOption.fromApi(dto.whoCanScreenshot, allowContacts = false, fallback = ChatAudienceOption.NOBODY),
+    whoCanShareChats = ChatAudienceOption.fromApi(dto.whoCanShareChats, allowContacts = false, fallback = ChatAudienceOption.NOBODY),
+    whoCanCopyMessages = ChatAudienceOption.fromApi(dto.whoCanCopyMessages, allowContacts = false, fallback = ChatAudienceOption.NOBODY),
+    whoCanDownloadMedia = ChatAudienceOption.fromApi(dto.whoCanDownloadMedia, allowContacts = false, fallback = ChatAudienceOption.ANYONE),
+    chatThemeId = TelefamChatPrivacyCatalog.themeById(dto.chatThemeId).themeId,
+    bubbleColorId = TelefamChatPrivacyCatalog.bubbleColorById(dto.bubbleColorId).colorId,
+    readReceipts = ChatAudienceOption.fromApi(dto.readReceipts, allowContacts = false, fallback = ChatAudienceOption.ANYONE),
+    typingIndicators = ChatAudienceOption.fromApi(dto.typingIndicators, allowContacts = false, fallback = ChatAudienceOption.NOBODY),
+    onlineIndicators = ChatAudienceOption.fromApi(dto.onlineIndicators, allowContacts = false, fallback = ChatAudienceOption.NOBODY),
+    updatedAtMs = dto.updatedAtMs,
+  )
+
+  private fun mapChatPrivacyStateToDto(s: ChatPrivacySettingsState) = ChatPrivacySettingsDto(
+    messageRequests = s.messageRequests.apiValue,
+    whoCanCall = s.whoCanCall.apiValue,
+    whoCanScreenshot = s.whoCanScreenshot.apiValue,
+    whoCanShareChats = s.whoCanShareChats.apiValue,
+    whoCanCopyMessages = s.whoCanCopyMessages.apiValue,
+    whoCanDownloadMedia = s.whoCanDownloadMedia.apiValue,
+    chatThemeId = TelefamChatPrivacyCatalog.themeById(s.chatThemeId).themeId,
+    bubbleColorId = TelefamChatPrivacyCatalog.bubbleColorById(s.bubbleColorId).colorId,
+    readReceipts = s.readReceipts.apiValue,
+    typingIndicators = s.typingIndicators.apiValue,
+    onlineIndicators = s.onlineIndicators.apiValue,
+    updatedAtMs = s.updatedAtMs,
+  )
+
+  private fun mapChatPrivacyStateToEntity(userId: String, s: ChatPrivacySettingsState) = CachedChatPrivacyEntity(
+    userId = userId,
+    messageRequests = s.messageRequests.apiValue,
+    whoCanCall = s.whoCanCall.apiValue,
+    whoCanScreenshot = s.whoCanScreenshot.apiValue,
+    whoCanShareChats = s.whoCanShareChats.apiValue,
+    whoCanCopyMessages = s.whoCanCopyMessages.apiValue,
+    whoCanDownloadMedia = s.whoCanDownloadMedia.apiValue,
+    chatThemeId = s.chatThemeId,
+    bubbleColorId = s.bubbleColorId,
+    readReceipts = s.readReceipts.apiValue,
+    typingIndicators = s.typingIndicators.apiValue,
+    onlineIndicators = s.onlineIndicators.apiValue,
+    updatedAtMs = s.updatedAtMs,
+  )
+
+  private fun mapChatPrivacyEntityToState(e: CachedChatPrivacyEntity) = ChatPrivacySettingsState(
+    messageRequests = ChatAudienceOption.fromApi(e.messageRequests, allowContacts = true, fallback = ChatAudienceOption.ANYONE),
+    whoCanCall = ChatAudienceOption.fromApi(e.whoCanCall, allowContacts = true, fallback = ChatAudienceOption.ANYONE),
+    whoCanScreenshot = ChatAudienceOption.fromApi(e.whoCanScreenshot, allowContacts = false, fallback = ChatAudienceOption.NOBODY),
+    whoCanShareChats = ChatAudienceOption.fromApi(e.whoCanShareChats, allowContacts = false, fallback = ChatAudienceOption.NOBODY),
+    whoCanCopyMessages = ChatAudienceOption.fromApi(e.whoCanCopyMessages, allowContacts = false, fallback = ChatAudienceOption.NOBODY),
+    whoCanDownloadMedia = ChatAudienceOption.fromApi(e.whoCanDownloadMedia, allowContacts = false, fallback = ChatAudienceOption.ANYONE),
+    chatThemeId = TelefamChatPrivacyCatalog.themeById(e.chatThemeId).themeId,
+    bubbleColorId = TelefamChatPrivacyCatalog.bubbleColorById(e.bubbleColorId).colorId,
+    readReceipts = ChatAudienceOption.fromApi(e.readReceipts, allowContacts = false, fallback = ChatAudienceOption.ANYONE),
+    typingIndicators = ChatAudienceOption.fromApi(e.typingIndicators, allowContacts = false, fallback = ChatAudienceOption.NOBODY),
+    onlineIndicators = ChatAudienceOption.fromApi(e.onlineIndicators, allowContacts = false, fallback = ChatAudienceOption.NOBODY),
+    updatedAtMs = e.updatedAtMs,
   )
 
   private suspend fun completeSignIn(

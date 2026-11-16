@@ -324,6 +324,22 @@ sealed interface DesktopApiOutcome<out T> {
 
 data class DesktopOtpRequestResult(
   val cooldownSeconds: Long,
+  val requiresDeviceApproval: Boolean = false,
+  val requestId: String = "",
+  val pollToken: String = "",
+  val targetDeviceName: String = "",
+  val targetLocation: String = "",
+  val requestTimeMs: Long = 0L,
+  val expiresInSeconds: Long = 60L,
+)
+
+data class DesktopLoginRequestPollResult(
+  val status: String,
+  val blocked: Boolean,
+  val remainingSeconds: Long,
+  val targetDeviceName: String,
+  val targetLocation: String,
+  val authenticatedSession: DesktopStoredSession? = null,
 )
 
 data class DesktopMediaUploadResult(
@@ -562,29 +578,169 @@ class DesktopApiClient(
 
   private fun applyAuthSessionResponse(map: Map<String, Any?>, fallbackEmail: String) {
     val email = DesktopJson.str(map, "email").ifBlank { fallbackEmail }
+    val profileCompleted = DesktopJson.bool(map, "profile_completed")
+    val uid = DesktopJson.str(map, "user_id").ifBlank { session.userId }
     val updated = session.copy(
-      userId = DesktopJson.str(map, "user_id").ifBlank { session.userId },
+      userId = uid,
       accessToken = DesktopJson.str(map, "session_token"),
       refreshToken = DesktopJson.str(map, "refresh_token"),
       email = email,
       suggestedFullName = DesktopJson.str(map, "suggested_full_name"),
       suggestedUsername = DesktopJson.str(map, "suggested_username"),
-      profileCompleted = DesktopJson.bool(map, "profile_completed"),
+      profileCompleted = profileCompleted,
     )
     session = updated
     vault.save(updated)
     onSessionUpdated(updated)
+    if (profileCompleted && uid.isNotBlank()) {
+      hydrateExistingProfileAfterSignIn(uid)
+    }
+    captureAndSyncDeviceContext()
+  }
+
+  private fun hydrateExistingProfileAfterSignIn(userId: String) {
+    val outcome = getUserProfile(userId)
+    if (outcome is DesktopApiOutcome.Ok) {
+      val prof = outcome.data
+      val refreshed = session.copy(
+        fullName = prof.fullName.ifBlank { session.fullName },
+        username = prof.username.ifBlank { session.username },
+        bio = prof.bio,
+        location = prof.location,
+      )
+      session = refreshed
+      vault.save(refreshed)
+      onSessionUpdated(refreshed)
+    }
   }
 
   fun requestOtp(email: String): DesktopApiOutcome<DesktopOtpRequestResult> {
     val body = "{\"email\":\"${DesktopJson.escape(email.trim())}\"}"
     val resp = executeRaw("POST", "/v1/auth/otp/request", body.toByteArray(StandardCharsets.UTF_8), auth = false)
       ?: return DesktopApiOutcome.Fail(0, "Server connection unavailable")
+    if (resp.first == 403) {
+      val msg = parseError(resp.first, resp.second).ifBlank {
+        "This device was denied access for this account."
+      }
+      return DesktopApiOutcome.Fail(403, msg)
+    }
     if (resp.first !in 200..299) {
       return DesktopApiOutcome.Fail(resp.first, parseError(resp.first, resp.second))
     }
     val map = DesktopJson.parseObject(resp.second)
-    return DesktopApiOutcome.Ok(DesktopOtpRequestResult(DesktopJson.long(map, "cooldown_seconds", 60L)))
+    val requiresApproval = DesktopJson.bool(map, "requires_device_approval")
+    return DesktopApiOutcome.Ok(
+      DesktopOtpRequestResult(
+        cooldownSeconds = DesktopJson.long(map, "cooldown_seconds", 60L),
+        requiresDeviceApproval = requiresApproval,
+        requestId = DesktopJson.str(map, "request_id"),
+        pollToken = DesktopJson.str(map, "poll_token"),
+        targetDeviceName = DesktopJson.str(map, "target_device_name"),
+        targetLocation = DesktopJson.str(map, "target_location"),
+        requestTimeMs = DesktopJson.long(map, "request_time_ms", System.currentTimeMillis()),
+        expiresInSeconds = DesktopJson.long(map, "expires_in_seconds", 60L),
+      ),
+    )
+  }
+
+  fun pollLoginRequestStatus(requestId: String, pollToken: String): DesktopApiOutcome<DesktopLoginRequestPollResult> {
+    val encId = URLEncoder.encode(requestId.trim(), StandardCharsets.UTF_8)
+    val resp = executeRaw(
+      method = "GET",
+      path = "/v1/auth/login-requests/$encId/status",
+      body = null,
+      auth = false,
+      extraHeaders = mapOf("X-Telefam-Poll-Token" to pollToken),
+    ) ?: return DesktopApiOutcome.Fail(0, "Server connection unavailable")
+    if (resp.first !in 200..299) {
+      return DesktopApiOutcome.Fail(resp.first, parseError(resp.first, resp.second))
+    }
+    val map = DesktopJson.parseObject(resp.second)
+    val status = DesktopJson.str(map, "status").ifBlank { "pending" }
+    val blocked = DesktopJson.bool(map, "blocked")
+    val sessionTok = DesktopJson.str(map, "session_token")
+    if (status == "approved" && sessionTok.isNotBlank()) {
+      applyAuthSessionResponse(map, DesktopJson.str(map, "email"))
+    }
+    return DesktopApiOutcome.Ok(
+      DesktopLoginRequestPollResult(
+        status = status,
+        blocked = blocked,
+        remainingSeconds = DesktopJson.long(map, "remaining_seconds", 0L),
+        targetDeviceName = DesktopJson.str(map, "target_device_name"),
+        targetLocation = DesktopJson.str(map, "target_location"),
+        authenticatedSession = if (status == "approved" && sessionTok.isNotBlank()) session else null,
+      ),
+    )
+  }
+
+  fun getPendingLoginRequests(): DesktopApiOutcome<List<DesktopIncomingLoginRequestItem>> {
+    if (!session.isAuthenticated) return DesktopApiOutcome.Fail(401, "Unauthorized")
+    val resp = executeRaw("GET", "/v1/auth/login-requests/pending", null, auth = true)
+      ?: return DesktopApiOutcome.Fail(0, "Offline")
+    if (resp.first !in 200..299) {
+      return DesktopApiOutcome.Fail(resp.first, parseError(resp.first, resp.second))
+    }
+    val map = DesktopJson.parseObject(resp.second)
+    val list = DesktopJson.objList(map, "requests").mapNotNull { item ->
+      val rid = DesktopJson.str(item, "request_id")
+      if (rid.isBlank()) return@mapNotNull null
+      DesktopIncomingLoginRequestItem(
+        requestId = rid,
+        deviceName = DesktopJson.str(item, "device_name"),
+        location = DesktopJson.str(item, "location"),
+        ipAddressMasked = DesktopJson.str(item, "ip_address_masked"),
+        requestedAtMs = DesktopJson.long(item, "requested_at_ms", System.currentTimeMillis()),
+        remainingSeconds = DesktopJson.long(item, "remaining_seconds", 60L),
+      )
+    }
+    return DesktopApiOutcome.Ok(list)
+  }
+
+  fun respondToLoginRequest(requestId: String, accept: Boolean): DesktopApiOutcome<String> {
+    val encId = URLEncoder.encode(requestId.trim(), StandardCharsets.UTF_8)
+    val action = if (accept) "accept" else "deny"
+    val body = "{\"action\":\"$action\"}"
+    val resp = executeRaw("POST", "/v1/auth/login-requests/$encId/respond", body.toByteArray(StandardCharsets.UTF_8), auth = true)
+      ?: return DesktopApiOutcome.Fail(0, "Server connection unavailable")
+    if (resp.first !in 200..299) {
+      return DesktopApiOutcome.Fail(resp.first, parseError(resp.first, resp.second))
+    }
+    val map = DesktopJson.parseObject(resp.second)
+    return DesktopApiOutcome.Ok(DesktopJson.str(map, "status").ifBlank { if (accept) "approved" else "denied" })
+  }
+
+  fun captureAndSyncDeviceContext() {
+    val snap = DesktopDeviceContextCollector.collectSnapshot()
+    val payload = buildString {
+      append('{')
+      append("\"device_name\":\"").append(DesktopJson.escape(snap.deviceName)).append("\",")
+      append("\"platform\":\"").append(DesktopJson.escape(snap.platform)).append("\",")
+      append("\"hardware_model\":\"").append(DesktopJson.escape(snap.osVersion)).append("\",")
+      append("\"carrier_country_iso\":\"\",")
+      append("\"sim_country_iso\":\"\",")
+      append("\"gps_country_iso\":\"\",")
+      append("\"gps_city\":\"\",")
+      append("\"locale_country_iso\":\"").append(DesktopJson.escape(snap.localeCountryIso)).append("\",")
+      append("\"timezone\":\"").append(DesktopJson.escape(snap.timezoneId)).append("\",")
+      append("\"lat_bucket\":0,\"lon_bucket\":0,")
+      append("\"signal_source\":\"desktop_locale\",")
+      append("\"captured_at_ms\":").append(snap.capturedAtMs)
+      append('}')
+    }
+    saveCachedText("device_ctx_pending.json", payload)
+    if (session.isAuthenticated) {
+      flushPendingDeviceContext()
+    }
+  }
+
+  fun flushPendingDeviceContext() {
+    if (!session.isAuthenticated) return
+    val pending = loadCachedText("device_ctx_pending.json") ?: return
+    val resp = executeRaw("POST", "/v1/telemetry/device-context", pending.toByteArray(StandardCharsets.UTF_8), auth = true)
+    if (resp != null && resp.first in 200..299) {
+      runCatching { cacheKeyFile("device_ctx_pending.json").delete() }
+    }
   }
 
   fun verifyOtp(email: String, otp: String): DesktopApiOutcome<DesktopStoredSession> {
@@ -611,15 +767,28 @@ class DesktopApiClient(
     return DesktopApiOutcome.Ok(session)
   }
 
-  fun verifyGoogleOAuth(identityToken: String): DesktopApiOutcome<DesktopStoredSession> {
-    val body = "{\"provider\":\"google\",\"identity_token\":\"${DesktopJson.escape(identityToken.trim())}\"}"
+  fun verifyGoogleOAuth(
+    identityToken: String,
+    expectedEmail: String = "",
+    approvalRequestId: String = "",
+  ): DesktopApiOutcome<DesktopStoredSession> {
+    val body = buildString {
+      append("{\"provider\":\"google\",\"identity_token\":\"").append(DesktopJson.escape(identityToken.trim())).append('"')
+      if (expectedEmail.isNotBlank()) {
+        append(",\"expected_email\":\"").append(DesktopJson.escape(expectedEmail.trim().lowercase())).append('"')
+      }
+      if (approvalRequestId.isNotBlank()) {
+        append(",\"approval_request_id\":\"").append(DesktopJson.escape(approvalRequestId.trim())).append('"')
+      }
+      append('}')
+    }
     val resp = executeRaw("POST", "/v1/auth/oauth/google", body.toByteArray(StandardCharsets.UTF_8), auth = false)
       ?: return DesktopApiOutcome.Fail(0, "Server connection unavailable")
     if (resp.first !in 200..299) {
       return DesktopApiOutcome.Fail(resp.first, parseError(resp.first, resp.second))
     }
     val map = DesktopJson.parseObject(resp.second)
-    applyAuthSessionResponse(map, session.email)
+    applyAuthSessionResponse(map, expectedEmail.ifBlank { session.email })
     return DesktopApiOutcome.Ok(session)
   }
 
@@ -1294,7 +1463,8 @@ class DesktopApiClient(
       append('{')
       append("\"privacy\":").append(encodePrivacyJson(bundle.privacy)).append(',')
       append("\"notifications\":").append(encodeNotificationsJson(bundle.notifications)).append(',')
-      append("\"content_preferences\":").append(encodeContentPrefsJson(bundle.contentPreferences, resetSuggestions = false))
+      append("\"content_preferences\":").append(encodeContentPrefsJson(bundle.contentPreferences, resetSuggestions = false)).append(',')
+      append("\"chat_privacy\":").append(encodeChatPrivacyJson(bundle.chatPrivacy))
       append('}')
     }
     saveCachedText("settings_$uid.json", json)
@@ -1361,6 +1531,14 @@ class DesktopApiClient(
         }
         "content_prefs" -> {
           val r = executeRaw("PUT", "/v1/settings/content-preferences", op.payloadJson.toByteArray(StandardCharsets.UTF_8), auth = true)
+          r != null && r.first in 200..299
+        }
+        "chat_privacy" -> {
+          val r = executeRaw("PUT", "/v1/chat/privacy", op.payloadJson.toByteArray(StandardCharsets.UTF_8), auth = true)
+          r != null && r.first in 200..299
+        }
+        "chat_theme" -> {
+          val r = executeRaw("PUT", "/v1/chat/theme", op.payloadJson.toByteArray(StandardCharsets.UTF_8), auth = true)
           r != null && r.first in 200..299
         }
         "mute" -> {
@@ -1454,6 +1632,58 @@ class DesktopApiClient(
       return parsed
     }
     enqueueSettingsOp("content_prefs", payload)
+    return updated
+  }
+
+  fun updateChatPrivacySettings(next: DesktopChatPrivacySettings): DesktopSettingsBundle {
+    val cur = loadCachedSettingsBundle()
+    val stamped = next.copy(
+      chatThemeId = DesktopChatPrivacyCatalog.themeById(next.chatThemeId).themeId,
+      bubbleColorId = DesktopChatPrivacyCatalog.bubbleColorById(next.bubbleColorId).colorId,
+      updatedAtMs = System.currentTimeMillis(),
+    )
+    val updated = cur.copy(chatPrivacy = stamped)
+    saveCachedSettingsBundle(updated)
+    val payload = encodeChatPrivacyJson(stamped)
+    val resp = executeRaw("PUT", "/v1/chat/privacy", payload.toByteArray(StandardCharsets.UTF_8), auth = true)
+    if (resp != null && resp.first in 200..299) {
+      val map = DesktopJson.parseObject(resp.second)
+      val cpMap = DesktopJson.objOrNull(map, "chat_privacy") ?: map
+      val synced = updated.copy(chatPrivacy = parseChatPrivacy(cpMap))
+      saveCachedSettingsBundle(synced)
+      return synced
+    }
+    enqueueSettingsOp("chat_privacy", payload)
+    return updated
+  }
+
+  fun updateChatThemeAndBubble(themeId: String? = null, bubbleColorId: String? = null): DesktopSettingsBundle {
+    val cur = loadCachedSettingsBundle()
+    val prev = cur.chatPrivacy
+    val nextTheme = themeId?.let { DesktopChatPrivacyCatalog.themeById(it).themeId } ?: prev.chatThemeId
+    val nextBubble = bubbleColorId?.let { DesktopChatPrivacyCatalog.bubbleColorById(it).colorId } ?: prev.bubbleColorId
+    val stamped = prev.copy(
+      chatThemeId = nextTheme,
+      bubbleColorId = nextBubble,
+      updatedAtMs = System.currentTimeMillis(),
+    )
+    val updated = cur.copy(chatPrivacy = stamped)
+    saveCachedSettingsBundle(updated)
+    val payload = buildString {
+      append('{')
+      append("\"chat_theme_id\":\"").append(DesktopJson.escape(nextTheme)).append("\",")
+      append("\"bubble_color_id\":\"").append(DesktopJson.escape(nextBubble)).append('"')
+      append('}')
+    }
+    val resp = executeRaw("PUT", "/v1/chat/theme", payload.toByteArray(StandardCharsets.UTF_8), auth = true)
+    if (resp != null && resp.first in 200..299) {
+      val map = DesktopJson.parseObject(resp.second)
+      val cpMap = DesktopJson.objOrNull(map, "chat_privacy") ?: map
+      val synced = updated.copy(chatPrivacy = parseChatPrivacy(cpMap))
+      saveCachedSettingsBundle(synced)
+      return synced
+    }
+    enqueueSettingsOp("chat_theme", payload)
     return updated
   }
 
@@ -1771,6 +2001,7 @@ class DesktopApiClient(
     val pMap = DesktopJson.objOrNull(map, "privacy")
     val nMap = DesktopJson.objOrNull(map, "notifications")
     val cMap = DesktopJson.objOrNull(map, "content_preferences")
+    val cpMap = DesktopJson.objOrNull(map, "chat_privacy")
     return DesktopSettingsBundle(
       privacy = if (pMap == null) DesktopPrivacySettings() else DesktopPrivacySettings(
         isPrivateAccount = DesktopJson.bool(pMap, "is_private_account"),
@@ -1811,7 +2042,40 @@ class DesktopApiClient(
         reducedMotion = DesktopJson.bool(cMap, "reduced_motion"),
         updatedAtMs = DesktopJson.long(cMap, "updated_at_ms", 0L),
       ),
+      chatPrivacy = if (cpMap == null) DesktopChatPrivacySettings() else parseChatPrivacy(cpMap),
     )
+  }
+
+  private fun parseChatPrivacy(m: Map<String, Any?>): DesktopChatPrivacySettings = DesktopChatPrivacySettings(
+    messageRequests = DesktopChatAudienceOption.fromApi(DesktopJson.str(m, "message_requests"), allowContacts = true, fallback = DesktopChatAudienceOption.ANYONE),
+    whoCanCall = DesktopChatAudienceOption.fromApi(DesktopJson.str(m, "who_can_call"), allowContacts = true, fallback = DesktopChatAudienceOption.ANYONE),
+    whoCanScreenshot = DesktopChatAudienceOption.fromApi(DesktopJson.str(m, "who_can_screenshot"), allowContacts = false, fallback = DesktopChatAudienceOption.NOBODY),
+    whoCanShareChats = DesktopChatAudienceOption.fromApi(DesktopJson.str(m, "who_can_share_chats"), allowContacts = false, fallback = DesktopChatAudienceOption.NOBODY),
+    whoCanCopyMessages = DesktopChatAudienceOption.fromApi(DesktopJson.str(m, "who_can_copy_messages"), allowContacts = false, fallback = DesktopChatAudienceOption.NOBODY),
+    whoCanDownloadMedia = DesktopChatAudienceOption.fromApi(DesktopJson.str(m, "who_can_download_media"), allowContacts = false, fallback = DesktopChatAudienceOption.ANYONE),
+    chatThemeId = DesktopChatPrivacyCatalog.themeById(DesktopJson.str(m, "chat_theme_id")).themeId,
+    bubbleColorId = DesktopChatPrivacyCatalog.bubbleColorById(DesktopJson.str(m, "bubble_color_id")).colorId,
+    readReceipts = DesktopChatAudienceOption.fromApi(DesktopJson.str(m, "read_receipts"), allowContacts = false, fallback = DesktopChatAudienceOption.ANYONE),
+    typingIndicators = DesktopChatAudienceOption.fromApi(DesktopJson.str(m, "typing_indicators"), allowContacts = false, fallback = DesktopChatAudienceOption.NOBODY),
+    onlineIndicators = DesktopChatAudienceOption.fromApi(DesktopJson.str(m, "online_indicators"), allowContacts = false, fallback = DesktopChatAudienceOption.NOBODY),
+    updatedAtMs = DesktopJson.long(m, "updated_at_ms", 0L),
+  )
+
+  private fun encodeChatPrivacyJson(s: DesktopChatPrivacySettings): String = buildString {
+    append('{')
+    append("\"message_requests\":\"").append(s.messageRequests.apiValue).append("\",")
+    append("\"who_can_call\":\"").append(s.whoCanCall.apiValue).append("\",")
+    append("\"who_can_screenshot\":\"").append(s.whoCanScreenshot.apiValue).append("\",")
+    append("\"who_can_share_chats\":\"").append(s.whoCanShareChats.apiValue).append("\",")
+    append("\"who_can_copy_messages\":\"").append(s.whoCanCopyMessages.apiValue).append("\",")
+    append("\"who_can_download_media\":\"").append(s.whoCanDownloadMedia.apiValue).append("\",")
+    append("\"chat_theme_id\":\"").append(DesktopJson.escape(s.chatThemeId)).append("\",")
+    append("\"bubble_color_id\":\"").append(DesktopJson.escape(s.bubbleColorId)).append("\",")
+    append("\"read_receipts\":\"").append(s.readReceipts.apiValue).append("\",")
+    append("\"typing_indicators\":\"").append(s.typingIndicators.apiValue).append("\",")
+    append("\"online_indicators\":\"").append(s.onlineIndicators.apiValue).append("\",")
+    append("\"updated_at_ms\":").append(s.updatedAtMs)
+    append('}')
   }
 
   private fun encodePrivacyJson(s: DesktopPrivacySettings): String = buildString {
@@ -1973,6 +2237,11 @@ class DesktopApiClient(
       .timeout(Duration.ofSeconds(30))
       .header("X-Telefam-Device-FP", deviceFingerprint)
       .header("X-Telefam-Client-IP-Hint", ipHint)
+    DesktopDeviceContextCollector.toHeaders().forEach { (k, v) ->
+      if (v.isNotBlank() && !extraHeaders.containsKey(k)) {
+        builder.header(k, v)
+      }
+    }
     if (auth && session.accessToken.isNotBlank()) {
       builder.header("Authorization", "Bearer ${session.accessToken}")
     }

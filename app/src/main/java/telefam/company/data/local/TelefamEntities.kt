@@ -364,10 +364,27 @@ data class SupportTicketEntity(
 data class PendingSettingsOpEntity(
   @PrimaryKey val opId: String,
   val userId: String,
-  val opKind: String, // "privacy", "notifications", "content_prefs", "mute", "unmute", "block", "unblock", "report_problem"
+  val opKind: String, // "privacy", "notifications", "content_prefs", "chat_privacy", "chat_theme", "mute", "unmute", "block", "unblock", "report_problem"
   val payloadJson: String,
   val createdAtMs: Long,
   val retryCount: Int,
   val nextRetryAtMs: Long,
+)
+
+@Entity(tableName = "cached_chat_privacy")
+data class CachedChatPrivacyEntity(
+  @PrimaryKey val userId: String,
+  val messageRequests: String,
+  val whoCanCall: String,
+  val whoCanScreenshot: String,
+  val whoCanShareChats: String,
+  val whoCanCopyMessages: String,
+  val whoCanDownloadMedia: String,
+  val chatThemeId: String,
+  val bubbleColorId: String,
+  val readReceipts: String,
+  val typingIndicators: String,
+  val onlineIndicators: String,
+  val updatedAtMs: Long,
 )
 

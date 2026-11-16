@@ -10,6 +10,7 @@ import telefam.company.data.network.NetworkQualityMonitor
 import telefam.company.data.network.TelefamApiService
 import telefam.company.data.repository.TelefamRepository
 import telefam.company.media.TelefamVideoCacheManager
+import telefam.company.security.DeviceContextCollector
 
 class TelefamApplication : Application(), ImageLoaderFactory {
   lateinit var repository: TelefamRepository
@@ -20,7 +21,12 @@ class TelefamApplication : Application(), ImageLoaderFactory {
     val database = TelefamDatabase.getInstance(this)
     val identityStore = DeviceIdentityStore(this)
     val networkMonitor = NetworkQualityMonitor(this)
-    val apiService = TelefamApiService.create(BuildConfig.TELEFAM_API_BASE_URL)
+    val apiService = TelefamApiService.create(
+      baseUrl = BuildConfig.TELEFAM_API_BASE_URL,
+      deviceHeaderProvider = {
+        DeviceContextCollector.toHttpHeaders(DeviceContextCollector.collectSnapshot(applicationContext))
+      },
+    )
     repository = TelefamRepository(
       appContext = applicationContext,
       dao = database.telefamDao(),
@@ -28,6 +34,9 @@ class TelefamApplication : Application(), ImageLoaderFactory {
       networkMonitor = networkMonitor,
       apiService = apiService,
     )
+    DeviceContextCollector.registerLocationModeReceiver(applicationContext) {
+      repository.onDeviceLocationModeChangedAsync()
+    }
   }
 
   override fun newImageLoader(): ImageLoader {

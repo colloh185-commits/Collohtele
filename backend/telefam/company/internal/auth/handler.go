@@ -200,6 +200,7 @@ type Handler struct {
 	mediaMeta           map[string]*media.ProcessedMedia
 	backgrounds         map[string][]ProfileBackgroundItem
 	privacySettings     map[string]PrivacySettingsDTO
+	chatPrivacySettings map[string]ChatPrivacySettingsDTO
 	notifSettings       map[string]NotificationSettingsDTO
 	contentPrefs        map[string]ContentPreferencesDTO
 	supportTickets      map[string][]SupportTicketDTO
@@ -240,6 +241,7 @@ func NewHandler(
 		mediaMeta:           make(map[string]*media.ProcessedMedia),
 		backgrounds:         make(map[string][]ProfileBackgroundItem),
 		privacySettings:     make(map[string]PrivacySettingsDTO),
+		chatPrivacySettings: make(map[string]ChatPrivacySettingsDTO),
 		notifSettings:       make(map[string]NotificationSettingsDTO),
 		contentPrefs:        make(map[string]ContentPreferencesDTO),
 		supportTickets:      make(map[string][]SupportTicketDTO),
@@ -298,6 +300,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /v1/profile/backgrounds/{id}", h.handleDeleteProfileBackground)
 	mux.HandleFunc("GET /v1/settings", h.handleGetSettings)
 	mux.HandleFunc("PUT /v1/settings/privacy", h.handleUpdatePrivacySettings)
+	mux.HandleFunc("GET /v1/chat/privacy", h.handleGetChatPrivacy)
+	mux.HandleFunc("PUT /v1/chat/privacy", h.handleUpdateChatPrivacy)
+	mux.HandleFunc("PUT /v1/chat/theme", h.handleUpdateChatTheme)
 	mux.HandleFunc("PUT /v1/settings/notifications", h.handleUpdateNotificationSettings)
 	mux.HandleFunc("PUT /v1/settings/content-preferences", h.handleUpdateContentPreferences)
 	mux.HandleFunc("GET /v1/settings/blocked-accounts", h.handleListBlockedAccounts)

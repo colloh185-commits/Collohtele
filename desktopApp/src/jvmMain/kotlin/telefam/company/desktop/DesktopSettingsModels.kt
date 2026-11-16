@@ -128,7 +128,143 @@ data class DesktopSettingsBundle(
   val privacy: DesktopPrivacySettings = DesktopPrivacySettings(),
   val notifications: DesktopNotificationSettings = DesktopNotificationSettings(),
   val contentPreferences: DesktopContentPreferences = DesktopContentPreferences(),
+  val chatPrivacy: DesktopChatPrivacySettings = DesktopChatPrivacySettings(),
 )
+
+enum class DesktopChatPrivacyRoute {
+  PRIVACY,
+  CHATS_THEME,
+  BUBBLE_COLORS,
+}
+
+enum class DesktopChatAudienceOption(val apiValue: String, val label: String) {
+  ANYONE("anyone", "Anyone"),
+  FRIENDS("friends", "Friends"),
+  CONTACTS("contacts", "Contacts"),
+  NOBODY("nobody", "Nobody");
+
+  companion object {
+    fun fromApi(
+      raw: String?,
+      allowContacts: Boolean = true,
+      fallback: DesktopChatAudienceOption = ANYONE,
+    ): DesktopChatAudienceOption {
+      val clean = raw?.trim()?.lowercase().orEmpty()
+      val matched = when (clean) {
+        "anyone", "everyone" -> ANYONE
+        "friends" -> FRIENDS
+        "contacts", "contacts_only" -> if (allowContacts) CONTACTS else FRIENDS
+        "nobody", "no_one", "only_me" -> NOBODY
+        else -> fallback
+      }
+      return if (!allowContacts && matched == CONTACTS) FRIENDS else matched
+    }
+  }
+}
+
+enum class DesktopChatPatternKind(val apiValue: String) {
+  CLEAN("clean"),
+  HOME("home"),
+  MEADOW("meadow"),
+  WINTER("winter"),
+  OCEAN("ocean"),
+  MATH("math"),
+  BOTANICAL("botanical"),
+  ROMANCE("romance"),
+  FIRESIDE("fireside"),
+  ARCADE("arcade"),
+  COSMIC("cosmic"),
+  SAFARI("safari"),
+  TELEFAM("telefam");
+
+  companion object {
+    fun fromApi(raw: String?): DesktopChatPatternKind =
+      entries.firstOrNull { it.apiValue.equals(raw?.trim(), ignoreCase = true) } ?: CLEAN
+  }
+}
+
+data class DesktopChatThemeSpec(
+  val themeId: String,
+  val title: String,
+  val patternKind: DesktopChatPatternKind,
+  val lightBgHex: Long,
+  val darkBgHex: Long,
+  val lightPatternAlpha: Float,
+  val darkPatternAlpha: Float,
+  val accentStartHex: Long,
+  val accentEndHex: Long,
+  val selectionHex: Long,
+)
+
+data class DesktopChatBubbleColorOption(
+  val colorId: String,
+  val label: String,
+  val lightStartHex: Long,
+  val lightEndHex: Long,
+  val darkStartHex: Long,
+  val darkEndHex: Long,
+)
+
+data class DesktopChatPrivacySettings(
+  val messageRequests: DesktopChatAudienceOption = DesktopChatAudienceOption.ANYONE,
+  val whoCanCall: DesktopChatAudienceOption = DesktopChatAudienceOption.ANYONE,
+  val whoCanScreenshot: DesktopChatAudienceOption = DesktopChatAudienceOption.NOBODY,
+  val whoCanShareChats: DesktopChatAudienceOption = DesktopChatAudienceOption.NOBODY,
+  val whoCanCopyMessages: DesktopChatAudienceOption = DesktopChatAudienceOption.NOBODY,
+  val whoCanDownloadMedia: DesktopChatAudienceOption = DesktopChatAudienceOption.ANYONE,
+  val chatThemeId: String = "none",
+  val bubbleColorId: String = "cyan",
+  val readReceipts: DesktopChatAudienceOption = DesktopChatAudienceOption.ANYONE,
+  val typingIndicators: DesktopChatAudienceOption = DesktopChatAudienceOption.NOBODY,
+  val onlineIndicators: DesktopChatAudienceOption = DesktopChatAudienceOption.NOBODY,
+  val updatedAtMs: Long = 0L,
+)
+
+object DesktopChatPrivacyCatalog {
+  val audienceOptions4: List<DesktopChatAudienceOption> = listOf(
+    DesktopChatAudienceOption.ANYONE,
+    DesktopChatAudienceOption.FRIENDS,
+    DesktopChatAudienceOption.CONTACTS,
+    DesktopChatAudienceOption.NOBODY,
+  )
+
+  val audienceOptions3: List<DesktopChatAudienceOption> = listOf(
+    DesktopChatAudienceOption.ANYONE,
+    DesktopChatAudienceOption.FRIENDS,
+    DesktopChatAudienceOption.NOBODY,
+  )
+
+  val themes: List<DesktopChatThemeSpec> = listOf(
+    DesktopChatThemeSpec("none", "Default", DesktopChatPatternKind.CLEAN, 0xFFF9FAFB, 0xFF0E1014, 0.04f, 0.04f, 0xFFD91E2A, 0xFFE11319, 0xFFD91E2A),
+    DesktopChatThemeSpec("classic_home", "Cozy Home", DesktopChatPatternKind.HOME, 0xFFEAF3FC, 0xFF0C1219, 0.14f, 0.14f, 0xFF0EA5E9, 0xFF0284C7, 0xFF38BDF8),
+    DesktopChatThemeSpec("spring_meadow", "Spring Meadow", DesktopChatPatternKind.MEADOW, 0xFFEAF5EE, 0xFF0C140E, 0.16f, 0.15f, 0xFF16A34A, 0xFF22C55E, 0xFF7ED957),
+    DesktopChatThemeSpec("arctic_snow", "Arctic Frost", DesktopChatPatternKind.WINTER, 0xFFEBF3F9, 0xFF0B131A, 0.15f, 0.14f, 0xFF2B7A9E, 0xFF5BA4CF, 0xFF60A5FA),
+    DesktopChatThemeSpec("deep_sea", "Crystal Ocean", DesktopChatPatternKind.OCEAN, 0xFFE9F2F8, 0xFF09121C, 0.15f, 0.14f, 0xFF3B82F6, 0xFF06B6D4, 0xFF22D3EE),
+    DesktopChatThemeSpec("academia_math", "Academia", DesktopChatPatternKind.MATH, 0xFFEBF5F2, 0xFF0B1412, 0.14f, 0.14f, 0xFF0D9488, 0xFF2DD4BF, 0xFF2DD4BF),
+    DesktopChatThemeSpec("botanical_tulip", "Botanical", DesktopChatPatternKind.BOTANICAL, 0xFFFAF0F3, 0xFF150C10, 0.14f, 0.14f, 0xFFE14D6A, 0xFFA855F7, 0xFFF472B6),
+    DesktopChatThemeSpec("neon_romance", "Velvet Heart", DesktopChatPatternKind.ROMANCE, 0xFFF5EFFA, 0xFF130C18, 0.14f, 0.14f, 0xFF7C3AED, 0xFFEC4899, 0xFFC084FC),
+    DesktopChatThemeSpec("festive_fireside", "Warm Hearth", DesktopChatPatternKind.FIRESIDE, 0xFFFBF2EB, 0xFF15100B, 0.14f, 0.14f, 0xFFD97706, 0xFFEA580C, 0xFFFB923C),
+    DesktopChatThemeSpec("retro_arcade", "Retro Arcade", DesktopChatPatternKind.ARCADE, 0xFFF3EFFB, 0xFF0D0B18, 0.14f, 0.14f, 0xFFA855F7, 0xFFF59E0B, 0xFFF472B6),
+    DesktopChatThemeSpec("cosmic_nebula", "Cosmic Orbit", DesktopChatPatternKind.COSMIC, 0xFFEEF1FA, 0xFF0A0D18, 0.14f, 0.14f, 0xFF4F46E5, 0xFF06B6D4, 0xFF818CF8),
+    DesktopChatThemeSpec("safari_sunset", "Savanna Dusk", DesktopChatPatternKind.SAFARI, 0xFFFBF1EC, 0xFF170E0B, 0.14f, 0.14f, 0xFFB45309, 0xFFE11D48, 0xFFF97316),
+    DesktopChatThemeSpec("telefam_crimson", "Telefam Ruby", DesktopChatPatternKind.TELEFAM, 0xFFFDF0F1, 0xFF14090B, 0.14f, 0.14f, 0xFFC80A0F, 0xFFEF233C, 0xFFEF4444),
+  )
+
+  val bubbleColors: List<DesktopChatBubbleColorOption> = listOf(
+    DesktopChatBubbleColorOption("cyan", "Lagoon Cyan", 0xFF0097A7, 0xFF00BCD4, 0xFF00ACC1, 0xFF26C6DA),
+    DesktopChatBubbleColorOption("crimson", "Telefam Crimson", 0xFFC80A0F, 0xFFE11319, 0xFFD91E2A, 0xFFEF4444),
+    DesktopChatBubbleColorOption("emerald", "Emerald Spring", 0xFF15803D, 0xFF22C55E, 0xFF1B8E4B, 0xFF2DB866),
+    DesktopChatBubbleColorOption("azure", "Ocean Azure", 0xFF0284C7, 0xFF38BDF8, 0xFF1D9BF0, 0xFF0EA5E9),
+    DesktopChatBubbleColorOption("violet", "Royal Violet", 0xFF6D28D9, 0xFF8B5CF6, 0xFF7C3AED, 0xFFA78BFA),
+    DesktopChatBubbleColorOption("amber", "Sunset Amber", 0xFFC2410C, 0xFFF97316, 0xFFD97706, 0xFFF59E0B),
+  )
+
+  fun themeById(id: String?): DesktopChatThemeSpec =
+    themes.firstOrNull { it.themeId.equals(id?.trim(), ignoreCase = true) } ?: themes.first()
+
+  fun bubbleColorById(id: String?): DesktopChatBubbleColorOption =
+    bubbleColors.firstOrNull { it.colorId.equals(id?.trim(), ignoreCase = true) } ?: bubbleColors.first()
+}
 
 data class DesktopRestrictedAccount(
   val userId: String,

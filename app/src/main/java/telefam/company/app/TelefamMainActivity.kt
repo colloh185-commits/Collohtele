@@ -27,12 +27,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
+import android.view.WindowManager
 import android.widget.Toast
+import androidx.compose.runtime.DisposableEffect
+import telefam.company.core.ChatPrivacyRoute
 import telefam.company.ui.components.EditBackgroundsBottomSheet
 import telefam.company.ui.components.EditProfileModalSheet
 import telefam.company.ui.components.TelefamAnimatedSplashOverlay
+import telefam.company.ui.screens.DeviceApprovalWaitScreen
+import telefam.company.ui.screens.IncomingLoginRequestFullScreenOverlay
+import telefam.company.ui.screens.LoginApprovedFullScreenOverlay
 import telefam.company.ui.screens.ReusableVideoFeedScreen
 import telefam.company.ui.screens.TelefamAuthScreen
+import telefam.company.ui.screens.TelefamChatPrivacyHostScreen
 import telefam.company.ui.screens.TelefamHomeScreen
 import telefam.company.ui.screens.TelefamPostScreen
 import telefam.company.ui.screens.TelefamProfileSetupScreen
@@ -41,6 +48,7 @@ import telefam.company.ui.screens.TelefamSettingsScreen
 import telefam.company.ui.screens.TelefamUserProfileScreen
 import telefam.company.ui.theme.TelefamTheme
 import telefam.company.ui.theme.ThemeMode
+import telefam.company.ui.viewmodel.AuthStep
 import telefam.company.ui.viewmodel.HomeTab
 import telefam.company.ui.viewmodel.TelefamViewModel
 
@@ -88,6 +96,7 @@ class TelefamMainActivity : ComponentActivity() {
       LaunchedEffect(
         useDarkBars,
         route,
+        uiState.authStep,
         uiState.activeHomeTab,
         uiState.feedsState.isSearchOpen,
         uiState.feedsState.searchViewerItems != null,
@@ -95,10 +104,21 @@ class TelefamMainActivity : ComponentActivity() {
         uiState.profileViewerItems != null,
         uiState.postComposer.isOpen,
         uiState.activeSettingsDestination != null,
+        uiState.activeChatPrivacyRoute,
+        uiState.incomingLoginRequest != null,
+        uiState.loginApprovedOverlay != null,
       ) {
+        val isApprovalOverlayVisible =
+          route == AppRootRoute.HOME && (uiState.incomingLoginRequest != null || uiState.loginApprovedOverlay != null)
+        val isWaitScreenVisible =
+          route == AppRootRoute.AUTH && (uiState.authStep == AuthStep.DEVICE_APPROVAL_WAIT || uiState.authStep == AuthStep.DEVICE_APPROVAL_DENIED)
         val statusBarIsDark = when {
+          isApprovalOverlayVisible || isWaitScreenVisible -> true
           uiState.postComposer.isOpen -> true
           route == AppRootRoute.HOME && uiState.activeSettingsDestination != null -> true
+          route == AppRootRoute.HOME && uiState.activeChatPrivacyRoute != null -> {
+            if (uiState.activeChatPrivacyRoute == ChatPrivacyRoute.CHATS_THEME) useDarkBars else true
+          }
           route == AppRootRoute.HOME && uiState.profileViewerItems != null -> true
           route == AppRootRoute.HOME && uiState.activeUserProfile != null -> {
             val activeProf = uiState.activeUserProfile
@@ -116,7 +136,7 @@ class TelefamMainActivity : ComponentActivity() {
           route == AppRootRoute.AUTH -> useDarkBars
           else -> true
         }
-        val navBarIsDark = useDarkBars || (
+        val navBarIsDark = useDarkBars || isApprovalOverlayVisible || isWaitScreenVisible || (
           route == AppRootRoute.HOME && (
             uiState.profileViewerItems != null ||
               (uiState.activeHomeTab == HomeTab.FEEDS && !uiState.feedsState.isSearchOpen && uiState.activeUserProfile == null)
@@ -150,6 +170,20 @@ class TelefamMainActivity : ComponentActivity() {
         }
       }
 
+      val shouldBlockScreenshots = route == AppRootRoute.HOME &&
+        uiState.chatPrivacy.blocksScreenshots &&
+        (uiState.activeHomeTab == HomeTab.CHATS || uiState.activeChatPrivacyRoute != null)
+      DisposableEffect(shouldBlockScreenshots) {
+        if (shouldBlockScreenshots) {
+          window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        } else {
+          window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        }
+        onDispose {
+          window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        }
+      }
+
       TelefamTheme(themeMode = uiState.themeMode) {
         Box(modifier = Modifier.fillMaxSize()) {
           AnimatedContent(
@@ -170,6 +204,7 @@ class TelefamMainActivity : ComponentActivity() {
                   onGoogleTokenSuccess = viewModel::onGoogleSignInSuccess,
                   onGoogleTokenError = viewModel::onGoogleSignInError,
                   onToggleTheme = viewModel::cycleThemeMode,
+                  onPrepareTryAnotherWay = viewModel::prepareTryAnotherWayGoogleSignIn,
                 )
               }
 
@@ -250,6 +285,7 @@ class TelefamMainActivity : ComponentActivity() {
                   onShowProfileToast = viewModel::showProfileToast,
                   onDismissProfileToast = viewModel::dismissProfileToast,
                   onSignOut = viewModel::signOut,
+                  onOpenChatPrivacy = viewModel::openChatPrivacy,
                 )
               }
             }
@@ -490,6 +526,26 @@ class TelefamMainActivity : ComponentActivity() {
             )
           }
 
+          AnimatedVisibility(
+            visible = route == AppRootRoute.HOME && uiState.activeChatPrivacyRoute != null,
+            enter = slideInVertically(initialOffsetY = { it / 6 }) + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { it / 6 }) + fadeOut(),
+          ) {
+            val chatRoute = uiState.activeChatPrivacyRoute
+            if (chatRoute != null) {
+              TelefamChatPrivacyHostScreen(
+                route = chatRoute,
+                state = uiState.chatPrivacy,
+                onNavigateBack = viewModel::navigateChatPrivacyBack,
+                onUpdatePrivacy = viewModel::updateChatPrivacy,
+                onOpenChatsTheme = viewModel::openChatsThemePicker,
+                onOpenBubbleColors = viewModel::openBubbleColorPicker,
+                onSelectTheme = viewModel::selectChatTheme,
+                onSelectBubbleColor = viewModel::selectBubbleColor,
+              )
+            }
+          }
+
           if (route == AppRootRoute.HOME && uiState.showBackgroundsModal) {
             EditBackgroundsBottomSheet(
               backgrounds = activeOwnerProfileForModals?.backgrounds ?: emptyList(),
@@ -515,6 +571,37 @@ class TelefamMainActivity : ComponentActivity() {
               onSaveProfile = viewModel::saveEditedProfile,
               onDismiss = viewModel::dismissEditProfileModal,
             )
+          }
+
+          AnimatedVisibility(
+            visible = route == AppRootRoute.HOME && uiState.incomingLoginRequest != null && uiState.loginApprovedOverlay == null,
+            enter = fadeIn(),
+            exit = fadeOut(),
+          ) {
+            val incoming = uiState.incomingLoginRequest
+            if (incoming != null) {
+              IncomingLoginRequestFullScreenOverlay(
+                request = incoming,
+                isResponding = uiState.isRespondingToLoginRequest,
+                actionError = uiState.loginRequestActionError,
+                onDeny = { viewModel.respondToIncomingLoginRequest(accept = false) },
+                onAccept = { viewModel.respondToIncomingLoginRequest(accept = true) },
+              )
+            }
+          }
+
+          AnimatedVisibility(
+            visible = route == AppRootRoute.HOME && uiState.loginApprovedOverlay != null,
+            enter = fadeIn(),
+            exit = fadeOut(),
+          ) {
+            val approved = uiState.loginApprovedOverlay
+            if (approved != null) {
+              LoginApprovedFullScreenOverlay(
+                approved = approved,
+                onDone = viewModel::dismissLoginApprovedOverlay,
+              )
+            }
           }
 
           TelefamAnimatedSplashOverlay(visible = showSplash)

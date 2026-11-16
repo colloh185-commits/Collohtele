@@ -308,4 +308,14 @@ interface TelefamDao {
 
   @Query("UPDATE pending_settings_ops SET retryCount = :retryCount, nextRetryAtMs = :nextRetryAtMs WHERE opId = :opId")
   suspend fun scheduleSettingsOpRetry(opId: String, retryCount: Int, nextRetryAtMs: Long)
+
+  // Chat Privacy, Themes & Bubble Colour local cache
+  @Query("SELECT * FROM cached_chat_privacy WHERE userId = :userId LIMIT 1")
+  suspend fun getCachedChatPrivacy(userId: String): CachedChatPrivacyEntity?
+
+  @Query("SELECT * FROM cached_chat_privacy WHERE userId = :userId LIMIT 1")
+  fun observeCachedChatPrivacy(userId: String): Flow<CachedChatPrivacyEntity?>
+
+  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  suspend fun upsertCachedChatPrivacy(entity: CachedChatPrivacyEntity)
 }

@@ -38,6 +38,8 @@ class DeviceIdentityStore(private val context: Context) {
   private val keyPendingOtpEmail = stringPreferencesKey("pending_otp_email")
   private val keyProfileCompleted = booleanPreferencesKey("profile_completed")
   private val keyThemeMode = stringPreferencesKey("theme_mode")
+  private val keyPendingDeviceCtxEnc = stringPreferencesKey("pending_device_ctx_enc")
+  private val keyLastSyncedCountryIso = stringPreferencesKey("last_synced_country_iso")
 
   suspend fun getOrCreateInstallId(): String {
     val existing = context.telefamPrefs.data.first()[keyInstallId]
@@ -73,6 +75,33 @@ class DeviceIdentityStore(private val context: Context) {
         prefs[keyPendingOtpEmail] = email
       }
     }
+  }
+
+  suspend fun savePendingDeviceContextJson(json: String?) {
+    context.telefamPrefs.edit { prefs ->
+      if (json.isNullOrBlank()) {
+        prefs.remove(keyPendingDeviceCtxEnc)
+      } else {
+        prefs[keyPendingDeviceCtxEnc] = EncryptedTokenVault.encrypt(json)
+      }
+    }
+  }
+
+  suspend fun getPendingDeviceContextJson(): String? {
+    val enc = context.telefamPrefs.data.first()[keyPendingDeviceCtxEnc] ?: return null
+    return EncryptedTokenVault.decrypt(enc).ifBlank { null }
+  }
+
+  suspend fun saveLastSyncedCountryIso(countryIso: String) {
+    val clean = countryIso.trim().uppercase()
+    if (clean.length != 2) return
+    context.telefamPrefs.edit { prefs ->
+      prefs[keyLastSyncedCountryIso] = clean
+    }
+  }
+
+  suspend fun getLastSyncedCountryIso(): String {
+    return context.telefamPrefs.data.first()[keyLastSyncedCountryIso].orEmpty()
   }
 
   suspend fun saveEncryptedSession(
@@ -121,6 +150,12 @@ class DeviceIdentityStore(private val context: Context) {
       prefs.remove(keySessionEmail)
       prefs.remove(keyPendingOtpEmail)
       prefs.remove(keyProfileCompleted)
+    }
+  }
+
+  suspend fun clearAll() {
+    context.telefamPrefs.edit { prefs ->
+      prefs.clear()
     }
   }
 }

@@ -150,6 +150,7 @@ fun TelefamHomeScreen(
   onShowProfileToast: (String) -> Unit = {},
   onDismissProfileToast: () -> Unit = {},
   onSignOut: () -> Unit = {},
+  onOpenChatPrivacy: () -> Unit = {},
 ) {
   val context = LocalContext.current
   val snackbarHostState = remember { SnackbarHostState() }
@@ -263,7 +264,7 @@ fun TelefamHomeScreen(
           )
 
           IconButton(
-            onClick = { onTriggerComingSoon("Menu", "more_menu_tapped") },
+            onClick = onOpenChatPrivacy,
             modifier = Modifier.testTag("home_more_button"),
           ) {
             Icon(
@@ -518,70 +519,98 @@ private fun HomeTabContent(
     enter = fadeIn(),
     exit = fadeOut(),
   ) {
-    Column(
-      modifier = Modifier
-        .padding(horizontal = 32.dp)
-        .widthIn(max = 360.dp),
-      horizontalAlignment = Alignment.CenterHorizontally,
+    val isDark = LocalTelefamDarkTheme.current
+    val chatTheme = telefam.company.core.TelefamChatPrivacyCatalog.themeById(uiState.chatPrivacy.chatThemeId)
+    val bubblePalette = telefam.company.core.TelefamChatPrivacyCatalog.bubbleColorById(uiState.chatPrivacy.bubbleColorId)
+    val activeBubbleColor = Color(if (isDark) bubblePalette.darkStartHex else bubblePalette.lightStartHex)
+
+    Box(
+      modifier = Modifier.fillMaxSize(),
+      contentAlignment = Alignment.Center,
     ) {
-      Box(
-        modifier = Modifier
-          .size(62.dp)
-          .clip(CircleShape)
-          .background(blushBg),
-        contentAlignment = Alignment.Center,
-      ) {
-        Icon(
-          imageVector = Icons.Outlined.Forum,
-          contentDescription = null,
-          tint = TelefamCrimson,
-          modifier = Modifier.size(28.dp),
+      if (chatTheme.themeId != "none") {
+        ChatWallpaperCanvas(
+          theme = chatTheme,
+          isDark = isDark,
+          modifier = Modifier.fillMaxSize(),
         )
       }
 
-      Spacer(modifier = Modifier.height(18.dp))
-
-      Text(
-        text = stringResource(R.string.home_start_conversation),
-        style = MaterialTheme.typography.titleMedium.copy(fontSize = 18.sp, fontWeight = FontWeight.Bold),
-        color = MaterialTheme.colorScheme.onBackground,
-        textAlign = TextAlign.Center,
-      )
-
-      Spacer(modifier = Modifier.height(8.dp))
-
-      Text(
-        text = stringResource(R.string.home_start_conversation_desc),
-        style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp),
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        textAlign = TextAlign.Center,
-      )
-
-      Spacer(modifier = Modifier.height(22.dp))
-
-      Button(
-        onClick = onStartChatClick,
-        shape = RoundedCornerShape(24.dp),
-        colors = ButtonDefaults.buttonColors(
-          containerColor = TelefamCrimson,
-          contentColor = TelefamPureWhite,
-        ),
-        contentPadding = PaddingValues(horizontal = 22.dp, vertical = 10.dp),
-        elevation = ButtonDefaults.buttonElevation(defaultElevation = 6.dp),
+      Surface(
         modifier = Modifier
-          .height(44.dp)
-          .testTag("start_chat_button"),
+          .padding(horizontal = 24.dp)
+          .widthIn(max = 380.dp),
+        shape = RoundedCornerShape(24.dp),
+        color = if (chatTheme.themeId != "none") {
+          MaterialTheme.colorScheme.surface.copy(alpha = 0.90f)
+        } else {
+          Color.Transparent
+        },
       ) {
-        Icon(
-          imageVector = Icons.Outlined.AddComment,
-          contentDescription = null,
-          modifier = Modifier.size(18.dp),
-        )
-        Spacer(modifier = Modifier.width(8.dp))
-        Text(
-          text = stringResource(R.string.home_start_chat),
-          style = MaterialTheme.typography.labelLarge.copy(fontSize = 14.sp),
-        )
+        Column(
+          modifier = Modifier.padding(horizontal = 20.dp, vertical = 22.dp),
+          horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+          Box(
+            modifier = Modifier
+              .size(62.dp)
+              .clip(CircleShape)
+              .background(blushBg),
+            contentAlignment = Alignment.Center,
+          ) {
+            Icon(
+              imageVector = Icons.Outlined.Forum,
+              contentDescription = null,
+              tint = TelefamCrimson,
+              modifier = Modifier.size(28.dp),
+            )
+          }
+
+          Spacer(modifier = Modifier.height(18.dp))
+
+          Text(
+            text = stringResource(R.string.home_start_conversation),
+            style = MaterialTheme.typography.titleMedium.copy(fontSize = 18.sp, fontWeight = FontWeight.Bold),
+            color = MaterialTheme.colorScheme.onBackground,
+            textAlign = TextAlign.Center,
+          )
+
+          Spacer(modifier = Modifier.height(8.dp))
+
+          Text(
+            text = stringResource(R.string.home_start_conversation_desc),
+            style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+          )
+
+          Spacer(modifier = Modifier.height(22.dp))
+
+          Button(
+            onClick = onStartChatClick,
+            shape = RoundedCornerShape(24.dp),
+            colors = ButtonDefaults.buttonColors(
+              containerColor = if (uiState.chatPrivacy.bubbleColorId != "cyan" || chatTheme.themeId != "none") activeBubbleColor else TelefamCrimson,
+              contentColor = TelefamPureWhite,
+            ),
+            contentPadding = PaddingValues(horizontal = 22.dp, vertical = 10.dp),
+            elevation = ButtonDefaults.buttonElevation(defaultElevation = 6.dp),
+            modifier = Modifier
+              .height(44.dp)
+              .testTag("start_chat_button"),
+          ) {
+            Icon(
+              imageVector = Icons.Outlined.AddComment,
+              contentDescription = null,
+              modifier = Modifier.size(18.dp),
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+              text = stringResource(R.string.home_start_chat),
+              style = MaterialTheme.typography.labelLarge.copy(fontSize = 14.sp),
+            )
+          }
+        }
       }
     }
   }
@@ -626,6 +655,7 @@ private fun HomeTabContent(
           uiState.activeUserProfile == null &&
           uiState.profileViewerItems == null &&
           uiState.activeSettingsDestination == null &&
+          uiState.activeChatPrivacyRoute == null &&
           !uiState.postComposer.isOpen,
         isLoading = feeds.isLoading,
         hasMore = feeds.hasMoreActive,

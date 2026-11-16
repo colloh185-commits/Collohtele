@@ -290,10 +290,184 @@ struct TelefamContentPreferences: Codable, Equatable {
     }
 }
 
+enum TelefamChatPrivacyRoute: Hashable {
+    case chatsTheme
+    case bubbleColors
+}
+
+enum TelefamChatAudienceOption: String, CaseIterable, Identifiable {
+    case anyone = "anyone"
+    case friends = "friends"
+    case contacts = "contacts"
+    case nobody = "nobody"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .anyone: return "Anyone"
+        case .friends: return "Friends"
+        case .contacts: return "Contacts"
+        case .nobody: return "Nobody"
+        }
+    }
+
+    static func fromApi(_ raw: String?, allowContacts: Bool = true, fallback: TelefamChatAudienceOption = .anyone) -> TelefamChatAudienceOption {
+        let clean = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let matched: TelefamChatAudienceOption
+        switch clean {
+        case "anyone", "everyone": matched = .anyone
+        case "friends": matched = .friends
+        case "contacts", "contacts_only": matched = allowContacts ? .contacts : .friends
+        case "nobody", "no_one", "only_me": matched = .nobody
+        default: matched = fallback
+        }
+        return (!allowContacts && matched == .contacts) ? .friends : matched
+    }
+}
+
+enum TelefamChatPatternKind: String, CaseIterable {
+    case clean, home, meadow, winter, ocean, math, botanical, romance, fireside, arcade, cosmic, safari, telefam
+}
+
+struct TelefamChatThemeSpec: Identifiable, Equatable {
+    let themeId: String
+    let title: String
+    let patternKind: TelefamChatPatternKind
+    let lightBgHex: UInt32
+    let darkBgHex: UInt32
+    let lightPatternAlpha: Double
+    let darkPatternAlpha: Double
+    let accentStartHex: UInt32
+    let accentEndHex: UInt32
+    let selectionHex: UInt32
+
+    var id: String { themeId }
+}
+
+struct TelefamChatBubbleColorOption: Identifiable, Equatable {
+    let colorId: String
+    let label: String
+    let lightStartHex: UInt32
+    let lightEndHex: UInt32
+    let darkStartHex: UInt32
+    let darkEndHex: UInt32
+
+    var id: String { colorId }
+}
+
+struct TelefamChatPrivacySettings: Codable, Equatable {
+    var messageRequests: String = TelefamChatAudienceOption.anyone.rawValue
+    var whoCanCall: String = TelefamChatAudienceOption.anyone.rawValue
+    var whoCanScreenshot: String = TelefamChatAudienceOption.nobody.rawValue
+    var whoCanShareChats: String = TelefamChatAudienceOption.nobody.rawValue
+    var whoCanCopyMessages: String = TelefamChatAudienceOption.nobody.rawValue
+    var whoCanDownloadMedia: String = TelefamChatAudienceOption.anyone.rawValue
+    var chatThemeId: String = "none"
+    var bubbleColorId: String = "cyan"
+    var readReceipts: String = TelefamChatAudienceOption.anyone.rawValue
+    var typingIndicators: String = TelefamChatAudienceOption.nobody.rawValue
+    var onlineIndicators: String = TelefamChatAudienceOption.nobody.rawValue
+    var updatedAtMs: Int64 = 0
+
+    enum CodingKeys: String, CodingKey {
+        case messageRequests = "message_requests"
+        case whoCanCall = "who_can_call"
+        case whoCanScreenshot = "who_can_screenshot"
+        case whoCanShareChats = "who_can_share_chats"
+        case whoCanCopyMessages = "who_can_copy_messages"
+        case whoCanDownloadMedia = "who_can_download_media"
+        case chatThemeId = "chat_theme_id"
+        case bubbleColorId = "bubble_color_id"
+        case readReceipts = "read_receipts"
+        case typingIndicators = "typing_indicators"
+        case onlineIndicators = "online_indicators"
+        case updatedAtMs = "updated_at_ms"
+    }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        messageRequests = TelefamChatAudienceOption.fromApi(try c.decodeIfPresent(String.self, forKey: .messageRequests), allowContacts: true, fallback: .anyone).rawValue
+        whoCanCall = TelefamChatAudienceOption.fromApi(try c.decodeIfPresent(String.self, forKey: .whoCanCall), allowContacts: true, fallback: .anyone).rawValue
+        whoCanScreenshot = TelefamChatAudienceOption.fromApi(try c.decodeIfPresent(String.self, forKey: .whoCanScreenshot), allowContacts: false, fallback: .nobody).rawValue
+        whoCanShareChats = TelefamChatAudienceOption.fromApi(try c.decodeIfPresent(String.self, forKey: .whoCanShareChats), allowContacts: false, fallback: .nobody).rawValue
+        whoCanCopyMessages = TelefamChatAudienceOption.fromApi(try c.decodeIfPresent(String.self, forKey: .whoCanCopyMessages), allowContacts: false, fallback: .nobody).rawValue
+        whoCanDownloadMedia = TelefamChatAudienceOption.fromApi(try c.decodeIfPresent(String.self, forKey: .whoCanDownloadMedia), allowContacts: false, fallback: .anyone).rawValue
+        chatThemeId = TelefamChatPrivacyCatalog.themeById(try c.decodeIfPresent(String.self, forKey: .chatThemeId)).themeId
+        bubbleColorId = TelefamChatPrivacyCatalog.bubbleColorById(try c.decodeIfPresent(String.self, forKey: .bubbleColorId)).colorId
+        readReceipts = TelefamChatAudienceOption.fromApi(try c.decodeIfPresent(String.self, forKey: .readReceipts), allowContacts: false, fallback: .anyone).rawValue
+        typingIndicators = TelefamChatAudienceOption.fromApi(try c.decodeIfPresent(String.self, forKey: .typingIndicators), allowContacts: false, fallback: .nobody).rawValue
+        onlineIndicators = TelefamChatAudienceOption.fromApi(try c.decodeIfPresent(String.self, forKey: .onlineIndicators), allowContacts: false, fallback: .nobody).rawValue
+        updatedAtMs = try c.decodeIfPresent(Int64.self, forKey: .updatedAtMs) ?? 0
+    }
+}
+
+enum TelefamChatPrivacyCatalog {
+    static let audienceOptions4: [TelefamChatAudienceOption] = [.anyone, .friends, .contacts, .nobody]
+    static let audienceOptions3: [TelefamChatAudienceOption] = [.anyone, .friends, .nobody]
+
+    static let themes: [TelefamChatThemeSpec] = [
+        TelefamChatThemeSpec(themeId: "none", title: "Default", patternKind: .clean, lightBgHex: 0xF9FAFB, darkBgHex: 0x0E1014, lightPatternAlpha: 0.04, darkPatternAlpha: 0.04, accentStartHex: 0xD91E2A, accentEndHex: 0xE11319, selectionHex: 0xD91E2A),
+        TelefamChatThemeSpec(themeId: "classic_home", title: "Cozy Home", patternKind: .home, lightBgHex: 0xEAF3FC, darkBgHex: 0x0C1219, lightPatternAlpha: 0.14, darkPatternAlpha: 0.14, accentStartHex: 0x0EA5E9, accentEndHex: 0x0284C7, selectionHex: 0x38BDF8),
+        TelefamChatThemeSpec(themeId: "spring_meadow", title: "Spring Meadow", patternKind: .meadow, lightBgHex: 0xEAF5EE, darkBgHex: 0x0C140E, lightPatternAlpha: 0.16, darkPatternAlpha: 0.15, accentStartHex: 0x16A34A, accentEndHex: 0x22C55E, selectionHex: 0x7ED957),
+        TelefamChatThemeSpec(themeId: "arctic_snow", title: "Arctic Frost", patternKind: .winter, lightBgHex: 0xEBF3F9, darkBgHex: 0x0B131A, lightPatternAlpha: 0.15, darkPatternAlpha: 0.14, accentStartHex: 0x2B7A9E, accentEndHex: 0x5BA4CF, selectionHex: 0x60A5FA),
+        TelefamChatThemeSpec(themeId: "deep_sea", title: "Crystal Ocean", patternKind: .ocean, lightBgHex: 0xE9F2F8, darkBgHex: 0x09121C, lightPatternAlpha: 0.15, darkPatternAlpha: 0.14, accentStartHex: 0x3B82F6, accentEndHex: 0x06B6D4, selectionHex: 0x22D3EE),
+        TelefamChatThemeSpec(themeId: "academia_math", title: "Academia", patternKind: .math, lightBgHex: 0xEBF5F2, darkBgHex: 0x0B1412, lightPatternAlpha: 0.14, darkPatternAlpha: 0.14, accentStartHex: 0x0D9488, accentEndHex: 0x2DD4BF, selectionHex: 0x2DD4BF),
+        TelefamChatThemeSpec(themeId: "botanical_tulip", title: "Botanical", patternKind: .botanical, lightBgHex: 0xFAF0F3, darkBgHex: 0x150C10, lightPatternAlpha: 0.14, darkPatternAlpha: 0.14, accentStartHex: 0xE14D6A, accentEndHex: 0xA855F7, selectionHex: 0xF472B6),
+        TelefamChatThemeSpec(themeId: "neon_romance", title: "Velvet Heart", patternKind: .romance, lightBgHex: 0xF5EFFA, darkBgHex: 0x130C18, lightPatternAlpha: 0.14, darkPatternAlpha: 0.14, accentStartHex: 0x7C3AED, accentEndHex: 0xEC4899, selectionHex: 0xC084FC),
+        TelefamChatThemeSpec(themeId: "festive_fireside", title: "Warm Hearth", patternKind: .fireside, lightBgHex: 0xFBF2EB, darkBgHex: 0x15100B, lightPatternAlpha: 0.14, darkPatternAlpha: 0.14, accentStartHex: 0xD97706, accentEndHex: 0xEA580C, selectionHex: 0xFB923C),
+        TelefamChatThemeSpec(themeId: "retro_arcade", title: "Retro Arcade", patternKind: .arcade, lightBgHex: 0xF3EFFB, darkBgHex: 0x0D0B18, lightPatternAlpha: 0.14, darkPatternAlpha: 0.14, accentStartHex: 0xA855F7, accentEndHex: 0xF59E0B, selectionHex: 0xF472B6),
+        TelefamChatThemeSpec(themeId: "cosmic_nebula", title: "Cosmic Orbit", patternKind: .cosmic, lightBgHex: 0xEEF1FA, darkBgHex: 0x0A0D18, lightPatternAlpha: 0.14, darkPatternAlpha: 0.14, accentStartHex: 0x4F46E5, accentEndHex: 0x06B6D4, selectionHex: 0x818CF8),
+        TelefamChatThemeSpec(themeId: "safari_sunset", title: "Savanna Dusk", patternKind: .safari, lightBgHex: 0xFBF1EC, darkBgHex: 0x170E0B, lightPatternAlpha: 0.14, darkPatternAlpha: 0.14, accentStartHex: 0xB45309, accentEndHex: 0xE11D48, selectionHex: 0xF97316),
+        TelefamChatThemeSpec(themeId: "telefam_crimson", title: "Telefam Ruby", patternKind: .telefam, lightBgHex: 0xFDF0F1, darkBgHex: 0x14090B, lightPatternAlpha: 0.14, darkPatternAlpha: 0.14, accentStartHex: 0xC80A0F, accentEndHex: 0xEF233C, selectionHex: 0xEF4444),
+    ]
+
+    static let bubbleColors: [TelefamChatBubbleColorOption] = [
+        TelefamChatBubbleColorOption(colorId: "cyan", label: "Lagoon Cyan", lightStartHex: 0x0097A7, lightEndHex: 0x00BCD4, darkStartHex: 0x00ACC1, darkEndHex: 0x26C6DA),
+        TelefamChatBubbleColorOption(colorId: "crimson", label: "Telefam Crimson", lightStartHex: 0xC80A0F, lightEndHex: 0xE11319, darkStartHex: 0xD91E2A, darkEndHex: 0xEF4444),
+        TelefamChatBubbleColorOption(colorId: "emerald", label: "Emerald Spring", lightStartHex: 0x15803D, lightEndHex: 0x22C55E, darkStartHex: 0x1B8E4B, darkEndHex: 0x2DB866),
+        TelefamChatBubbleColorOption(colorId: "azure", label: "Ocean Azure", lightStartHex: 0x0284C7, lightEndHex: 0x38BDF8, darkStartHex: 0x1D9BF0, darkEndHex: 0x0EA5E9),
+        TelefamChatBubbleColorOption(colorId: "violet", label: "Royal Violet", lightStartHex: 0x6D28D9, lightEndHex: 0x8B5CF6, darkStartHex: 0x7C3AED, darkEndHex: 0xA78BFA),
+        TelefamChatBubbleColorOption(colorId: "amber", label: "Sunset Amber", lightStartHex: 0xC2410C, lightEndHex: 0xF97316, darkStartHex: 0xD97706, darkEndHex: 0xF59E0B),
+    ]
+
+    static func themeById(_ id: String?) -> TelefamChatThemeSpec {
+        let key = (id ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return themes.first(where: { $0.themeId == key }) ?? themes[0]
+    }
+
+    static func bubbleColorById(_ id: String?) -> TelefamChatBubbleColorOption {
+        let key = (id ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return bubbleColors.first(where: { $0.colorId == key }) ?? bubbleColors[0]
+    }
+
+    static func color(_ hex: UInt32, opacity: Double = 1.0) -> Color {
+        Color(
+            red: Double((hex >> 16) & 0xFF) / 255.0,
+            green: Double((hex >> 8) & 0xFF) / 255.0,
+            blue: Double(hex & 0xFF) / 255.0,
+            opacity: opacity
+        )
+    }
+}
+
 struct TelefamSettingsBundle: Codable, Equatable {
     var privacy = TelefamPrivacySettings()
     var notifications = TelefamNotificationSettings()
     var contentPreferences = TelefamContentPreferences()
+    var chatPrivacy = TelefamChatPrivacySettings()
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        privacy = try c.decodeIfPresent(TelefamPrivacySettings.self, forKey: .privacy) ?? TelefamPrivacySettings()
+        notifications = try c.decodeIfPresent(TelefamNotificationSettings.self, forKey: .notifications) ?? TelefamNotificationSettings()
+        contentPreferences = try c.decodeIfPresent(TelefamContentPreferences.self, forKey: .contentPreferences) ?? TelefamContentPreferences()
+        chatPrivacy = try c.decodeIfPresent(TelefamChatPrivacySettings.self, forKey: .chatPrivacy) ?? TelefamChatPrivacySettings()
+    }
 }
 
 struct TelefamRestrictedAccount: Identifiable, Codable, Equatable {
@@ -822,10 +996,32 @@ final class TelefamIosSettingsStore: ObservableObject {
         let privacy: TelefamPrivacySettings?
         let notifications: TelefamNotificationSettings?
         let contentPreferences: TelefamContentPreferences?
+        let chatPrivacy: TelefamChatPrivacySettings?
 
         enum CodingKeys: String, CodingKey {
             case success, privacy, notifications
             case contentPreferences = "content_preferences"
+            case chatPrivacy = "chat_privacy"
+        }
+    }
+
+    private struct ChatPrivacyResp: Codable {
+        let success: Bool
+        let chatPrivacy: TelefamChatPrivacySettings?
+
+        enum CodingKeys: String, CodingKey {
+            case success
+            case chatPrivacy = "chat_privacy"
+        }
+    }
+
+    private struct ChatThemeUpdatePayload: Codable {
+        let chatThemeId: String
+        let bubbleColorId: String
+
+        enum CodingKeys: String, CodingKey {
+            case chatThemeId = "chat_theme_id"
+            case bubbleColorId = "bubble_color_id"
         }
     }
 
@@ -843,6 +1039,7 @@ final class TelefamIosSettingsStore: ObservableObject {
             if let p = parsed.privacy { next.privacy = p }
             if let n = parsed.notifications { next.notifications = n }
             if let c = parsed.contentPreferences { next.contentPreferences = c }
+            if let cp = parsed.chatPrivacy { next.chatPrivacy = cp }
             bundle = next
             writeProtected(bundle, to: "bundle")
         }
@@ -852,6 +1049,69 @@ final class TelefamIosSettingsStore: ObservableObject {
         async let t = refreshSupportTickets()
         async let s = refreshSystemStatus()
         _ = await (b, m, t, s)
+    }
+
+    func saveChatPrivacy(_ next: TelefamChatPrivacySettings) async {
+        var stamped = next
+        stamped.chatThemeId = TelefamChatPrivacyCatalog.themeById(next.chatThemeId).themeId
+        stamped.bubbleColorId = TelefamChatPrivacyCatalog.bubbleColorById(next.bubbleColorId).colorId
+        stamped.updatedAtMs = Int64(Date().timeIntervalSince1970 * 1000)
+        bundle.chatPrivacy = stamped
+        writeProtected(bundle, to: "bundle")
+
+        guard let encoded = try? JSONEncoder().encode(stamped) else { return }
+        if await pushChatPrivacy(encoded) { return }
+        enqueueOp(kind: "chat_privacy", data: encoded)
+        showToast("Saved locally — will sync when online")
+    }
+
+    private func pushChatPrivacy(_ body: Data) async -> Bool {
+        let req = authorizedRequest(url: baseURL.appendingPathComponent("v1/chat/privacy"), method: "PUT", body: body)
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              let http = resp as? HTTPURLResponse,
+              (200...299).contains(http.statusCode),
+              let parsed = try? JSONDecoder().decode(ChatPrivacyResp.self, from: data),
+              parsed.success else {
+            return false
+        }
+        if let cp = parsed.chatPrivacy {
+            bundle.chatPrivacy = cp
+            writeProtected(bundle, to: "bundle")
+        }
+        return true
+    }
+
+    func saveChatThemeAndBubble(themeId: String? = nil, bubbleColorId: String? = nil) async {
+        var cur = bundle.chatPrivacy
+        let resolvedTheme = themeId.map { TelefamChatPrivacyCatalog.themeById($0).themeId } ?? cur.chatThemeId
+        let resolvedBubble = bubbleColorId.map { TelefamChatPrivacyCatalog.bubbleColorById($0).colorId } ?? cur.bubbleColorId
+        cur.chatThemeId = resolvedTheme
+        cur.bubbleColorId = resolvedBubble
+        cur.updatedAtMs = Int64(Date().timeIntervalSince1970 * 1000)
+        bundle.chatPrivacy = cur
+        writeProtected(bundle, to: "bundle")
+
+        let payload = ChatThemeUpdatePayload(chatThemeId: resolvedTheme, bubbleColorId: resolvedBubble)
+        guard let encoded = try? JSONEncoder().encode(payload) else { return }
+        if await pushChatTheme(encoded) { return }
+        enqueueOp(kind: "chat_theme", data: encoded)
+        showToast("Saved locally — will sync when online")
+    }
+
+    private func pushChatTheme(_ body: Data) async -> Bool {
+        let req = authorizedRequest(url: baseURL.appendingPathComponent("v1/chat/theme"), method: "PUT", body: body)
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              let http = resp as? HTTPURLResponse,
+              (200...299).contains(http.statusCode),
+              let parsed = try? JSONDecoder().decode(ChatPrivacyResp.self, from: data),
+              parsed.success else {
+            return false
+        }
+        if let cp = parsed.chatPrivacy {
+            bundle.chatPrivacy = cp
+            writeProtected(bundle, to: "bundle")
+        }
+        return true
     }
 
     func savePrivacy(_ next: TelefamPrivacySettings) async {
@@ -1332,7 +1592,9 @@ final class TelefamIosSettingsStore: ObservableObject {
     }
 
     private func enqueueOp(kind: String, data: Data) {
-        outboxOps.removeAll { $0.opKind == kind && (kind == "privacy" || kind == "notifications" || kind == "content_prefs") }
+        outboxOps.removeAll {
+            $0.opKind == kind && (kind == "privacy" || kind == "notifications" || kind == "content_prefs" || kind == "chat_privacy" || kind == "chat_theme")
+        }
         outboxOps.append(
             TelefamPendingSettingsOp(
                 opId: UUID().uuidString,
@@ -1356,6 +1618,10 @@ final class TelefamIosSettingsStore: ObservableObject {
                 ok = await pushNotifications(op.payloadData)
             case "content_prefs":
                 ok = await pushContentPreferences(op.payloadData)
+            case "chat_privacy":
+                ok = await pushChatPrivacy(op.payloadData)
+            case "chat_theme":
+                ok = await pushChatTheme(op.payloadData)
             case "unblock":
                 if let uid = String(data: op.payloadData, encoding: .utf8), !uid.isEmpty {
                     ok = await pushSimpleUserAction(path: "v1/users/\(uid)/unblock")

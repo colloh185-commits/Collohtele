@@ -37,6 +37,7 @@ struct TelefamIosHomeView: View {
     @State private var isBottomBarVisible: Bool = true
     @State private var postLaunchTarget: TelefamIosPostLaunchTarget? = nil
     @State private var showFeedSearch: Bool = false
+    @State private var showChatPrivacy: Bool = false
     @State private var profileBackStack: [String] = []
     @State private var comingSoonBanner: String? = nil
     @State private var chatFilterQuery: String = ""
@@ -76,7 +77,11 @@ struct TelefamIosHomeView: View {
             ZStack(alignment: .bottom) {
                 VStack(spacing: 0) {
                     if activeTab == .contacts {
-                        TelefamContactsTopHeaderView(store: contactsStore, themeMode: $themeMode)
+                        TelefamContactsTopHeaderView(
+                            store: contactsStore,
+                            themeMode: $themeMode,
+                            onOpenPrivacy: { showChatPrivacy = true }
+                        )
                     } else if activeTab != .feeds && activeTab != .profile {
                         chatsTopHeader
                     }
@@ -117,6 +122,34 @@ struct TelefamIosHomeView: View {
                         .padding(.bottom, 84)
                         .transition(.opacity)
                 }
+
+                if let incoming = sessionStore.incomingLoginRequest, sessionStore.loginApprovedOverlay == nil {
+                    TelefamIosIncomingLoginRequestView(
+                        request: incoming,
+                        isResponding: sessionStore.isRespondingToLoginRequest,
+                        actionError: sessionStore.loginRequestActionError,
+                        onDeny: {
+                            Task {
+                                await sessionStore.respondToIncomingLoginRequest(accept: false)
+                                if sessionStore.incomingLoginRequest == nil {
+                                    showComingSoon("Login request denied and device blocked.")
+                                }
+                            }
+                        },
+                        onAccept: {
+                            Task { await sessionStore.respondToIncomingLoginRequest(accept: true) }
+                        }
+                    )
+                    .zIndex(90)
+                }
+
+                if let approved = sessionStore.loginApprovedOverlay {
+                    TelefamIosLoginApprovedView(
+                        approved: approved,
+                        onDone: { sessionStore.dismissLoginApprovedOverlay() }
+                    )
+                    .zIndex(95)
+                }
             }
             .animation(.easeInOut(duration: 0.2), value: isBottomBarVisible)
             .onChange(of: contactsStore.toastMessage) { msg in
@@ -128,6 +161,11 @@ struct TelefamIosHomeView: View {
         }
         .task {
             await settingsStore.refreshAll()
+            sessionStore.startIncomingLoginRequestPoller()
+            await sessionStore.captureAndSyncDeviceContext()
+        }
+        .onDisappear {
+            sessionStore.stopIncomingLoginRequestPoller()
         }
         .fullScreenCover(isPresented: $showFeedSearch) {
             TelefamIosSearchView(
@@ -193,6 +231,10 @@ struct TelefamIosHomeView: View {
                 .onDisappear {
                     Task { await feedStore.refresh() }
                 }
+        }
+        .fullScreenCover(isPresented: $showChatPrivacy) {
+            TelefamIosChatPrivacyAndThemesView(settingsStore: settingsStore)
+                .preferredColorScheme(themeMode.preferredColorScheme)
         }
         .preferredColorScheme(themeMode.preferredColorScheme)
     }
@@ -294,6 +336,19 @@ struct TelefamIosHomeView: View {
                     .background(Color.white.opacity(0.18))
                     .clipShape(Circle())
             }
+
+            Button {
+                showChatPrivacy = true
+            } label: {
+                Image(systemName: "ellipsis")
+                    .rotationEffect(.degrees(90))
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.white)
+                    .frame(width: 36, height: 36)
+                    .background(Color.white.opacity(0.18))
+                    .clipShape(Circle())
+            }
+            .accessibilityLabel("Privacy and chat themes")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
@@ -304,36 +359,58 @@ struct TelefamIosHomeView: View {
     private func tabBody(isCompactWidth: Bool, safeBottomInset: CGFloat) -> some View {
         switch activeTab {
         case .chats:
-            VStack(spacing: 14) {
-                Spacer()
-                Image(systemName: "bubble.left.and.bubble.right")
-                    .font(.system(size: 28))
-                    .foregroundColor(TelefamPalette.crimson)
-                    .frame(width: 62, height: 62)
-                    .background(TelefamPalette.blush(colorScheme))
-                    .clipShape(Circle())
-                Text("Start a conversation")
-                    .font(.system(size: 18, weight: .bold))
-                    .foregroundColor(TelefamPalette.textPrimary(colorScheme))
-                Text("Select someone from your contacts to connect.")
-                    .font(.system(size: 13))
-                    .foregroundColor(TelefamPalette.textMuted(colorScheme))
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 32)
-                Button {
-                    selectTab(.contacts)
-                } label: {
-                    Label("Browse contacts", systemImage: "person.2")
-                        .font(.system(size: 14, weight: .semibold))
+            let cp = settingsStore.bundle.chatPrivacy
+            let activeTheme = TelefamChatPrivacyCatalog.themeById(cp.chatThemeId)
+            let activeBubble = TelefamChatPrivacyCatalog.bubbleColorById(cp.bubbleColorId)
+            let bubbleColor = TelefamChatPrivacyCatalog.color(colorScheme == .dark ? activeBubble.darkStartHex : activeBubble.lightStartHex)
+            ZStack {
+                TelefamIosChatWallpaperView(theme: activeTheme)
+                    .ignoresSafeArea(edges: .bottom)
+
+                VStack(spacing: 14) {
+                    Spacer()
+                    Image(systemName: "bubble.left.and.bubble.right")
+                        .font(.system(size: 28))
                         .foregroundColor(.white)
-                        .padding(.horizontal, 22)
-                        .frame(height: 44)
-                        .background(TelefamPalette.crimson)
-                        .clipShape(Capsule())
+                        .frame(width: 62, height: 62)
+                        .background(bubbleColor)
+                        .clipShape(Circle())
+                    Text("Start a conversation")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundColor(TelefamPalette.textPrimary(colorScheme))
+                    Text("Theme: \(activeTheme.title)  |  Bubble: \(activeBubble.label)")
+                        .font(.system(size: 13))
+                        .foregroundColor(TelefamPalette.textMuted(colorScheme))
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 32)
+                    HStack(spacing: 10) {
+                        Button {
+                            selectTab(.contacts)
+                        } label: {
+                            Label("Browse contacts", systemImage: "person.2")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 18)
+                                .frame(height: 44)
+                                .background(bubbleColor)
+                                .clipShape(Capsule())
+                        }
+                        Button {
+                            showChatPrivacy = true
+                        } label: {
+                            Label("Themes", systemImage: "paintpalette")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundColor(TelefamPalette.textPrimary(colorScheme))
+                                .padding(.horizontal, 16)
+                                .frame(height: 44)
+                                .background(TelefamPalette.surface(colorScheme).opacity(0.92))
+                                .clipShape(Capsule())
+                        }
+                    }
+                    Spacer()
                 }
-                Spacer()
+                .frame(maxWidth: .infinity)
             }
-            .frame(maxWidth: .infinity)
         case .contacts:
             TelefamIosContactsView(
                 store: contactsStore,

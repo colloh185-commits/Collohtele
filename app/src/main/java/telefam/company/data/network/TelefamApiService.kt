@@ -34,6 +34,90 @@ data class RequestOtpDto(val email: String)
 data class RequestOtpResponseDto(
   val success: Boolean,
   @Json(name = "cooldown_seconds") val cooldownSeconds: Long = 60L,
+  @Json(name = "requires_device_approval") val requiresDeviceApproval: Boolean = false,
+  @Json(name = "request_id") val requestId: String = "",
+  @Json(name = "poll_token") val pollToken: String = "",
+  @Json(name = "target_device_name") val targetDeviceName: String = "",
+  @Json(name = "target_location") val targetLocation: String = "",
+  @Json(name = "request_time_ms") val requestTimeMs: Long = 0L,
+  @Json(name = "expires_in_seconds") val expiresInSeconds: Long = 60L,
+  @Json(name = "try_another_way_provider") val tryAnotherWayProvider: String = "google",
+)
+
+@JsonClass(generateAdapter = true)
+data class LoginApprovalStatusResponseDto(
+  val success: Boolean = false,
+  val status: String = "pending",
+  val blocked: Boolean = false,
+  @Json(name = "remaining_seconds") val remainingSeconds: Long = 0L,
+  @Json(name = "target_device_name") val targetDeviceName: String = "",
+  @Json(name = "target_location") val targetLocation: String = "",
+  @Json(name = "user_id") val userId: String = "",
+  @Json(name = "session_token") val sessionToken: String = "",
+  @Json(name = "refresh_token") val refreshToken: String = "",
+  @Json(name = "access_expires_in_seconds") val accessExpiresInSec: Long = 900L,
+  @Json(name = "refresh_expires_in_seconds") val refreshExpiresInSec: Long = 2_592_000L,
+  val email: String = "",
+  @Json(name = "suggested_full_name") val suggestedFullName: String = "",
+  @Json(name = "suggested_username") val suggestedUsername: String = "",
+  @Json(name = "profile_completed") val profileCompleted: Boolean = false,
+)
+
+@JsonClass(generateAdapter = true)
+data class PendingLoginRequestItemDto(
+  @Json(name = "request_id") val requestId: String = "",
+  @Json(name = "device_name") val deviceName: String = "",
+  val location: String = "",
+  @Json(name = "ip_address_masked") val ipAddressMasked: String = "",
+  @Json(name = "requested_at_ms") val requestedAtMs: Long = 0L,
+  @Json(name = "expires_at_ms") val expiresAtMs: Long = 0L,
+  @Json(name = "remaining_seconds") val remainingSeconds: Long = 60L,
+)
+
+@JsonClass(generateAdapter = true)
+data class PendingLoginRequestsResponseDto(
+  val success: Boolean = false,
+  val requests: List<PendingLoginRequestItemDto> = emptyList(),
+)
+
+@JsonClass(generateAdapter = true)
+data class RespondLoginRequestDto(
+  val action: String, // "accept" or "deny"
+)
+
+@JsonClass(generateAdapter = true)
+data class RespondLoginRequestResponseDto(
+  val success: Boolean = false,
+  @Json(name = "request_id") val requestId: String = "",
+  val status: String = "",
+  @Json(name = "device_name") val deviceName: String = "",
+  val location: String = "",
+  @Json(name = "requested_at_ms") val requestedAtMs: Long = 0L,
+)
+
+@JsonClass(generateAdapter = true)
+data class DeviceContextTelemetryDto(
+  @Json(name = "device_name") val deviceName: String = "",
+  val platform: String = "android",
+  @Json(name = "hardware_model") val hardwareModel: String = "",
+  @Json(name = "carrier_country_iso") val carrierCountryIso: String = "",
+  @Json(name = "sim_country_iso") val simCountryIso: String = "",
+  @Json(name = "gps_country_iso") val gpsCountryIso: String = "",
+  @Json(name = "gps_city") val gpsCity: String = "",
+  @Json(name = "locale_country_iso") val localeCountryIso: String = "",
+  val timezone: String = "",
+  @Json(name = "lat_bucket") val latBucket: Double = 0.0,
+  @Json(name = "lon_bucket") val lonBucket: Double = 0.0,
+  @Json(name = "signal_source") val signalSource: String = "",
+  @Json(name = "captured_at_ms") val capturedAtMs: Long = 0L,
+)
+
+@JsonClass(generateAdapter = true)
+data class DeviceContextTelemetryResponseDto(
+  val success: Boolean = false,
+  @Json(name = "effective_country_iso") val effectiveCountryIso: String = "",
+  @Json(name = "monetization_country") val monetizationCountry: String = "",
+  @Json(name = "server_epoch_ms") val serverEpochMs: Long = 0L,
 )
 
 @JsonClass(generateAdapter = true)
@@ -50,6 +134,8 @@ data class OAuthDto(
   val provider: String,
   @Json(name = "identity_token") val identityToken: String,
   val nonce: String? = null,
+  @Json(name = "expected_email") val expectedEmail: String? = null,
+  @Json(name = "approval_request_id") val approvalRequestId: String? = null,
 )
 
 @JsonClass(generateAdapter = true)
@@ -569,11 +655,65 @@ data class ContentPreferencesDto(
 )
 
 @JsonClass(generateAdapter = true)
+data class ChatPrivacySettingsDto(
+  @Json(name = "message_requests") val messageRequests: String = "anyone",
+  @Json(name = "who_can_call") val whoCanCall: String = "anyone",
+  @Json(name = "who_can_screenshot") val whoCanScreenshot: String = "nobody",
+  @Json(name = "who_can_share_chats") val whoCanShareChats: String = "nobody",
+  @Json(name = "who_can_copy_messages") val whoCanCopyMessages: String = "nobody",
+  @Json(name = "who_can_download_media") val whoCanDownloadMedia: String = "anyone",
+  @Json(name = "chat_theme_id") val chatThemeId: String = "none",
+  @Json(name = "bubble_color_id") val bubbleColorId: String = "cyan",
+  @Json(name = "read_receipts") val readReceipts: String = "anyone",
+  @Json(name = "typing_indicators") val typingIndicators: String = "nobody",
+  @Json(name = "online_indicators") val onlineIndicators: String = "nobody",
+  @Json(name = "updated_at_ms") val updatedAtMs: Long = 0L,
+)
+
+@JsonClass(generateAdapter = true)
+data class ChatThemeCatalogItemDto(
+  @Json(name = "theme_id") val themeId: String = "",
+  val title: String = "",
+  @Json(name = "pattern_kind") val patternKind: String = "",
+  @Json(name = "light_bg_hex") val lightBgHex: String = "",
+  @Json(name = "dark_bg_hex") val darkBgHex: String = "",
+  @Json(name = "accent_start_hex") val accentStartHex: String = "",
+  @Json(name = "accent_end_hex") val accentEndHex: String = "",
+  @Json(name = "selection_hex") val selectionHex: String = "",
+)
+
+@JsonClass(generateAdapter = true)
+data class ChatBubbleColorDto(
+  @Json(name = "color_id") val colorId: String = "",
+  val label: String = "",
+  @Json(name = "light_start_hex") val lightStartHex: String = "",
+  @Json(name = "light_end_hex") val lightEndHex: String = "",
+  @Json(name = "dark_start_hex") val darkStartHex: String = "",
+  @Json(name = "dark_end_hex") val darkEndHex: String = "",
+)
+
+@JsonClass(generateAdapter = true)
+data class ChatPrivacyResponseDto(
+  val success: Boolean = false,
+  @Json(name = "chat_privacy") val chatPrivacy: ChatPrivacySettingsDto? = null,
+  val themes: List<ChatThemeCatalogItemDto> = emptyList(),
+  @Json(name = "bubble_colors") val bubbleColors: List<ChatBubbleColorDto> = emptyList(),
+  @Json(name = "server_epoch_ms") val serverEpochMs: Long = 0L,
+)
+
+@JsonClass(generateAdapter = true)
+data class UpdateChatThemeRequestDto(
+  @Json(name = "chat_theme_id") val chatThemeId: String = "",
+  @Json(name = "bubble_color_id") val bubbleColorId: String = "",
+)
+
+@JsonClass(generateAdapter = true)
 data class SettingsBundleResponseDto(
   val success: Boolean = false,
   val privacy: PrivacySettingsDto? = null,
   val notifications: NotificationSettingsDto? = null,
   @Json(name = "content_preferences") val contentPreferences: ContentPreferencesDto? = null,
+  @Json(name = "chat_privacy") val chatPrivacy: ChatPrivacySettingsDto? = null,
   @Json(name = "server_epoch_ms") val serverEpochMs: Long = 0L,
 )
 
@@ -728,6 +868,34 @@ interface TelefamApiService {
     @Header("X-Telefam-Client-IP-Hint") ipFingerprint: String,
     @Body body: OAuthDto,
   ): Response<AuthSessionResponseDto>
+
+  @GET("v1/auth/login-requests/pending")
+  suspend fun getPendingLoginRequests(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+  ): Response<PendingLoginRequestsResponseDto>
+
+  @GET("v1/auth/login-requests/{id}/status")
+  suspend fun getLoginRequestStatus(
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Header("X-Telefam-Poll-Token") pollToken: String,
+    @Path("id") requestId: String,
+  ): Response<LoginApprovalStatusResponseDto>
+
+  @POST("v1/auth/login-requests/{id}/respond")
+  suspend fun respondToLoginRequest(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Path("id") requestId: String,
+    @Body body: RespondLoginRequestDto,
+  ): Response<RespondLoginRequestResponseDto>
+
+  @POST("v1/telemetry/device-context")
+  suspend fun syncDeviceContext(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Body body: DeviceContextTelemetryDto,
+  ): Response<DeviceContextTelemetryResponseDto>
 
   @GET("v1/profile/check-username")
   suspend fun checkUsername(
@@ -1080,6 +1248,26 @@ interface TelefamApiService {
     @Body body: LogoutRequestDto,
   ): Response<GenericSuccessDto>
 
+  @GET("v1/chat/privacy")
+  suspend fun getChatPrivacy(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+  ): Response<ChatPrivacyResponseDto>
+
+  @PUT("v1/chat/privacy")
+  suspend fun updateChatPrivacy(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Body body: ChatPrivacySettingsDto,
+  ): Response<ChatPrivacyResponseDto>
+
+  @PUT("v1/chat/theme")
+  suspend fun updateChatTheme(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Body body: UpdateChatThemeRequestDto,
+  ): Response<ChatPrivacyResponseDto>
+
   @GET
   suspend fun downloadMedia(@Url url: String): Response<ResponseBody>
 
@@ -1098,17 +1286,32 @@ interface TelefamApiService {
       return false
     }
 
-    fun create(baseUrl: String, enforceHttps: Boolean = !BuildConfig.DEBUG): TelefamApiService? {
+    fun create(
+      baseUrl: String,
+      enforceHttps: Boolean = !BuildConfig.DEBUG,
+      deviceHeaderProvider: (() -> Map<String, String>)? = null,
+    ): TelefamApiService? {
       val trimmed = baseUrl.trim()
       if (!isAllowedBaseUrl(trimmed, enforceHttps)) return null
       val normalizedUrl = if (trimmed.endsWith("/")) trimmed else "$trimmed/"
       val moshi = Moshi.Builder().addLast(KotlinJsonAdapterFactory()).build()
-      val okHttp = OkHttpClient.Builder()
+      val clientBuilder = OkHttpClient.Builder()
         .connectTimeout(12, TimeUnit.SECONDS)
         .readTimeout(120, TimeUnit.SECONDS)
         .writeTimeout(300, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
-        .build()
+      if (deviceHeaderProvider != null) {
+        clientBuilder.addInterceptor { chain ->
+          val reqBuilder = chain.request().newBuilder()
+          deviceHeaderProvider().forEach { (k, v) ->
+            if (v.isNotBlank() && chain.request().header(k) == null) {
+              reqBuilder.header(k, v)
+            }
+          }
+          chain.proceed(reqBuilder.build())
+        }
+      }
+      val okHttp = clientBuilder.build()
 
       return Retrofit.Builder()
         .baseUrl(normalizedUrl)

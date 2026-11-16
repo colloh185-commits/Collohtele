@@ -417,6 +417,7 @@ struct TelefamContactsTopHeaderView: View {
     @Environment(\.colorScheme) private var colorScheme
     @ObservedObject var store: TelefamContactsStore
     @Binding var themeMode: TelefamThemeMode
+    var onOpenPrivacy: (() -> Void)? = nil
 
     var body: some View {
         VStack(spacing: 12) {
@@ -456,6 +457,19 @@ struct TelefamContactsTopHeaderView: View {
                         .frame(width: 36, height: 36)
                         .background(Color.white.opacity(0.18))
                         .clipShape(Circle())
+                }
+
+                if let onOpenPrivacy {
+                    Button(action: onOpenPrivacy) {
+                        Image(systemName: "ellipsis")
+                            .rotationEffect(.degrees(90))
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundColor(.white)
+                            .frame(width: 36, height: 36)
+                            .background(Color.white.opacity(0.18))
+                            .clipShape(Circle())
+                    }
+                    .accessibilityLabel("Privacy and chat themes")
                 }
             }
             .padding(.horizontal, 14)

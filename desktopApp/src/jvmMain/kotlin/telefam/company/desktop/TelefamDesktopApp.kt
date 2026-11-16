@@ -97,6 +97,10 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.toComposeImageBitmap
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
@@ -288,7 +292,12 @@ fun main() = application {
   val profileBackStack = remember { mutableStateListOf<String>() }
   var profileViewerState by remember { mutableStateOf<DesktopProfileViewerState?>(null) }
   var showSettingsScreen by remember { mutableStateOf(false) }
+  val chatPrivacyStack = remember { mutableStateListOf<DesktopChatPrivacyRoute>() }
   var settingsBundle by remember { mutableStateOf(apiClient.loadCachedSettingsBundle()) }
+  var incomingLoginRequest by remember { mutableStateOf<DesktopIncomingLoginRequestItem?>(null) }
+  var loginApprovedState by remember { mutableStateOf<DesktopLoginApprovedState?>(null) }
+  var isRespondingToLoginReq by remember { mutableStateOf(false) }
+  var incomingLoginError by remember { mutableStateOf<String?>(null) }
 
   val openUserProfile: (String) -> Unit = { uid ->
     val clean = uid.trim()
@@ -314,6 +323,40 @@ fun main() = application {
     if (session.isAuthenticated) {
       val fetched = withContext(Dispatchers.IO) { apiClient.getSettings() }
       settingsBundle = fetched
+      withContext(Dispatchers.IO) {
+        apiClient.captureAndSyncDeviceContext()
+      }
+      while (isActive && session.isAuthenticated) {
+        val pendingRes = withContext(Dispatchers.IO) { apiClient.getPendingLoginRequests() }
+        if (pendingRes is DesktopApiOutcome.Ok) {
+          withContext(Dispatchers.IO) { apiClient.flushPendingDeviceContext() }
+          val head = pendingRes.data.firstOrNull { it.remainingSeconds > 0L }
+          if (head == null) {
+            if (!isRespondingToLoginReq) incomingLoginRequest = null
+          } else if (incomingLoginRequest?.requestId != head.requestId) {
+            incomingLoginRequest = head
+            incomingLoginError = null
+          }
+        }
+        delay(4000L)
+      }
+    } else {
+      incomingLoginRequest = null
+      loginApprovedState = null
+    }
+  }
+
+  LaunchedEffect(incomingLoginRequest?.requestId) {
+    val active = incomingLoginRequest ?: return@LaunchedEffect
+    while (incomingLoginRequest?.requestId == active.requestId) {
+      delay(1000L)
+      val cur = incomingLoginRequest ?: break
+      val next = cur.remainingSeconds - 1L
+      if (next <= 0L) {
+        incomingLoginRequest = null
+        break
+      }
+      incomingLoginRequest = cur.copy(remainingSeconds = next)
     }
   }
 
@@ -432,6 +475,23 @@ fun main() = application {
     onCloseRequest = ::exitApplication,
     title = "Telefam",
     state = WindowState(size = DpSize(1080.dp, 740.dp)),
+    onPreviewKeyEvent = { ev ->
+      if (ev.type == KeyEventType.KeyDown && ev.key == Key.Escape) {
+        when {
+          chatPrivacyStack.isNotEmpty() -> {
+            chatPrivacyStack.removeAt(chatPrivacyStack.lastIndex)
+            true
+          }
+          showSettingsScreen -> {
+            showSettingsScreen = false
+            true
+          }
+          else -> false
+        }
+      } else {
+        false
+      }
+    },
   ) {
     MaterialTheme(colorScheme = scheme) {
       Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
@@ -517,6 +577,17 @@ fun main() = application {
                       fontWeight = FontWeight.SemiBold,
                       modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
                     )
+                  }
+                  Spacer(modifier = Modifier.width(8.dp))
+                  Surface(
+                    onClick = { chatPrivacyStack.add(DesktopChatPrivacyRoute.PRIVACY) },
+                    shape = CircleShape,
+                    color = Color.White.copy(alpha = 0.2f),
+                    modifier = Modifier.size(38.dp),
+                  ) {
+                    Box(contentAlignment = Alignment.Center) {
+                      DesktopSvgIcon(DesktopIconKind.MORE_VERT, Color.White, 19.dp)
+                    }
                   }
                 }
 
@@ -747,7 +818,7 @@ fun main() = application {
                       initialIndex = 0,
                       activeTab = activeFeedTab,
                       isStandaloneViewer = false,
-                      isHostActive = !showFeedSearch && profileBackStack.isEmpty() && profileViewerState == null && postLaunchTarget == null && !showSettingsScreen,
+                      isHostActive = !showFeedSearch && profileBackStack.isEmpty() && profileViewerState == null && postLaunchTarget == null && !showSettingsScreen && chatPrivacyStack.isEmpty(),
                       contentPreferences = settingsBundle.contentPreferences,
                       onSelectTab = { activeFeedTab = it },
                       onLiveClick = { toastMessage = "LIVE — Coming soon" },
@@ -904,20 +975,48 @@ fun main() = application {
                   }
 
                   else -> {
-                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                      Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    val cp = settingsBundle.chatPrivacy
+                    val activeTheme = DesktopChatPrivacyCatalog.themeById(cp.chatThemeId)
+                    val activeBubble = DesktopChatPrivacyCatalog.bubbleColorById(cp.bubbleColorId)
+                    val bubbleAccent = Color(if (isDark) activeBubble.darkStartHex else activeBubble.lightStartHex)
+                    Box(modifier = Modifier.fillMaxSize()) {
+                      DesktopChatWallpaperCanvas(
+                        theme = activeTheme,
+                        isDark = isDark,
+                        modifier = Modifier.fillMaxSize(),
+                      )
+                      Column(
+                        modifier = Modifier
+                          .align(Alignment.Center)
+                          .widthIn(max = 460.dp)
+                          .padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                      ) {
                         Text(
                           text = "Start a conversation",
-                          fontSize = 18.sp,
+                          fontSize = 19.sp,
                           fontWeight = FontWeight.Bold,
                           color = MaterialTheme.colorScheme.onBackground,
                         )
-                        Spacer(modifier = Modifier.height(10.dp))
-                        Button(
-                          onClick = { activeTab = "contacts" },
-                          colors = ButtonDefaults.buttonColors(containerColor = DesktopCrimson),
-                        ) {
-                          Text("Open contacts", color = Color.White)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                          text = "Theme: ${activeTheme.title}  |  Bubble: ${activeBubble.label}",
+                          fontSize = 12.5.sp,
+                          color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(modifier = Modifier.height(14.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                          Button(
+                            onClick = { activeTab = "contacts" },
+                            colors = ButtonDefaults.buttonColors(containerColor = bubbleAccent),
+                          ) {
+                            Text("Open contacts", color = Color.White)
+                          }
+                          OutlinedButton(
+                            onClick = { chatPrivacyStack.add(DesktopChatPrivacyRoute.PRIVACY) },
+                          ) {
+                            Text("Privacy & Themes")
+                          }
                         }
                       }
                     }
@@ -1264,6 +1363,112 @@ fun main() = application {
               onToast = { toastMessage = it },
             )
           }
+
+          val topChatPrivacyRoute = chatPrivacyStack.lastOrNull()
+          if (topChatPrivacyRoute != null) {
+            DesktopChatPrivacyHostScreen(
+              route = topChatPrivacyRoute,
+              isDark = isDark,
+              state = settingsBundle.chatPrivacy,
+              onNavigateBack = {
+                if (chatPrivacyStack.isNotEmpty()) chatPrivacyStack.removeAt(chatPrivacyStack.lastIndex)
+              },
+              onUpdatePrivacy = { nextChat ->
+                settingsBundle = settingsBundle.copy(chatPrivacy = nextChat)
+                scope.launch {
+                  val synced = withContext(Dispatchers.IO) { apiClient.updateChatPrivacySettings(nextChat) }
+                  settingsBundle = synced
+                }
+              },
+              onOpenChatsTheme = { chatPrivacyStack.add(DesktopChatPrivacyRoute.CHATS_THEME) },
+              onOpenBubbleColors = { chatPrivacyStack.add(DesktopChatPrivacyRoute.BUBBLE_COLORS) },
+              onSelectTheme = { themeId ->
+                settingsBundle = settingsBundle.copy(
+                  chatPrivacy = settingsBundle.chatPrivacy.copy(chatThemeId = themeId),
+                )
+                if (chatPrivacyStack.isNotEmpty()) chatPrivacyStack.removeAt(chatPrivacyStack.lastIndex)
+                scope.launch {
+                  val synced = withContext(Dispatchers.IO) { apiClient.updateChatThemeAndBubble(themeId = themeId) }
+                  settingsBundle = synced
+                }
+                toastMessage = "Chat theme applied"
+              },
+              onSelectBubbleColor = { colorId ->
+                settingsBundle = settingsBundle.copy(
+                  chatPrivacy = settingsBundle.chatPrivacy.copy(bubbleColorId = colorId),
+                )
+                if (chatPrivacyStack.isNotEmpty()) chatPrivacyStack.removeAt(chatPrivacyStack.lastIndex)
+                scope.launch {
+                  val synced = withContext(Dispatchers.IO) { apiClient.updateChatThemeAndBubble(bubbleColorId = colorId) }
+                  settingsBundle = synced
+                }
+                toastMessage = "Message bubble colour updated"
+              },
+            )
+          }
+        }
+
+        val pendingReq = incomingLoginRequest
+        if (pendingReq != null && loginApprovedState == null) {
+          DesktopIncomingLoginRequestOverlay(
+            request = pendingReq,
+            isResponding = isRespondingToLoginReq,
+            actionError = incomingLoginError,
+            onDeny = {
+              if (!isRespondingToLoginReq) {
+                isRespondingToLoginReq = true
+                incomingLoginError = null
+                scope.launch {
+                  val res = withContext(Dispatchers.IO) {
+                    apiClient.respondToLoginRequest(pendingReq.requestId, accept = false)
+                  }
+                  isRespondingToLoginReq = false
+                  when (res) {
+                    is DesktopApiOutcome.Ok -> {
+                      incomingLoginRequest = null
+                      toastMessage = "Login request denied and device blocked."
+                    }
+                    is DesktopApiOutcome.Fail -> {
+                      incomingLoginError = res.message
+                    }
+                  }
+                }
+              }
+            },
+            onAccept = {
+              if (!isRespondingToLoginReq) {
+                isRespondingToLoginReq = true
+                incomingLoginError = null
+                scope.launch {
+                  val res = withContext(Dispatchers.IO) {
+                    apiClient.respondToLoginRequest(pendingReq.requestId, accept = true)
+                  }
+                  isRespondingToLoginReq = false
+                  when (res) {
+                    is DesktopApiOutcome.Ok -> {
+                      loginApprovedState = DesktopLoginApprovedState(
+                        deviceName = pendingReq.deviceName,
+                        location = pendingReq.location,
+                        requestedAtMs = pendingReq.requestedAtMs,
+                      )
+                      incomingLoginRequest = null
+                    }
+                    is DesktopApiOutcome.Fail -> {
+                      incomingLoginError = res.message
+                    }
+                  }
+                }
+              }
+            },
+          )
+        }
+
+        val approved = loginApprovedState
+        if (approved != null) {
+          DesktopLoginApprovedOverlay(
+            approved = approved,
+            onDone = { loginApprovedState = null },
+          )
         }
 
         if (toastMessage != null) {
@@ -1314,7 +1519,7 @@ private fun DesktopRailButton(
 private enum class DesktopIconKind {
   CLOSE, PLUS, TEXT_MODE, PHOTOS_MODE, VIDEO_MODE, MUSIC, TAG_PEOPLE, HASHTAG,
   MUTE, UNMUTE, CHECK, CHEVRON_RIGHT, HEART, HEART_FILLED, COMMENT, SHARE_ARROW,
-  BOOKMARK, BOOKMARK_FILLED, MORE_DOTS, CHEVRON_UP, CHEVRON_DOWN, BACK_ARROW,
+  BOOKMARK, BOOKMARK_FILLED, MORE_DOTS, MORE_VERT, CHEVRON_UP, CHEVRON_DOWN, BACK_ARROW,
   SEARCH, LIVE_TV, SPARKLE, CHATS, CONTACTS, FEEDS, PROFILE,
   INVITE_T_BADGE, LOCATION_PIN, GRID_2X2, FILTER_SLIDERS, PLAY_OUTLINE, CROWN, PERSON_ADD,
   GEAR, THREE_DASHES, CAMERA, EDIT_PENCIL, SHARE_NODES, LOCK, REPOST, FRIENDS_GROUP
@@ -1479,6 +1684,11 @@ private fun DesktopSvgIcon(
       DesktopIconKind.MORE_DOTS -> {
         listOf(0.24f, 0.50f, 0.76f).forEach { rx ->
           drawCircle(tint, radius = w * 0.08f, center = Offset(w * rx, h * 0.50f))
+        }
+      }
+      DesktopIconKind.MORE_VERT -> {
+        listOf(0.24f, 0.50f, 0.76f).forEach { ry ->
+          drawCircle(tint, radius = w * 0.08f, center = Offset(w * 0.50f, h * ry))
         }
       }
       DesktopIconKind.CHEVRON_UP -> {

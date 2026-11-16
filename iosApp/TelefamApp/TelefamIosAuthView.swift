@@ -105,80 +105,96 @@ struct TelefamIosAuthView: View {
             let isShort = proxy.size.height < 660
 
             ZStack {
-                TelefamPalette.background(colorScheme).ignoresSafeArea()
-                TelefamIosBackgroundWaves()
-
-                VStack {
-                    HStack {
-                        Spacer()
-                        Button {
-                            themeMode = themeMode.next
-                        } label: {
-                            HStack(spacing: 5) {
-                                Image(systemName: themeMode == .dark ? "moon.fill" : (themeMode == .light ? "sun.max.fill" : "circle.lefthalf.filled"))
-                                    .font(.system(size: 13, weight: .semibold))
-                                Text(themeMode.label)
-                                    .font(.system(size: 12, weight: .semibold))
-                            }
-                            .foregroundColor(TelefamPalette.crimson)
-                            .padding(.horizontal, 12)
-                            .frame(height: 36)
-                            .background(TelefamPalette.surface(colorScheme).opacity(0.92))
-                            .clipShape(Capsule())
-                            .overlay(Capsule().stroke(TelefamPalette.border(colorScheme), lineWidth: 1))
+                if let wait = sessionStore.approvalWaitState {
+                    TelefamIosDeviceApprovalWaitView(
+                        waitState: wait,
+                        isBusy: sessionStore.isBusy,
+                        errorMessage: sessionStore.authError,
+                        onBackChangeEmail: {
+                            otpCode = ""
+                            sessionStore.resetToEmailStep()
+                        },
+                        onTryAnotherWayGoogle: {
+                            sessionStore.prepareTryAnotherWayGoogleSignIn()
+                            showGoogleTokenSheet = true
                         }
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.top, 10)
-                    Spacer()
-                }
+                    )
+                } else {
+                    TelefamPalette.background(colorScheme).ignoresSafeArea()
+                    TelefamIosBackgroundWaves()
 
-                ScrollView(showsIndicators: false) {
-                    VStack(spacing: isShort ? 10 : 14) {
-                        Spacer(minLength: isShort ? 36 : 56)
-
-                        TelefamIosPaperPlaneLogo(size: isShort ? 62 : 74)
-
-                        Text("Telefam")
-                            .font(.system(size: 32, weight: .bold))
-                            .foregroundColor(TelefamPalette.crimson)
-
-                        Text("Stay connected. Stay together.")
-                            .font(.system(size: 13))
-                            .foregroundColor(TelefamPalette.textMuted(colorScheme))
-
-                        VStack(spacing: 14) {
-                            if !sessionStore.otpSent {
-                                emailCardContent
-                            } else {
-                                otpCardContent
-                            }
-                        }
-                        .padding(24)
-                        .frame(width: maxCardWidth)
-                        .background(TelefamPalette.surface(colorScheme))
-                        .clipShape(RoundedRectangle(cornerRadius: 24))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 24)
-                                .stroke(TelefamPalette.border(colorScheme), lineWidth: 1)
-                        )
-                        .shadow(color: .black.opacity(colorScheme == .dark ? 0.38 : 0.08), radius: 18, x: 0, y: 6)
-
-                        if sessionStore.serverURL == nil {
+                    VStack {
+                        HStack {
+                            Spacer()
                             Button {
-                                serverInput = sessionStore.baseUrlString
-                                showServerConfigSheet = true
+                                themeMode = themeMode.next
                             } label: {
-                                Label("Configure server endpoint", systemImage: "server.rack")
-                                    .font(.system(size: 13, weight: .semibold))
-                                    .foregroundColor(TelefamPalette.crimson)
+                                HStack(spacing: 5) {
+                                    Image(systemName: themeMode == .dark ? "moon.fill" : (themeMode == .light ? "sun.max.fill" : "circle.lefthalf.filled"))
+                                        .font(.system(size: 13, weight: .semibold))
+                                    Text(themeMode.label)
+                                        .font(.system(size: 12, weight: .semibold))
+                                }
+                                .foregroundColor(TelefamPalette.crimson)
+                                .padding(.horizontal, 12)
+                                .frame(height: 36)
+                                .background(TelefamPalette.surface(colorScheme).opacity(0.92))
+                                .clipShape(Capsule())
+                                .overlay(Capsule().stroke(TelefamPalette.border(colorScheme), lineWidth: 1))
                             }
-                            .padding(.top, 6)
                         }
-
-                        Spacer(minLength: 28)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 10)
+                        Spacer()
                     }
-                    .frame(maxWidth: .infinity)
+
+                    ScrollView(showsIndicators: false) {
+                        VStack(spacing: isShort ? 10 : 14) {
+                            Spacer(minLength: isShort ? 36 : 56)
+
+                            TelefamIosPaperPlaneLogo(size: isShort ? 62 : 74)
+
+                            Text("Telefam")
+                                .font(.system(size: 32, weight: .bold))
+                                .foregroundColor(TelefamPalette.crimson)
+
+                            Text("Stay connected. Stay together.")
+                                .font(.system(size: 13))
+                                .foregroundColor(TelefamPalette.textMuted(colorScheme))
+
+                            VStack(spacing: 14) {
+                                if !sessionStore.otpSent {
+                                    emailCardContent
+                                } else {
+                                    otpCardContent
+                                }
+                            }
+                            .padding(24)
+                            .frame(width: maxCardWidth)
+                            .background(TelefamPalette.surface(colorScheme))
+                            .clipShape(RoundedRectangle(cornerRadius: 24))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 24)
+                                    .stroke(TelefamPalette.border(colorScheme), lineWidth: 1)
+                            )
+                            .shadow(color: .black.opacity(colorScheme == .dark ? 0.38 : 0.08), radius: 18, x: 0, y: 6)
+
+                            if sessionStore.serverURL == nil {
+                                Button {
+                                    serverInput = sessionStore.baseUrlString
+                                    showServerConfigSheet = true
+                                } label: {
+                                    Label("Configure server endpoint", systemImage: "server.rack")
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .foregroundColor(TelefamPalette.crimson)
+                                }
+                                .padding(.top, 6)
+                            }
+
+                            Spacer(minLength: 28)
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
                 }
             }
         }
@@ -252,6 +268,11 @@ struct TelefamIosAuthView: View {
         .sheet(isPresented: $showGoogleTokenSheet) {
             NavigationStack {
                 VStack(alignment: .leading, spacing: 14) {
+                    if let expected = sessionStore.tryAnotherWayExpectedEmail, !expected.isEmpty {
+                        Text("Verify using Google account: \(expected)")
+                            .font(.system(size: 13.5, weight: .semibold))
+                            .foregroundColor(TelefamPalette.crimson)
+                    }
                     Text("Paste your Google ID token for server OAuth verification.")
                         .font(.system(size: 13.5))
                         .foregroundColor(TelefamPalette.textMuted(colorScheme))
@@ -260,7 +281,12 @@ struct TelefamIosAuthView: View {
                         .disableAutocorrection(true)
                         .padding(12)
                         .overlay(RoundedRectangle(cornerRadius: 12).stroke(TelefamPalette.border(colorScheme)))
-                    Button("Verify Google Account") {
+                    if let error = sessionStore.authError, !error.isEmpty {
+                        Text(error)
+                            .font(.system(size: 12.5))
+                            .foregroundColor(TelefamPalette.crimson)
+                    }
+                    Button {
                         let tok = googleIdTokenInput.trimmingCharacters(in: .whitespacesAndNewlines)
                         guard !tok.isEmpty else { return }
                         Task {
@@ -269,12 +295,19 @@ struct TelefamIosAuthView: View {
                                 showGoogleTokenSheet = false
                             }
                         }
+                    } label: {
+                        if sessionStore.isBusy {
+                            ProgressView().tint(.white)
+                        } else {
+                            Text("Verify Google Account")
+                        }
                     }
                     .font(.system(size: 15, weight: .bold))
                     .foregroundColor(.white)
                     .frame(maxWidth: .infinity, minHeight: 48)
                     .background(TelefamPalette.crimson)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .disabled(sessionStore.isBusy)
                     Spacer()
                 }
                 .padding(20)

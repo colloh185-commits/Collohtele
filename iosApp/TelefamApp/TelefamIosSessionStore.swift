@@ -292,14 +292,25 @@ final class TelefamIosSessionStore: ObservableObject {
     @Published var phoneDisplay: String = ""
     @Published var location: String = ""
     @Published var bio: String = ""
+    @Published var countryIso: String = ""
     @Published var baseUrlString: String = ""
     @Published var isBusy: Bool = false
     @Published var authError: String? = nil
     @Published var otpSent: Bool = false
     @Published var cooldownRemainingSec: Int = 0
     @Published var cooldownTotalSec: Int = 60
+    @Published var approvalWaitState: TelefamIosDeviceApprovalWaitState? = nil
+    @Published var tryAnotherWayExpectedEmail: String? = nil
+    @Published var tryAnotherWayRequestId: String? = nil
+    @Published var incomingLoginRequest: TelefamIosIncomingLoginRequest? = nil
+    @Published var loginApprovedOverlay: TelefamIosLoginApprovedState? = nil
+    @Published var isRespondingToLoginRequest: Bool = false
+    @Published var loginRequestActionError: String? = nil
 
     private var cooldownTimer: Timer? = nil
+    private var approvalPollTask: Task<Void, Never>? = nil
+    private var incomingPollTask: Task<Void, Never>? = nil
+    private var incomingCountdownTask: Task<Void, Never>? = nil
 
     private enum Keys {
         static let userId = "telefam_user_id"
@@ -314,6 +325,7 @@ final class TelefamIosSessionStore: ObservableObject {
         static let phoneDisplay = "telefam_phone_display"
         static let location = "telefam_location"
         static let bio = "telefam_bio"
+        static let countryIso = "telefam_country_iso"
     }
 
     init() {
@@ -335,12 +347,22 @@ final class TelefamIosSessionStore: ObservableObject {
         phoneDisplay = TelefamIosKeychainVault.load(key: Keys.phoneDisplay) ?? ""
         location = TelefamIosKeychainVault.load(key: Keys.location) ?? ""
         bio = TelefamIosKeychainVault.load(key: Keys.bio) ?? ""
+        countryIso = TelefamIosKeychainVault.load(key: Keys.countryIso) ?? TelefamIosDeviceContextCollector.shared.loadLastSyncedCountry()
         profileCompleted = (TelefamIosKeychainVault.load(key: Keys.profileCompleted) == "1")
         isAuthenticated = !sessionToken.isEmpty && serverURL != nil
+
+        TelefamIosDeviceContextCollector.shared.onNetworkRestored = { [weak self] in
+            Task { @MainActor in
+                await self?.flushPendingDeviceContext()
+            }
+        }
 
         Task {
             if isAuthenticated && !refreshToken.isEmpty {
                 await refreshAccessTokenIfNeeded()
+            }
+            if isAuthenticated {
+                await captureAndSyncDeviceContext()
             }
         }
     }
@@ -404,14 +426,32 @@ final class TelefamIosSessionStore: ObservableObject {
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue(deviceFingerprint, forHTTPHeaderField: "X-Telefam-Device-FP")
+        TelefamIosDeviceContextCollector.shared.applyTelemetryHeaders(to: &req)
         req.httpBody = try? JSONSerialization.data(withJSONObject: ["email": normalized])
 
         struct Resp: Codable {
             let success: Bool
             let cooldownSeconds: Int?
+            let requiresDeviceApproval: Bool?
+            let requestId: String?
+            let pollToken: String?
+            let targetDeviceName: String?
+            let targetLocation: String?
+            let requestTimeMs: Int64?
+            let expiresInSeconds: Int?
+            let error: String?
+
             enum CodingKeys: String, CodingKey {
                 case success
                 case cooldownSeconds = "cooldown_seconds"
+                case requiresDeviceApproval = "requires_device_approval"
+                case requestId = "request_id"
+                case pollToken = "poll_token"
+                case targetDeviceName = "target_device_name"
+                case targetLocation = "target_location"
+                case requestTimeMs = "request_time_ms"
+                case expiresInSeconds = "expires_in_seconds"
+                case error
             }
         }
 
@@ -421,19 +461,52 @@ final class TelefamIosSessionStore: ObservableObject {
                 authError = "An error has occurred. Please try again."
                 return
             }
-            if (200...299).contains(http.statusCode),
-               let parsed = try? JSONDecoder().decode(Resp.self, from: data), parsed.success {
+            let parsed = try? JSONDecoder().decode(Resp.self, from: data)
+            if http.statusCode == 403 {
+                authError = parsed?.error ?? "This device was blocked from signing in to this account."
+                return
+            }
+            if (200...299).contains(http.statusCode), let parsed, parsed.success {
                 email = normalized
-                otpSent = true
-                startCooldown(seconds: max(30, parsed.cooldownSeconds ?? 60))
+                TelefamIosKeychainVault.save(key: Keys.email, value: normalized)
+                if parsed.requiresDeviceApproval == true,
+                   let reqId = parsed.requestId, !reqId.isEmpty,
+                   let pollTok = parsed.pollToken, !pollTok.isEmpty {
+                    let wait = TelefamIosDeviceApprovalWaitState(
+                        email: normalized,
+                        requestId: reqId,
+                        pollToken: pollTok,
+                        targetDeviceName: parsed.targetDeviceName ?? "Your trusted device",
+                        targetLocation: parsed.targetLocation ?? "Unknown location",
+                        requestTimeMs: parsed.requestTimeMs ?? Int64(Date().timeIntervalSince1970 * 1000),
+                        remainingSeconds: max(10, parsed.expiresInSeconds ?? 60),
+                        isDeniedBlocked: false
+                    )
+                    otpSent = false
+                    approvalWaitState = wait
+                    tryAnotherWayExpectedEmail = normalized
+                    tryAnotherWayRequestId = reqId
+                    startDeviceApprovalPolling(wait: wait)
+                } else {
+                    approvalWaitState = nil
+                    otpSent = true
+                    startCooldown(seconds: max(30, parsed.cooldownSeconds ?? 60))
+                }
             } else if http.statusCode == 429 {
                 authError = "Too many requests. Try again shortly."
             } else {
-                authError = "Unable to send OTP. Please check your connection."
+                authError = parsed?.error ?? "Unable to send OTP. Please check your connection."
             }
         } catch {
             authError = "Unable to reach server. Please try again."
         }
+    }
+
+    func prepareTryAnotherWayGoogleSignIn() {
+        let targetEmail = (approvalWaitState?.email ?? email).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        tryAnotherWayExpectedEmail = targetEmail.isEmpty ? nil : targetEmail
+        tryAnotherWayRequestId = approvalWaitState?.requestId
+        authError = nil
     }
 
     func verifyOtp(code: String) async {
@@ -464,10 +537,18 @@ final class TelefamIosSessionStore: ObservableObject {
             authError = "Configure your Telefam server endpoint to sign in."
             return
         }
-        await performAuthRequest(
-            url: url,
-            body: ["provider": "apple", "identity_token": identityToken, "nonce": nonce]
-        )
+        var payload: [String: Any] = [
+            "provider": "apple",
+            "identity_token": identityToken,
+            "nonce": nonce
+        ]
+        if let expected = tryAnotherWayExpectedEmail, !expected.isEmpty {
+            payload["expected_email"] = expected
+        }
+        if let reqId = tryAnotherWayRequestId, !reqId.isEmpty {
+            payload["approval_request_id"] = reqId
+        }
+        await performAuthRequest(url: url, body: payload)
     }
 
     func verifyGoogleOAuth(identityToken: String) async {
@@ -475,10 +556,17 @@ final class TelefamIosSessionStore: ObservableObject {
             authError = "Configure your Telefam server endpoint to sign in."
             return
         }
-        await performAuthRequest(
-            url: url,
-            body: ["provider": "google", "identity_token": identityToken]
-        )
+        var payload: [String: Any] = [
+            "provider": "google",
+            "identity_token": identityToken
+        ]
+        if let expected = tryAnotherWayExpectedEmail, !expected.isEmpty {
+            payload["expected_email"] = expected
+        }
+        if let reqId = tryAnotherWayRequestId, !reqId.isEmpty {
+            payload["approval_request_id"] = reqId
+        }
+        await performAuthRequest(url: url, body: payload)
     }
 
     func refreshAccessTokenIfNeeded() async {
@@ -617,7 +705,12 @@ final class TelefamIosSessionStore: ObservableObject {
     }
 
     func resetToEmailStep() {
+        approvalPollTask?.cancel()
+        approvalPollTask = nil
         otpSent = false
+        approvalWaitState = nil
+        tryAnotherWayExpectedEmail = nil
+        tryAnotherWayRequestId = nil
         authError = nil
         cooldownTimer?.invalidate()
         cooldownRemainingSec = 0
@@ -638,14 +731,28 @@ final class TelefamIosSessionStore: ObservableObject {
 
     func signOut() {
         cooldownTimer?.invalidate()
+        approvalPollTask?.cancel()
+        approvalPollTask = nil
+        incomingPollTask?.cancel()
+        incomingPollTask = nil
+        incomingCountdownTask?.cancel()
+        incomingCountdownTask = nil
         userId = ""
         sessionToken = ""
         refreshToken = ""
         isAuthenticated = false
         profileCompleted = false
         otpSent = false
+        approvalWaitState = nil
+        tryAnotherWayExpectedEmail = nil
+        tryAnotherWayRequestId = nil
+        incomingLoginRequest = nil
+        loginApprovedOverlay = nil
+        isRespondingToLoginRequest = false
+        loginRequestActionError = nil
+        countryIso = ""
         authError = nil
-        for key in [Keys.userId, Keys.sessionToken, Keys.refreshToken, Keys.profileCompleted, Keys.email, Keys.fullName, Keys.username, Keys.phoneDisplay, Keys.location, Keys.bio] {
+        for key in [Keys.userId, Keys.sessionToken, Keys.refreshToken, Keys.profileCompleted, Keys.email, Keys.fullName, Keys.username, Keys.phoneDisplay, Keys.location, Keys.bio, Keys.countryIso] {
             TelefamIosKeychainVault.delete(key: key)
         }
     }
@@ -847,13 +954,23 @@ final class TelefamIosSessionStore: ObservableObject {
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue(deviceFingerprint, forHTTPHeaderField: "X-Telefam-Device-FP")
+        TelefamIosDeviceContextCollector.shared.applyTelemetryHeaders(to: &req)
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+        struct ErrBody: Codable { let error: String? }
 
         do {
             let (data, resp) = try await URLSession.shared.data(for: req)
-            guard let http = resp as? HTTPURLResponse,
-                  (200...299).contains(http.statusCode),
-                  let parsed = try? JSONDecoder().decode(TelefamIosAuthResponse.self, from: data),
+            guard let http = resp as? HTTPURLResponse else {
+                authError = "Unable to connect to server. Please try again."
+                return
+            }
+            if !(200...299).contains(http.statusCode) {
+                let errMsg = (try? JSONDecoder().decode(ErrBody.self, from: data))?.error
+                authError = errMsg ?? "Verification failed. Please check your account and try again."
+                return
+            }
+            guard let parsed = try? JSONDecoder().decode(TelefamIosAuthResponse.self, from: data),
                   parsed.success, !parsed.sessionToken.isEmpty else {
                 authError = "Verification failed. Please check your code or try again."
                 return
@@ -864,7 +981,341 @@ final class TelefamIosSessionStore: ObservableObject {
         }
     }
 
+    func startIncomingLoginRequestPoller() {
+        guard incomingPollTask == nil else { return }
+        incomingPollTask = Task { [weak self] in
+            while let self, !Task.isCancelled {
+                if self.isAuthenticated && self.profileCompleted {
+                    await self.refreshPendingIncomingLoginRequests()
+                    await self.flushPendingDeviceContext()
+                }
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+            }
+        }
+    }
+
+    func stopIncomingLoginRequestPoller() {
+        incomingPollTask?.cancel()
+        incomingPollTask = nil
+        incomingCountdownTask?.cancel()
+        incomingCountdownTask = nil
+    }
+
+    func refreshPendingIncomingLoginRequests() async {
+        guard isAuthenticated, !sessionToken.isEmpty,
+              let url = serverURL?.appendingPathComponent("v1/auth/login-requests/pending") else { return }
+        var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 10)
+        req.httpMethod = "GET"
+        req.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
+        req.setValue(deviceFingerprint, forHTTPHeaderField: "X-Telefam-Device-FP")
+        TelefamIosDeviceContextCollector.shared.applyTelemetryHeaders(to: &req)
+
+        struct PendingResp: Codable {
+            let success: Bool
+            let requests: [TelefamIosIncomingLoginRequest]?
+        }
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              let http = resp as? HTTPURLResponse,
+              (200...299).contains(http.statusCode),
+              let parsed = try? JSONDecoder().decode(PendingResp.self, from: data),
+              parsed.success else { return }
+
+        let head = parsed.requests?.first(where: { $0.remainingSeconds > 0 })
+        if let head {
+            let isNew = incomingLoginRequest?.requestId != head.requestId
+            incomingLoginRequest = head
+            if isNew {
+                loginRequestActionError = nil
+                startIncomingCountdown(requestId: head.requestId, initialSeconds: head.remainingSeconds)
+            }
+        } else if !isRespondingToLoginRequest {
+            incomingCountdownTask?.cancel()
+            incomingLoginRequest = nil
+        }
+    }
+
+    private func startIncomingCountdown(requestId: String, initialSeconds: Int) {
+        incomingCountdownTask?.cancel()
+        incomingCountdownTask = Task { [weak self] in
+            var remaining = max(0, initialSeconds)
+            while let self, !Task.isCancelled, remaining > 0 {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                if Task.isCancelled { break }
+                remaining -= 1
+                guard var cur = self.incomingLoginRequest, cur.requestId == requestId else { break }
+                if remaining <= 0 {
+                    self.incomingLoginRequest = nil
+                    break
+                }
+                cur.remainingSeconds = remaining
+                self.incomingLoginRequest = cur
+            }
+        }
+    }
+
+    func respondToIncomingLoginRequest(accept: Bool) async {
+        guard let reqItem = incomingLoginRequest, !isRespondingToLoginRequest,
+              let url = serverURL?.appendingPathComponent("v1/auth/login-requests/\(reqItem.requestId)/respond") else { return }
+        isRespondingToLoginRequest = true
+        loginRequestActionError = nil
+        defer { isRespondingToLoginRequest = false }
+
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
+        req.setValue(deviceFingerprint, forHTTPHeaderField: "X-Telefam-Device-FP")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["action": accept ? "accept" : "deny"])
+
+        struct Resp: Codable {
+            let success: Bool
+            let error: String?
+        }
+
+        do {
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            let parsed = try? JSONDecoder().decode(Resp.self, from: data)
+            if (200...299).contains(code), parsed?.success == true {
+                incomingCountdownTask?.cancel()
+                incomingLoginRequest = nil
+                if accept {
+                    loginApprovedOverlay = TelefamIosLoginApprovedState(
+                        deviceName: reqItem.deviceName,
+                        location: reqItem.location,
+                        requestedAtMs: reqItem.requestedAtMs
+                    )
+                }
+            } else {
+                loginRequestActionError = parsed?.error ?? "Unable to process login request."
+            }
+        } catch {
+            loginRequestActionError = "Network error while responding to login request."
+        }
+    }
+
+    func dismissLoginApprovedOverlay() {
+        loginApprovedOverlay = nil
+    }
+
+    func captureAndSyncDeviceContext() async {
+        let snap = await TelefamIosDeviceContextCollector.shared.collectSnapshot()
+        TelefamIosDeviceContextCollector.shared.savePendingSnapshot(snap)
+        await flushPendingDeviceContext(snapshot: snap)
+    }
+
+    func flushPendingDeviceContext(snapshot: TelefamIosDeviceContextSnapshot? = nil) async {
+        guard isAuthenticated, !sessionToken.isEmpty,
+              let payloadSnap = snapshot ?? TelefamIosDeviceContextCollector.shared.loadPendingSnapshot(),
+              let url = serverURL?.appendingPathComponent("v1/telemetry/device-context") else { return }
+
+        var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 10)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
+        req.setValue(deviceFingerprint, forHTTPHeaderField: "X-Telefam-Device-FP")
+        TelefamIosDeviceContextCollector.shared.applyTelemetryHeaders(to: &req)
+        req.httpBody = try? JSONEncoder().encode(payloadSnap)
+
+        struct TelemetryResp: Codable {
+            let success: Bool
+            let effectiveCountryIso: String?
+            enum CodingKeys: String, CodingKey {
+                case success
+                case effectiveCountryIso = "effective_country_iso"
+            }
+        }
+
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              let http = resp as? HTTPURLResponse,
+              (200...299).contains(http.statusCode),
+              let parsed = try? JSONDecoder().decode(TelemetryResp.self, from: data),
+              parsed.success else { return }
+
+        TelefamIosDeviceContextCollector.shared.clearPendingSnapshot()
+        let iso = (parsed.effectiveCountryIso ?? "").trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if iso.count == 2 {
+            countryIso = iso
+            TelefamIosKeychainVault.save(key: Keys.countryIso, value: iso)
+            TelefamIosDeviceContextCollector.shared.saveLastSyncedCountry(iso)
+        }
+    }
+
+    private func startDeviceApprovalPolling(wait: TelefamIosDeviceApprovalWaitState) {
+        approvalPollTask?.cancel()
+        approvalPollTask = Task { [weak self] in
+            var tick = 0
+            while let self, !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                if Task.isCancelled { break }
+                guard var cur = self.approvalWaitState, cur.requestId == wait.requestId, !cur.isDeniedBlocked else { break }
+                cur.remainingSeconds = max(0, cur.remainingSeconds - 1)
+                self.approvalWaitState = cur
+                tick += 1
+                if tick % 2 == 0 || cur.remainingSeconds == 0 {
+                    await self.pollLoginRequestStatusOnce(cur)
+                }
+            }
+        }
+    }
+
+    private func pollLoginRequestStatusOnce(_ cur: TelefamIosDeviceApprovalWaitState) async {
+        guard let url = serverURL?.appendingPathComponent("v1/auth/login-requests/\(cur.requestId)/status") else { return }
+        var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 10)
+        req.httpMethod = "GET"
+        req.setValue(deviceFingerprint, forHTTPHeaderField: "X-Telefam-Device-FP")
+        req.setValue(cur.pollToken, forHTTPHeaderField: "X-Telefam-Poll-Token")
+        TelefamIosDeviceContextCollector.shared.applyTelemetryHeaders(to: &req)
+
+        struct StatusResp: Codable {
+            let success: Bool
+            let status: String?
+            let remainingSeconds: Int?
+            let targetDeviceName: String?
+            let targetLocation: String?
+            let userId: String?
+            let sessionToken: String?
+            let refreshToken: String?
+            let accessExpiresInSec: Int64?
+            let email: String?
+            let suggestedFullName: String?
+            let suggestedUsername: String?
+            let profileCompleted: Bool?
+
+            enum CodingKeys: String, CodingKey {
+                case success, status, email
+                case remainingSeconds = "remaining_seconds"
+                case targetDeviceName = "target_device_name"
+                case targetLocation = "target_location"
+                case userId = "user_id"
+                case sessionToken = "session_token"
+                case refreshToken = "refresh_token"
+                case accessExpiresInSec = "access_expires_in_seconds"
+                case suggestedFullName = "suggested_full_name"
+                case suggestedUsername = "suggested_username"
+                case profileCompleted = "profile_completed"
+            }
+        }
+
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              let http = resp as? HTTPURLResponse else { return }
+
+        if http.statusCode == 403 {
+            var denied = cur
+            denied.isDeniedBlocked = true
+            denied.remainingSeconds = 0
+            approvalWaitState = denied
+            authError = "Your trusted device denied this login request."
+            approvalPollTask?.cancel()
+            return
+        }
+        if http.statusCode == 404 || http.statusCode == 410 {
+            approvalWaitState = nil
+            authError = "The approval request timed out. Please try again."
+            approvalPollTask?.cancel()
+            return
+        }
+        guard (200...299).contains(http.statusCode),
+              let parsed = try? JSONDecoder().decode(StatusResp.self, from: data) else { return }
+
+        switch (parsed.status ?? "pending").lowercased() {
+        case "approved":
+            guard let tok = parsed.sessionToken, !tok.isEmpty else { return }
+            let auth = TelefamIosAuthResponse(
+                success: true,
+                userId: parsed.userId,
+                sessionToken: tok,
+                refreshToken: parsed.refreshToken ?? "",
+                accessExpiresInSec: parsed.accessExpiresInSec ?? 900,
+                email: parsed.email ?? cur.email,
+                suggestedFullName: parsed.suggestedFullName ?? "",
+                suggestedUsername: parsed.suggestedUsername ?? "",
+                profileCompleted: parsed.profileCompleted ?? true
+            )
+            applyAuthSession(auth)
+        case "denied":
+            var denied = cur
+            denied.isDeniedBlocked = true
+            denied.remainingSeconds = 0
+            approvalWaitState = denied
+            authError = "Your trusted device denied this login request."
+            approvalPollTask?.cancel()
+        case "expired":
+            approvalWaitState = nil
+            authError = "The approval request timed out. Please try again."
+            approvalPollTask?.cancel()
+        default:
+            var updated = cur
+            if let rem = parsed.remainingSeconds { updated.remainingSeconds = max(0, rem) }
+            if let dev = parsed.targetDeviceName, !dev.isEmpty { updated.targetDeviceName = dev }
+            if let loc = parsed.targetLocation, !loc.isEmpty { updated.targetLocation = loc }
+            approvalWaitState = updated
+        }
+    }
+
+    private func hydrateExistingProfileAfterSignIn(userId uid: String) async {
+        guard !uid.isEmpty, !sessionToken.isEmpty,
+              let url = serverURL?.appendingPathComponent("v1/users/\(uid)/profile") else { return }
+        var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 10)
+        req.httpMethod = "GET"
+        req.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
+        req.setValue(deviceFingerprint, forHTTPHeaderField: "X-Telefam-Device-FP")
+
+        struct ProfResp: Codable {
+            let success: Bool
+            let fullName: String?
+            let username: String?
+            let phoneNumber: String?
+            let location: String?
+            let bio: String?
+            let countryIso: String?
+
+            enum CodingKeys: String, CodingKey {
+                case success, username, location, bio
+                case fullName = "full_name"
+                case phoneNumber = "phone_number"
+                case countryIso = "country_iso"
+            }
+        }
+
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              let http = resp as? HTTPURLResponse,
+              (200...299).contains(http.statusCode),
+              let parsed = try? JSONDecoder().decode(ProfResp.self, from: data),
+              parsed.success else { return }
+
+        if let v = parsed.fullName, !v.isEmpty {
+            fullName = v
+            TelefamIosKeychainVault.save(key: Keys.fullName, value: v)
+        }
+        if let v = parsed.username, !v.isEmpty {
+            username = v
+            TelefamIosKeychainVault.save(key: Keys.username, value: v)
+        }
+        if let v = parsed.phoneNumber, !v.isEmpty {
+            phoneDisplay = v
+            TelefamIosKeychainVault.save(key: Keys.phoneDisplay, value: v)
+        }
+        if let v = parsed.location, !v.isEmpty {
+            location = v
+            TelefamIosKeychainVault.save(key: Keys.location, value: v)
+        }
+        if let v = parsed.bio {
+            bio = v
+            TelefamIosKeychainVault.save(key: Keys.bio, value: v)
+        }
+        if let c = parsed.countryIso, c.count == 2 {
+            countryIso = c.uppercased()
+            TelefamIosKeychainVault.save(key: Keys.countryIso, value: countryIso)
+        }
+    }
+
     private func applyAuthSession(_ auth: TelefamIosAuthResponse) {
+        approvalPollTask?.cancel()
+        approvalPollTask = nil
+        approvalWaitState = nil
+        tryAnotherWayExpectedEmail = nil
+        tryAnotherWayRequestId = nil
         sessionToken = auth.sessionToken
         if let uid = auth.userId, !uid.isEmpty {
             userId = uid
@@ -893,6 +1344,12 @@ final class TelefamIosSessionStore: ObservableObject {
 
         TelefamIosKeychainVault.save(key: Keys.sessionToken, value: auth.sessionToken)
         TelefamIosKeychainVault.save(key: Keys.profileCompleted, value: auth.profileCompleted ? "1" : "0")
+
+        let uid = auth.userId ?? userId
+        if auth.profileCompleted && !uid.isEmpty {
+            Task { await hydrateExistingProfileAfterSignIn(userId: uid) }
+        }
+        Task { await captureAndSyncDeviceContext() }
     }
 
     private func startCooldown(seconds: Int) {

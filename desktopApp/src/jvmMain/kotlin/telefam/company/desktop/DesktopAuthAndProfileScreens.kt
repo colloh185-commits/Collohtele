@@ -191,6 +191,9 @@ fun DesktopAuthScreen(
   var serverUrlDraft by remember { mutableStateOf(apiClient.session.serverBaseUrl) }
 
   var isOtpStep by remember { mutableStateOf(false) }
+  var approvalWaitState by remember { mutableStateOf<DesktopDeviceApprovalWaitState?>(null) }
+  var tryAnotherWayRequestId by remember { mutableStateOf("") }
+  var tryAnotherWayExpectedEmail by remember { mutableStateOf("") }
   var sendCount by remember { mutableStateOf(0) }
   var cooldownSec by remember { mutableStateOf(0L) }
   var isBusy by remember { mutableStateOf(false) }
@@ -200,6 +203,52 @@ fun DesktopAuthScreen(
     if (cooldownSec > 0L) {
       delay(1000L)
       cooldownSec--
+    }
+  }
+
+  LaunchedEffect(approvalWaitState?.requestId, approvalWaitState?.isDeniedBlocked) {
+    val active = approvalWaitState ?: return@LaunchedEffect
+    if (active.isDeniedBlocked) return@LaunchedEffect
+    var pollTick = 0
+    while (approvalWaitState?.requestId == active.requestId && approvalWaitState?.isDeniedBlocked == false) {
+      delay(1000L)
+      val cur = approvalWaitState ?: break
+      val nextRem = (cur.remainingSeconds - 1L).coerceAtLeast(0L)
+      approvalWaitState = cur.copy(remainingSeconds = nextRem)
+      pollTick++
+      if (pollTick % 2 == 0 || nextRem == 0L) {
+        val statusRes = withContext(Dispatchers.IO) {
+          apiClient.pollLoginRequestStatus(cur.requestId, cur.pollToken)
+        }
+        if (statusRes is DesktopApiOutcome.Ok) {
+          when (statusRes.data.status) {
+            "approved" -> {
+              if (statusRes.data.authenticatedSession != null) {
+                approvalWaitState = null
+                onAuthenticated()
+                break
+              }
+            }
+            "denied" -> {
+              approvalWaitState = cur.copy(isDeniedBlocked = true, remainingSeconds = 0L)
+              errorText = "Your trusted device denied access and blocked this device."
+              break
+            }
+            "expired" -> {
+              approvalWaitState = null
+              errorText = "Approval request expired. Try again or use another method."
+              break
+            }
+            else -> {
+              approvalWaitState = cur.copy(
+                remainingSeconds = statusRes.data.remainingSeconds.coerceAtLeast(0L),
+                targetDeviceName = statusRes.data.targetDeviceName.ifBlank { cur.targetDeviceName },
+                targetLocation = statusRes.data.targetLocation.ifBlank { cur.targetLocation },
+              )
+            }
+          }
+        }
+      }
     }
   }
 
@@ -217,11 +266,40 @@ fun DesktopAuthScreen(
         isBusy = false
         when (res) {
           is DesktopApiOutcome.Ok -> {
-            sendCount += 1
-            cooldownSec = res.data.cooldownSeconds.coerceAtLeast(TelefamCooldownSchedule.secondsForSendCount(sendCount))
-            isOtpStep = true
+            if (res.data.requiresDeviceApproval) {
+              approvalWaitState = DesktopDeviceApprovalWaitState(
+                email = clean,
+                requestId = res.data.requestId,
+                pollToken = res.data.pollToken,
+                targetDeviceName = res.data.targetDeviceName.ifBlank { "Trusted Device" },
+                targetLocation = res.data.targetLocation.ifBlank { "Approximate location" },
+                requestTimeMs = res.data.requestTimeMs,
+                remainingSeconds = res.data.expiresInSeconds.coerceAtLeast(1L),
+                isDeniedBlocked = false,
+              )
+            } else {
+              sendCount += 1
+              cooldownSec = res.data.cooldownSeconds.coerceAtLeast(TelefamCooldownSchedule.secondsForSendCount(sendCount))
+              isOtpStep = true
+            }
           }
-          is DesktopApiOutcome.Fail -> errorText = res.message
+          is DesktopApiOutcome.Fail -> {
+            if (res.statusCode == 403) {
+              approvalWaitState = DesktopDeviceApprovalWaitState(
+                email = clean,
+                requestId = "",
+                pollToken = "",
+                targetDeviceName = "Trusted Device",
+                targetLocation = "Blocked for security",
+                requestTimeMs = System.currentTimeMillis(),
+                remainingSeconds = 0L,
+                isDeniedBlocked = true,
+              )
+              errorText = res.message
+            } else {
+              errorText = res.message
+            }
+          }
         }
       }
     }
@@ -243,6 +321,80 @@ fun DesktopAuthScreen(
         }
       }
     }
+  }
+
+  val activeWait = approvalWaitState
+  if (activeWait != null) {
+    Box(modifier = Modifier.fillMaxSize()) {
+      DesktopDeviceApprovalWaitScreen(
+        waitState = activeWait,
+        isBusy = isBusy,
+        errorText = errorText,
+        onBackChangeEmail = {
+          approvalWaitState = null
+          tryAnotherWayRequestId = ""
+          tryAnotherWayExpectedEmail = ""
+          errorText = null
+        },
+        onTryAnotherWayGoogle = {
+          tryAnotherWayExpectedEmail = activeWait.email
+          tryAnotherWayRequestId = activeWait.requestId
+          showGoogleSheet = true
+        },
+      )
+
+      if (showGoogleSheet) {
+        DesktopModalOverlay(onDismiss = { showGoogleSheet = false }) {
+          Column(modifier = Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("Verify via Google (${activeWait.email})", fontSize = 17.sp, fontWeight = FontWeight.Bold)
+            Text(
+              "Sign in with the Google account matching ${activeWait.email} and paste the ID token below.",
+              fontSize = 13.sp,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            DesktopCleanTextField(
+              value = googleTokenInput,
+              onValueChange = { googleTokenInput = it },
+              placeholder = "Google ID Token (JWT)",
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+              OutlinedButton(onClick = { showGoogleSheet = false }, modifier = Modifier.weight(1f)) {
+                Text("Cancel")
+              }
+              Button(
+                onClick = {
+                  if (googleTokenInput.isBlank()) return@Button
+                  isBusy = true
+                  scope.launch {
+                    val res = withContext(Dispatchers.IO) {
+                      apiClient.verifyGoogleOAuth(
+                        identityToken = googleTokenInput,
+                        expectedEmail = tryAnotherWayExpectedEmail,
+                        approvalRequestId = tryAnotherWayRequestId,
+                      )
+                    }
+                    isBusy = false
+                    when (res) {
+                      is DesktopApiOutcome.Ok -> {
+                        showGoogleSheet = false
+                        approvalWaitState = null
+                        onAuthenticated()
+                      }
+                      is DesktopApiOutcome.Fail -> onToast(res.message)
+                    }
+                  }
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = AuthCrimson),
+                modifier = Modifier.weight(1f),
+              ) {
+                Text("Verify", color = Color.White)
+              }
+            }
+          }
+        }
+      }
+    }
+    return
   }
 
   Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
@@ -496,7 +648,13 @@ fun DesktopAuthScreen(
                 if (googleTokenInput.isBlank()) return@Button
                 isBusy = true
                 scope.launch {
-                  val res = withContext(Dispatchers.IO) { apiClient.verifyGoogleOAuth(googleTokenInput) }
+                  val res = withContext(Dispatchers.IO) {
+                    apiClient.verifyGoogleOAuth(
+                      identityToken = googleTokenInput,
+                      expectedEmail = tryAnotherWayExpectedEmail,
+                      approvalRequestId = tryAnotherWayRequestId,
+                    )
+                  }
                   isBusy = false
                   when (res) {
                     is DesktopApiOutcome.Ok -> {

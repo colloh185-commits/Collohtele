@@ -458,6 +458,15 @@ class TelefamSettingsRobolectricTest {
     override suspend fun checkAppVersion(bearer: String, deviceFingerprint: String, version: String): Response<AppVersionResponseDto> =
       Response.success(AppVersionResponseDto(success = true, latestVersion = version))
 
+    override suspend fun getChatPrivacy(bearer: String, deviceFingerprint: String): Response<telefam.company.data.network.ChatPrivacyResponseDto> =
+      Response.success(telefam.company.data.network.ChatPrivacyResponseDto(success = true))
+
+    override suspend fun updateChatPrivacy(bearer: String, deviceFingerprint: String, body: telefam.company.data.network.ChatPrivacySettingsDto): Response<telefam.company.data.network.ChatPrivacyResponseDto> =
+      Response.success(telefam.company.data.network.ChatPrivacyResponseDto(success = true, chatPrivacy = body))
+
+    override suspend fun updateChatTheme(bearer: String, deviceFingerprint: String, body: telefam.company.data.network.UpdateChatThemeRequestDto): Response<telefam.company.data.network.ChatPrivacyResponseDto> =
+      Response.success(telefam.company.data.network.ChatPrivacyResponseDto(success = true))
+
     override suspend fun logout(bearer: String, deviceFingerprint: String, body: LogoutRequestDto): Response<GenericSuccessDto> {
       lastLogoutAllDevices = body.allDevices
       return Response.success(GenericSuccessDto(success = true))
@@ -500,5 +509,9 @@ class TelefamSettingsRobolectricTest {
     override suspend fun blockUser(bearer: String, deviceFingerprint: String, userId: String): Response<UserBlockResponseDto> = Response.success(UserBlockResponseDto(success = true))
     override suspend fun reportUser(bearer: String, deviceFingerprint: String, userId: String, body: UserReportRequestDto): Response<UserReportResponseDto> = Response.success(UserReportResponseDto(success = true))
     override suspend fun downloadMedia(url: String): Response<ResponseBody> = Response.success(ByteArray(0).toResponseBody("application/octet-stream".toMediaType()))
+    override suspend fun getPendingLoginRequests(bearer: String, deviceFingerprint: String): Response<telefam.company.data.network.PendingLoginRequestsResponseDto> = Response.success(telefam.company.data.network.PendingLoginRequestsResponseDto(success = true))
+    override suspend fun getLoginRequestStatus(deviceFingerprint: String, pollToken: String, requestId: String): Response<telefam.company.data.network.LoginApprovalStatusResponseDto> = Response.success(telefam.company.data.network.LoginApprovalStatusResponseDto(success = true, status = "pending", remainingSeconds = 60L))
+    override suspend fun respondToLoginRequest(bearer: String, deviceFingerprint: String, requestId: String, body: telefam.company.data.network.RespondLoginRequestDto): Response<telefam.company.data.network.RespondLoginRequestResponseDto> = Response.success(telefam.company.data.network.RespondLoginRequestResponseDto(success = true, requestId = requestId))
+    override suspend fun syncDeviceContext(bearer: String, deviceFingerprint: String, body: telefam.company.data.network.DeviceContextTelemetryDto): Response<telefam.company.data.network.DeviceContextTelemetryResponseDto> = Response.success(telefam.company.data.network.DeviceContextTelemetryResponseDto(success = true))
   }
 }

@@ -100,6 +100,7 @@ fun TelefamAuthScreen(
   onGoogleTokenSuccess: (idToken: String, email: String) -> Unit,
   onGoogleTokenError: () -> Unit,
   onToggleTheme: () -> Unit,
+  onPrepareTryAnotherWay: () -> Unit = {},
 ) {
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
@@ -134,6 +135,22 @@ fun TelefamAuthScreen(
         }
       }
     }
+  }
+
+  val waitState = uiState.pendingLoginApprovalWait
+  if ((uiState.authStep == AuthStep.DEVICE_APPROVAL_WAIT || uiState.authStep == AuthStep.DEVICE_APPROVAL_DENIED) && waitState != null) {
+    DeviceApprovalWaitScreen(
+      waitState = waitState,
+      isDeniedBlocked = uiState.authStep == AuthStep.DEVICE_APPROVAL_DENIED,
+      isLoading = uiState.isLoading,
+      errorMessage = uiState.errorMessage,
+      onBackChangeEmail = onChangeEmail,
+      onTryAnotherWayGoogle = {
+        onPrepareTryAnotherWay()
+        launchGoogleSignIn()
+      },
+    )
+    return
   }
 
   BoxWithConstraints(
@@ -241,6 +258,10 @@ fun TelefamAuthScreen(
                 onChangeEmail = onChangeEmail,
               )
             }
+
+            AuthStep.DEVICE_APPROVAL_WAIT,
+            AuthStep.DEVICE_APPROVAL_DENIED,
+            -> Unit
           }
         }
       }
