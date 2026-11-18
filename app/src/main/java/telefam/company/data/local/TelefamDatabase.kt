@@ -29,8 +29,13 @@ import androidx.room.RoomDatabase
     SupportTicketEntity::class,
     PendingSettingsOpEntity::class,
     CachedChatPrivacyEntity::class,
+    SignalKeyStateEntity::class,
+    ChatConversationEntity::class,
+    ChatMessageEntity::class,
+    ChatSecurityFlagEntity::class,
+    PendingChatOpEntity::class,
   ],
-  version = 9,
+  version = 10,
   exportSchema = false,
 )
 abstract class TelefamDatabase : RoomDatabase() {

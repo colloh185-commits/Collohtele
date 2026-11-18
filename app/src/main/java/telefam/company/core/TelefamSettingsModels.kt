@@ -6,6 +6,7 @@ enum class SettingsDestination {
   SHARE_PROFILE,
   NOTIFICATIONS,
   CONTENT_PREFERENCES,
+  OFFLINE_SYNC,
   BLOCKED_ACCOUNTS,
   REPORT_PROBLEM,
   SAFETY_CENTER,
@@ -126,10 +127,37 @@ data class ContentPreferencesState(
     get() = if (dataSaver) VideoQualityOption.DATA_SAVER else videoQuality
 }
 
+data class SyncPreferencesState(
+  val autoSyncEnabled: Boolean = true,
+  val syncOverWifiOnly: Boolean = false,
+  val backgroundSyncEnabled: Boolean = true,
+  val cacheFeedsOffline: Boolean = true,
+  val cacheChatMediaOffline: Boolean = true,
+  val lastSyncedAtMs: Long = 0L,
+  val lastSyncStatus: String = "idle",
+  val totalSyncedOps: Long = 0L,
+  val updatedAtMs: Long = 0L,
+)
+
+data class OfflineSyncStatusSnapshot(
+  val pendingSettingsOps: Int = 0,
+  val pendingContactOps: Int = 0,
+  val pendingFeedOps: Int = 0,
+  val pendingPostUploads: Int = 0,
+  val pendingActionOps: Int = 0,
+  val isSyncing: Boolean = false,
+  val lastResultMessage: String = "",
+  val lastSyncedAtMs: Long = 0L,
+) {
+  val totalPendingCount: Int
+    get() = pendingSettingsOps + pendingContactOps + pendingFeedOps + pendingPostUploads + pendingActionOps
+}
+
 data class SettingsSnapshot(
   val privacy: PrivacySettingsState = PrivacySettingsState(),
   val notifications: NotificationSettingsState = NotificationSettingsState(),
   val contentPreferences: ContentPreferencesState = ContentPreferencesState(),
+  val syncPreferences: SyncPreferencesState = SyncPreferencesState(),
 )
 
 enum class ChatPrivacyRoute {

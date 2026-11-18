@@ -39,6 +39,7 @@ import telefam.company.core.HashtagItem
 import telefam.company.core.LegalDocumentItem
 import telefam.company.core.NetworkTier
 import telefam.company.core.NotificationSettingsState
+import telefam.company.core.OfflineSyncStatusSnapshot
 import telefam.company.core.PostMode
 import telefam.company.core.PostPrivacy
 import telefam.company.core.PostSongTrack
@@ -47,6 +48,7 @@ import telefam.company.core.ProfileBackgroundItem
 import telefam.company.core.RestrictedAccountItem
 import telefam.company.core.SettingsSnapshot
 import telefam.company.core.SupportTicketItem
+import telefam.company.core.SyncPreferencesState
 import telefam.company.core.SystemServiceStatusItem
 import telefam.company.core.TelefamChatPrivacyCatalog
 import telefam.company.core.TelefamContactsRules
@@ -95,6 +97,7 @@ import telefam.company.data.network.FeedInteractionRequestDto
 import telefam.company.data.network.FeedItemDto
 import telefam.company.data.network.FeedVideoRenditionDto
 import telefam.company.data.network.LogoutRequestDto
+import telefam.company.data.network.ManualSyncRequestDto
 import telefam.company.data.network.NetworkQualityMonitor
 import telefam.company.data.network.NotificationSettingsDto
 import telefam.company.data.network.OAuthDto
@@ -112,6 +115,7 @@ import telefam.company.data.network.RespondLoginRequestDto
 import telefam.company.data.network.SongTrackDto
 import telefam.company.data.network.SyncBatchRequestDto
 import telefam.company.data.network.SyncOperationDto
+import telefam.company.data.network.SyncPreferencesDto
 import telefam.company.data.network.TelefamApiService
 import telefam.company.data.network.UpdateChatThemeRequestDto
 import telefam.company.data.network.UpdatePostRequestDto
@@ -291,6 +295,18 @@ class TelefamRepository(
   val circlesFlow: Flow<List<FamilyCircleEntity>> = dao.observeCircles()
   val pendingOfflineActionsCount: Flow<Int> = dao.observePendingActionCount()
   val pendingPostUploadsFlow: Flow<List<PendingPostUploadEntity>> = dao.observePendingPostUploads()
+
+  val chatRepository: TelefamChatRepository by lazy {
+    TelefamChatRepository(
+      appContext = appContext,
+      dao = dao,
+      identityStore = identityStore,
+      networkMonitor = networkMonitor,
+      apiService = apiService,
+      baseHttpUrl = BuildConfig.TELEFAM_API_BASE_URL,
+      deviceFingerprintProvider = ::buildDeviceFingerprint,
+    )
+  }
 
   suspend fun getStreamCredentials(): Pair<String, String> {
     val access = identityStore.sessionFlow.first().accessToken.orEmpty()
@@ -1651,6 +1667,7 @@ class TelefamRepository(
     flushPendingFeedInteractions(nowMs, batchLimit)
     flushPendingPostUploads(nowMs, batchLimit.coerceAtMost(5))
     flushPendingSettingsOps()
+    chatRepository.flushPendingChatOps()
 
     val ready = dao.getReadyOfflineActions(nowMs, batchLimit)
     if (ready.isEmpty()) return
@@ -3231,22 +3248,27 @@ class TelefamRepository(
     if (userId.isNotBlank()) {
       logAudit(userId, if (allDevices) "user_signed_out_all_devices" else "user_signed_out", "{}")
     }
+    chatRepository.disconnectWebSocket()
     identityStore.clearSession()
   }
 
-  // Offline-first Settings, Privacy, Notifications, Content Prefs, Mutes, Support Tickets & System Info
+  // Offline-first Settings, Privacy, Notifications, Content Prefs, Offline Sync, Mutes, Support Tickets & System Info
+  fun isWifiOrUnmetered(): Boolean = networkMonitor.isWifiOrUnmetered()
+
   suspend fun loadCachedSettings(): SettingsSnapshot {
     val callerId = identityStore.sessionFlow.first().userId.orEmpty()
     if (callerId.isBlank()) return SettingsSnapshot()
-    val entity = dao.getCachedSettings(callerId) ?: return SettingsSnapshot()
-    return mapEntityToSettingsSnapshot(entity)
+    val entity = dao.getCachedSettings(callerId)
+    val base = entity?.let(::mapEntityToSettingsSnapshot) ?: SettingsSnapshot()
+    return base.copy(syncPreferences = loadCachedSyncPreferences(callerId))
   }
 
   suspend fun fetchSettings(): SettingsSnapshot {
     val session = identityStore.sessionFlow.first()
     val callerId = session.userId.orEmpty()
     if (callerId.isBlank()) return SettingsSnapshot()
-    val local = dao.getCachedSettings(callerId)?.let(::mapEntityToSettingsSnapshot) ?: SettingsSnapshot()
+    val cachedBase = dao.getCachedSettings(callerId)?.let(::mapEntityToSettingsSnapshot) ?: SettingsSnapshot()
+    val local = cachedBase.copy(syncPreferences = loadCachedSyncPreferences(callerId))
 
     val api = apiService
     val token = session.accessToken.orEmpty()
@@ -3259,8 +3281,10 @@ class TelefamRepository(
           privacy = body.privacy?.let(::mapPrivacyDtoToState) ?: local.privacy,
           notifications = body.notifications?.let(::mapNotificationDtoToState) ?: local.notifications,
           contentPreferences = body.contentPreferences?.let(::mapContentPrefsDtoToState) ?: local.contentPreferences,
+          syncPreferences = body.syncPreferences?.let(::mapSyncPrefsDtoToState) ?: local.syncPreferences,
         )
         persistSettingsSnapshot(callerId, merged)
+        persistSyncPreferences(callerId, merged.syncPreferences)
         body.chatPrivacy?.let { cpDto ->
           dao.upsertCachedChatPrivacy(mapChatPrivacyStateToEntity(callerId, mapChatPrivacyDtoToState(cpDto)))
         }
@@ -3449,6 +3473,152 @@ class TelefamRepository(
       enqueueSettingsOp(callerId, "content_prefs", json)
     }
     return updated
+  }
+
+  suspend fun saveSyncPreferences(next: SyncPreferencesState): SettingsSnapshot {
+    val session = identityStore.sessionFlow.first()
+    val callerId = session.userId.orEmpty()
+    val stamped = next.copy(updatedAtMs = System.currentTimeMillis())
+    val current = if (callerId.isNotBlank()) loadCachedSettings() else SettingsSnapshot()
+    if (callerId.isNotBlank()) {
+      persistSyncPreferences(callerId, stamped)
+    }
+    val updated = current.copy(syncPreferences = stamped)
+
+    val dto = mapSyncPrefsStateToDto(stamped)
+    val api = apiService
+    val token = session.accessToken.orEmpty()
+    if (api != null && token.isNotBlank() && networkTier.value != NetworkTier.OFFLINE) {
+      val resp = executeWithWeakNetworkRetry { api.updateSyncSettings("Bearer $token", buildDeviceFingerprint(), dto) }
+      val srvPrefs = resp?.body()?.syncPreferences
+      if (resp != null && resp.isSuccessful && resp.body()?.success == true && srvPrefs != null) {
+        val synced = mapSyncPrefsDtoToState(srvPrefs)
+        if (callerId.isNotBlank()) persistSyncPreferences(callerId, synced)
+        return updated.copy(syncPreferences = synced)
+      }
+    }
+    if (callerId.isNotBlank()) {
+      val json = moshi.adapter(SyncPreferencesDto::class.java).toJson(dto)
+      enqueueSettingsOp(callerId, "sync_prefs", json)
+    }
+    return updated
+  }
+
+  suspend fun getOfflineSyncStatus(
+    isSyncing: Boolean = false,
+    lastResultMessage: String = "",
+  ): OfflineSyncStatusSnapshot {
+    val callerId = identityStore.sessionFlow.first().userId.orEmpty()
+    if (callerId.isBlank()) {
+      return OfflineSyncStatusSnapshot(isSyncing = isSyncing, lastResultMessage = lastResultMessage)
+    }
+    val syncPrefs = loadCachedSyncPreferences(callerId)
+    return OfflineSyncStatusSnapshot(
+      pendingSettingsOps = dao.countPendingSettingsOps(callerId),
+      pendingContactOps = dao.countPendingContactSyncActions(),
+      pendingFeedOps = dao.countPendingFeedInteractions(),
+      pendingPostUploads = dao.countPendingPostUploads(),
+      pendingActionOps = dao.countPendingOfflineActions(),
+      isSyncing = isSyncing,
+      lastResultMessage = lastResultMessage,
+      lastSyncedAtMs = syncPrefs.lastSyncedAtMs,
+    )
+  }
+
+  suspend fun performManualServerSyncNow(): Pair<SettingsSnapshot, OfflineSyncStatusSnapshot> {
+    val session = identityStore.sessionFlow.first()
+    val callerId = session.userId.orEmpty()
+    val current = if (callerId.isNotBlank()) loadCachedSettings() else SettingsSnapshot()
+    if (callerId.isBlank()) {
+      return current to OfflineSyncStatusSnapshot(lastResultMessage = "Sign in required to sync")
+    }
+
+    if (networkTier.value == NetworkTier.OFFLINE) {
+      return current to getOfflineSyncStatus(
+        isSyncing = false,
+        lastResultMessage = "Device offline — queued changes will sync when back online",
+      )
+    }
+
+    if (current.syncPreferences.syncOverWifiOnly && !networkMonitor.isWifiOrUnmetered()) {
+      return current to getOfflineSyncStatus(
+        isSyncing = false,
+        lastResultMessage = "Waiting for Wi-Fi connection (Wi-Fi only mode enabled)",
+      )
+    }
+
+    // First flush all ready device queues to backend
+    runCatching { flushOfflineQueue() }
+    runCatching { flushPendingSettingsOps() }
+    runCatching { flushPendingDeviceContext(force = true) }
+
+    val token = session.accessToken.orEmpty()
+    val api = apiService
+    if (api == null || token.isBlank()) {
+      return current to getOfflineSyncStatus(
+        isSyncing = false,
+        lastResultMessage = "Server connection unavailable — changes saved locally",
+      )
+    }
+
+    val remainingActions = dao.getReadyOfflineActions(Long.MAX_VALUE, 50)
+    val opDtos = remainingActions.map {
+      SyncOperationDto(
+        clientOpId = it.clientOpId,
+        roomId = it.circleId,
+        kind = it.kind,
+        payload = it.payloadJson,
+        createdAt = it.createdAtMs,
+      )
+    }
+    val localChatPrivacy = loadCachedChatPrivacy()
+    val req = ManualSyncRequestDto(
+      clientSyncId = UUID.randomUUID().toString(),
+      operations = opDtos,
+      privacy = mapPrivacyStateToDto(current.privacy),
+      notifications = mapNotificationStateToDto(current.notifications),
+      contentPreferences = mapContentPrefsStateToDto(current.contentPreferences, resetSuggestions = false),
+      chatPrivacy = mapChatPrivacyStateToDto(localChatPrivacy),
+      syncPreferences = mapSyncPrefsStateToDto(current.syncPreferences),
+    )
+
+    val resp = executeWithWeakNetworkRetry { api.syncNow("Bearer $token", buildDeviceFingerprint(), req) }
+    val body = resp?.body()
+    if (resp != null && resp.isSuccessful && body?.success == true) {
+      if (body.ackedOpIds.isNotEmpty()) {
+        dao.deleteOfflineActions(body.ackedOpIds)
+      }
+      val resolvedSyncPrefs = body.syncPreferences?.let(::mapSyncPrefsDtoToState)
+        ?: current.syncPreferences.copy(
+          lastSyncedAtMs = if (body.serverEpochMs > 0L) body.serverEpochMs else System.currentTimeMillis(),
+          lastSyncStatus = "synced",
+        )
+      val merged = SettingsSnapshot(
+        privacy = body.privacy?.let(::mapPrivacyDtoToState) ?: current.privacy,
+        notifications = body.notifications?.let(::mapNotificationDtoToState) ?: current.notifications,
+        contentPreferences = body.contentPreferences?.let(::mapContentPrefsDtoToState) ?: current.contentPreferences,
+        syncPreferences = resolvedSyncPrefs,
+      )
+      persistSettingsSnapshot(callerId, merged)
+      persistSyncPreferences(callerId, resolvedSyncPrefs)
+      body.chatPrivacy?.let { cpDto ->
+        dao.upsertCachedChatPrivacy(mapChatPrivacyStateToEntity(callerId, mapChatPrivacyDtoToState(cpDto)))
+      }
+      val postStatus = getOfflineSyncStatus(
+        isSyncing = false,
+        lastResultMessage = if (body.syncedOpsCount > 0) {
+          "Synced ${body.syncedOpsCount} operation(s) to server"
+        } else {
+          "All data up to date with server"
+        },
+      )
+      return merged to postStatus
+    }
+
+    return current to getOfflineSyncStatus(
+      isSyncing = false,
+      lastResultMessage = "Server sync queued — will retry automatically",
+    )
   }
 
   suspend fun listRestrictedAccounts(isMuted: Boolean, query: String = ""): List<RestrictedAccountItem> {
@@ -3852,6 +4022,15 @@ class TelefamRepository(
             val dto = moshi.adapter(ChatPrivacySettingsDto::class.java).fromJson(op.payloadJson) ?: return@runCatching true
             api.updateChatPrivacy("Bearer $token", dfp, dto).isSuccessful
           }
+          "sync_prefs" -> {
+            val dto = moshi.adapter(SyncPreferencesDto::class.java).fromJson(op.payloadJson) ?: return@runCatching true
+            val resp = api.updateSyncSettings("Bearer $token", dfp, dto)
+            val srv = resp.body()?.syncPreferences
+            if (resp.isSuccessful && srv != null) {
+              persistSyncPreferences(callerId, mapSyncPrefsDtoToState(srv))
+            }
+            resp.isSuccessful
+          }
           "chat_theme" -> {
             val dto = moshi.adapter(UpdateChatThemeRequestDto::class.java).fromJson(op.payloadJson) ?: return@runCatching true
             api.updateChatTheme("Bearer $token", dfp, dto).isSuccessful
@@ -4020,6 +4199,42 @@ class TelefamRepository(
     captionsEnabled = s.captionsEnabled,
     reducedMotion = s.reducedMotion,
     resetSuggestions = resetSuggestions,
+    updatedAtMs = s.updatedAtMs,
+  )
+
+  private suspend fun loadCachedSyncPreferences(userId: String): SyncPreferencesState {
+    val raw = identityStore.getEncryptedSyncPrefsJson(userId) ?: return SyncPreferencesState()
+    val dto = runCatching { moshi.adapter(SyncPreferencesDto::class.java).fromJson(raw) }.getOrNull()
+      ?: return SyncPreferencesState()
+    return mapSyncPrefsDtoToState(dto)
+  }
+
+  private suspend fun persistSyncPreferences(userId: String, s: SyncPreferencesState) {
+    val json = moshi.adapter(SyncPreferencesDto::class.java).toJson(mapSyncPrefsStateToDto(s))
+    identityStore.saveEncryptedSyncPrefsJson(userId, json)
+  }
+
+  private fun mapSyncPrefsDtoToState(dto: SyncPreferencesDto) = SyncPreferencesState(
+    autoSyncEnabled = dto.autoSyncEnabled,
+    syncOverWifiOnly = dto.syncOverWifiOnly,
+    backgroundSyncEnabled = dto.backgroundSyncEnabled,
+    cacheFeedsOffline = dto.cacheFeedsOffline,
+    cacheChatMediaOffline = dto.cacheChatMediaOffline,
+    lastSyncedAtMs = dto.lastSyncedAtMs,
+    lastSyncStatus = dto.lastSyncStatus.ifBlank { "idle" },
+    totalSyncedOps = dto.totalSyncedOps,
+    updatedAtMs = dto.updatedAtMs,
+  )
+
+  private fun mapSyncPrefsStateToDto(s: SyncPreferencesState) = SyncPreferencesDto(
+    autoSyncEnabled = s.autoSyncEnabled,
+    syncOverWifiOnly = s.syncOverWifiOnly,
+    backgroundSyncEnabled = s.backgroundSyncEnabled,
+    cacheFeedsOffline = s.cacheFeedsOffline,
+    cacheChatMediaOffline = s.cacheChatMediaOffline,
+    lastSyncedAtMs = s.lastSyncedAtMs,
+    lastSyncStatus = s.lastSyncStatus,
+    totalSyncedOps = s.totalSyncedOps,
     updatedAtMs = s.updatedAtMs,
   )
 

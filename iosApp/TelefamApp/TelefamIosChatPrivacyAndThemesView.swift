@@ -50,6 +50,7 @@ struct TelefamIosChatPrivacyAndThemesView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var settingsStore: TelefamIosSettingsStore
+    var previewSenderName: String = "Telefam"
 
     @State private var pickingField: IosChatAudienceField? = nil
 
@@ -166,9 +167,9 @@ struct TelefamIosChatPrivacyAndThemesView: View {
             .navigationDestination(for: TelefamChatPrivacyRoute.self) { route in
                 switch route {
                 case .chatsTheme:
-                    TelefamIosChatsThemePickerView(settingsStore: settingsStore)
+                    TelefamIosChatsThemePickerView(settingsStore: settingsStore, previewSenderName: previewSenderName)
                 case .bubbleColors:
-                    TelefamIosBubbleColorsPickerView(settingsStore: settingsStore)
+                    TelefamIosBubbleColorsPickerView(settingsStore: settingsStore, previewSenderName: previewSenderName)
                 }
             }
             .sheet(item: $pickingField) { field in
@@ -386,6 +387,7 @@ struct TelefamIosChatsThemePickerView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var settingsStore: TelefamIosSettingsStore
+    var previewSenderName: String = "Telefam"
 
     @State private var draftThemeId: String = "none"
 
@@ -423,7 +425,8 @@ struct TelefamIosChatsThemePickerView: View {
 
                     TelefamIosLiveChatPreviewCard(
                         theme: activeTheme,
-                        bubbleColor: activeBubble
+                        bubbleColor: activeBubble,
+                        previewSenderName: previewSenderName
                     )
 
                     HStack(spacing: 12) {
@@ -554,6 +557,7 @@ struct TelefamIosBubbleColorsPickerView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var settingsStore: TelefamIosSettingsStore
+    var previewSenderName: String = "Telefam"
 
     @State private var draftColorId: String = "cyan"
 
@@ -613,7 +617,8 @@ struct TelefamIosBubbleColorsPickerView: View {
 
                     TelefamIosLiveChatPreviewCard(
                         theme: activeTheme,
-                        bubbleColor: activeBubble
+                        bubbleColor: activeBubble,
+                        previewSenderName: previewSenderName
                     )
 
                     Text("Bubbles automatically adapt across light and dark mode.")
@@ -660,8 +665,13 @@ struct TelefamIosLiveChatPreviewCard: View {
     @Environment(\.colorScheme) private var colorScheme
     let theme: TelefamChatThemeSpec
     let bubbleColor: TelefamChatBubbleColorOption
+    var previewSenderName: String = "Telefam"
 
     var body: some View {
+        let resolvedSenderName: String = {
+            let trimmed = previewSenderName.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? "Telefam" : trimmed
+        }()
         let isDark = colorScheme == .dark
         let incomingBg = isDark ? Color(red: 0.129, green: 0.141, blue: 0.169) : .white
         let quoteBg = isDark ? Color(red: 0.176, green: 0.200, blue: 0.243) : Color(red: 0.945, green: 0.961, blue: 0.976)
@@ -693,9 +703,10 @@ struct TelefamIosLiveChatPreviewCard: View {
                             .fill(quoteAccent)
                             .frame(width: 3, height: 30)
                         VStack(alignment: .leading, spacing: 1) {
-                            Text("Executive officer")
+                            Text(resolvedSenderName)
                                 .font(.system(size: 12, weight: .bold))
                                 .foregroundColor(quoteAccent)
+                                .lineLimit(1)
                             Text("Good morning!")
                                 .font(.system(size: 12.5))
                                 .foregroundColor(incomingText)
@@ -756,28 +767,133 @@ struct TelefamIosChatWallpaperView: View {
     @Environment(\.colorScheme) private var colorScheme
     let theme: TelefamChatThemeSpec
 
+    private func blendHex(_ baseHex: UInt32, _ accentHex: UInt32, ratio: Double) -> Color {
+        let br = Double((baseHex >> 16) & 0xFF) / 255.0
+        let bg = Double((baseHex >> 8) & 0xFF) / 255.0
+        let bb = Double(baseHex & 0xFF) / 255.0
+        let ar = Double((accentHex >> 16) & 0xFF) / 255.0
+        let ag = Double((accentHex >> 8) & 0xFF) / 255.0
+        let ab = Double(accentHex & 0xFF) / 255.0
+        return Color(
+            red: br + (ar - br) * ratio,
+            green: bg + (ag - bg) * ratio,
+            blue: bb + (ab - bb) * ratio
+        )
+    }
+
     var body: some View {
         let isDark = colorScheme == .dark
-        let bg = TelefamChatPrivacyCatalog.color(isDark ? theme.darkBgHex : theme.lightBgHex)
-        let alpha = isDark ? theme.darkPatternAlpha : theme.lightPatternAlpha
-        let inkA = TelefamChatPrivacyCatalog.color(theme.accentStartHex, opacity: alpha)
-        let inkB = TelefamChatPrivacyCatalog.color(theme.accentEndHex, opacity: alpha * 0.85)
+        let baseHex = isDark ? theme.darkBgHex : theme.lightBgHex
+        let gradTopLeft = blendHex(baseHex, theme.accentStartHex, ratio: 0.0)
+        let gradMid = blendHex(baseHex, theme.accentStartHex, ratio: isDark ? 0.08 : 0.07)
+        let gradBottomRight = blendHex(baseHex, theme.accentEndHex, ratio: isDark ? 0.16 : 0.13)
 
-        Canvas { ctx, size in
-            guard theme.patternKind != .clean else { return }
-            let step: CGFloat = 68
-            let cols = Int(size.width / step) + 2
-            let rows = Int(size.height / step) + 2
-            for r in 0..<rows {
-                for c in 0..<cols {
-                    let cx = CGFloat(c) * step + (r % 2 == 1 ? step * 0.5 : 0)
-                    let cy = CGFloat(r) * step
-                    let col = (r + c) % 2 == 0 ? inkA : inkB
-                    drawDoodle(in: &ctx, kind: theme.patternKind, cx: cx, cy: cy, radius: step * 0.23, color: col)
+        let accentStart = TelefamChatPrivacyCatalog.color(theme.accentStartHex)
+        let accentEnd = TelefamChatPrivacyCatalog.color(theme.accentEndHex)
+        let baseAlpha = isDark ? theme.darkPatternAlpha : theme.lightPatternAlpha
+        let primaryInk = TelefamChatPrivacyCatalog.color(
+            isDark ? theme.selectionHex : theme.accentStartHex,
+            opacity: min(max(baseAlpha * (isDark ? 1.45 : 1.35), 0.12), 0.28)
+        )
+        let secondaryInk = TelefamChatPrivacyCatalog.color(
+            isDark ? theme.accentEndHex : theme.selectionHex,
+            opacity: min(max(baseAlpha * 1.15, 0.10), 0.22)
+        )
+
+        ZStack {
+            LinearGradient(
+                colors: [gradTopLeft, gradMid, gradBottomRight],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+
+            GeometryReader { geo in
+                let maxDim = max(geo.size.width, geo.size.height)
+                RadialGradient(
+                    colors: [accentEnd.opacity(isDark ? 0.22 : 0.14), .clear],
+                    center: UnitPoint(x: 0.88, y: 0.14),
+                    startRadius: 4,
+                    endRadius: maxDim * 0.65
+                )
+                RadialGradient(
+                    colors: [accentStart.opacity(isDark ? 0.18 : 0.11), .clear],
+                    center: UnitPoint(x: 0.14, y: 0.86),
+                    startRadius: 4,
+                    endRadius: maxDim * 0.62
+                )
+            }
+
+            Canvas { ctx, size in
+                if theme.patternKind == .clean {
+                    let dotStep: CGFloat = 38
+                    let softDot = isDark ? Color.white.opacity(0.045) : Color.black.opacity(0.035)
+                    let accentDot = accentEnd.opacity(isDark ? 0.08 : 0.06)
+                    let cols = Int(size.width / dotStep) + 2
+                    let rows = Int(size.height / dotStep) + 2
+                    for r in 0..<rows {
+                        for c in 0..<cols {
+                            let x = dotStep * 0.5 + CGFloat(c) * dotStep + (r % 2 == 1 ? dotStep * 0.5 : 0)
+                            let y = dotStep * 0.5 + CGFloat(r) * dotStep
+                            let isAccent = (r + c) % 3 == 0
+                            let rad: CGFloat = isAccent ? 2.0 : 1.4
+                            ctx.fill(
+                                Path(ellipseIn: CGRect(x: x - rad, y: y - rad, width: rad * 2, height: rad * 2)),
+                                with: .color(isAccent ? accentDot : softDot)
+                            )
+                        }
+                    }
+                    return
+                }
+
+                let step: CGFloat = 68
+                let cols = Int(size.width / step) + 2
+                let rows = Int(size.height / step) + 2
+                let angles: [Double] = [-18, 12, -9, 22, 6, -24]
+                let fineStyle = StrokeStyle(lineWidth: 1.05, lineCap: .round, lineJoin: .round)
+
+                for r in 0..<rows {
+                    for c in 0..<cols {
+                        let offsetX: CGFloat = r % 2 == 1 ? step * 0.48 : 0
+                        let jitterY: CGFloat = (r + c) % 2 == 0 ? -step * 0.06 : step * 0.06
+                        let cx = CGFloat(c) * step + offsetX + step * 0.26
+                        let cy = CGFloat(r) * step + step * 0.34 + jitterY
+                        let angle = angles[(r * 5 + c) % angles.count]
+                        let cInk = (r + c) % 2 == 1 ? secondaryInk : primaryInk
+                        let rad = step * ((r + c) % 3 == 0 ? 0.27 : 0.22)
+
+                        var doodleCtx = ctx
+                        doodleCtx.translateBy(x: cx, y: cy)
+                        doodleCtx.rotate(by: .degrees(angle))
+                        drawDoodle(in: &doodleCtx, kind: theme.patternKind, cx: 0, cy: 0, radius: rad, color: cInk)
+
+                        if (r + c) % 2 == 0 {
+                            let sx = cx + step * 0.46
+                            let sy = cy + step * 0.40
+                            if (r * 3 + c) % 4 == 0 {
+                                let sr = step * 0.065
+                                var star = Path()
+                                star.move(to: CGPoint(x: sx, y: sy - sr))
+                                star.addLine(to: CGPoint(x: sx + sr * 0.26, y: sy - sr * 0.26))
+                                star.addLine(to: CGPoint(x: sx + sr, y: sy))
+                                star.addLine(to: CGPoint(x: sx + sr * 0.26, y: sy + sr * 0.26))
+                                star.addLine(to: CGPoint(x: sx, y: sy + sr))
+                                star.addLine(to: CGPoint(x: sx - sr * 0.26, y: sy + sr * 0.26))
+                                star.addLine(to: CGPoint(x: sx - sr, y: sy))
+                                star.addLine(to: CGPoint(x: sx - sr * 0.26, y: sy - sr * 0.26))
+                                star.closeSubpath()
+                                ctx.stroke(star, with: .color(secondaryInk), style: fineStyle)
+                            } else {
+                                let dr: CGFloat = 1.6
+                                ctx.fill(
+                                    Path(ellipseIn: CGRect(x: sx - dr, y: sy - dr, width: dr * 2, height: dr * 2)),
+                                    with: .color(primaryInk)
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
-        .background(bg)
     }
 
     private func drawDoodle(in ctx: inout GraphicsContext, kind: TelefamChatPatternKind, cx: CGFloat, cy: CGFloat, radius r: CGFloat, color: Color) {

@@ -27,20 +27,28 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
+import android.database.ContentObserver
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.provider.MediaStore
 import android.view.WindowManager
 import android.widget.Toast
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.runtime.DisposableEffect
 import telefam.company.core.ChatPrivacyRoute
 import telefam.company.ui.components.EditBackgroundsBottomSheet
 import telefam.company.ui.components.EditProfileModalSheet
 import telefam.company.ui.components.TelefamAnimatedSplashOverlay
 import telefam.company.ui.screens.DeviceApprovalWaitScreen
+import telefam.company.ui.screens.HomeGlobalSearchOverlay
 import telefam.company.ui.screens.IncomingLoginRequestFullScreenOverlay
 import telefam.company.ui.screens.LoginApprovedFullScreenOverlay
 import telefam.company.ui.screens.ReusableVideoFeedScreen
 import telefam.company.ui.screens.TelefamAuthScreen
 import telefam.company.ui.screens.TelefamChatPrivacyHostScreen
 import telefam.company.ui.screens.TelefamHomeScreen
+import telefam.company.ui.screens.TelefamOneOnOneChatScreen
 import telefam.company.ui.screens.TelefamPostScreen
 import telefam.company.ui.screens.TelefamProfileSetupScreen
 import telefam.company.ui.screens.TelefamSearchScreen
@@ -170,9 +178,12 @@ class TelefamMainActivity : ComponentActivity() {
         }
       }
 
-      val shouldBlockScreenshots = route == AppRootRoute.HOME &&
-        uiState.chatPrivacy.blocksScreenshots &&
-        (uiState.activeHomeTab == HomeTab.CHATS || uiState.activeChatPrivacyRoute != null)
+      val activeChatConv = uiState.chatState.activeConversation
+      val shouldBlockScreenshots = route == AppRootRoute.HOME && (
+        uiState.chatState.activeViewOnceOverlay != null ||
+          (activeChatConv != null && (uiState.chatPrivacy.blocksScreenshots || !activeChatConv.canScreenshot)) ||
+          (uiState.chatPrivacy.blocksScreenshots && (uiState.activeHomeTab == HomeTab.CHATS || uiState.activeChatPrivacyRoute != null))
+        )
       DisposableEffect(shouldBlockScreenshots) {
         if (shouldBlockScreenshots) {
           window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
@@ -184,8 +195,47 @@ class TelefamMainActivity : ComponentActivity() {
         }
       }
 
+      // Register screenshot capture detection (API 34+ ScreenCaptureCallback + fallback MediaStore observer)
+      val watchCapture = route == AppRootRoute.HOME && activeChatConv != null
+      DisposableEffect(watchCapture, activeChatConv?.conversationId) {
+        if (!watchCapture) {
+          onDispose { }
+        } else {
+          val captureCb: Any? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            val cb = ScreenCaptureCallback {
+              viewModel.chatController.recordScreenshotOrSecurityCapture()
+            }
+            runCatching { registerScreenCaptureCallback(mainExecutor, cb) }
+            cb
+          } else {
+            null
+          }
+          val mediaObserver = object : ContentObserver(Handler(Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean, uri: Uri?) {
+              if (uri?.toString()?.contains("screenshot", ignoreCase = true) == true) {
+                viewModel.chatController.recordScreenshotOrSecurityCapture()
+              }
+            }
+          }
+          runCatching {
+            contentResolver.registerContentObserver(
+              MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+              true,
+              mediaObserver,
+            )
+          }
+          onDispose {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && captureCb is ScreenCaptureCallback) {
+              runCatching { unregisterScreenCaptureCallback(captureCb) }
+            }
+            runCatching { contentResolver.unregisterContentObserver(mediaObserver) }
+          }
+        }
+      }
+
       TelefamTheme(themeMode = uiState.themeMode) {
-        Box(modifier = Modifier.fillMaxSize()) {
+        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+          val isWideSplitHost = maxWidth >= 680.dp
           AnimatedContent(
             targetState = route,
             transitionSpec = { fadeIn() togetherWith fadeOut() },
@@ -286,9 +336,146 @@ class TelefamMainActivity : ComponentActivity() {
                   onDismissProfileToast = viewModel::dismissProfileToast,
                   onSignOut = viewModel::signOut,
                   onOpenChatPrivacy = viewModel::openChatPrivacy,
+                  onOpenHomeChatSearch = viewModel.chatController::openHomeChatSearch,
+                  onOpenChatConversation = { conv ->
+                    viewModel.chatController.openConversation(conv.conversationId, conv.peerUserId)
+                  },
+                  onEnterChatMultiSelect = viewModel.chatController::enterConversationMultiSelect,
+                  onToggleChatSelection = viewModel.chatController::toggleConversationSelection,
+                  onSelectAllChats = viewModel.chatController::selectAllConversations,
+                  onExitChatMultiSelect = viewModel.chatController::exitConversationMultiSelect,
+                  onBatchChatAction = viewModel.chatController::performBatchConversationAction,
+                  onUndoChatBatch = viewModel.chatController::undoLastBatchAction,
+                  onDismissChatBatchUndo = viewModel.chatController::dismissUndoBatch,
+                  embeddedSplitChatContent = {
+                    val splitConv = uiState.chatState.activeConversation
+                    if (splitConv != null) {
+                      TelefamOneOnOneChatScreen(
+                        conversation = splitConv,
+                        chatState = uiState.chatState,
+                        chatPrivacy = uiState.chatPrivacy,
+                        currentUserId = uiState.userId,
+                        onBack = viewModel.chatController::closeActiveConversation,
+                        onOpenPeerProfile = { peerUid -> viewModel.openUserProfile(peerUid) },
+                        onComposerTextChanged = viewModel.chatController::onComposerTextChanged,
+                        onSendTextOrEdit = viewModel.chatController::sendCurrentTextOrSaveEdit,
+                        onSendGreetingSticker = viewModel.chatController::sendGreetingSticker,
+                        onStartEditMessage = viewModel.chatController::startEditingMessage,
+                        onCancelEditMessage = viewModel.chatController::cancelEditingMessage,
+                        onUnsendMessage = viewModel.chatController::unsendMessageWithSparkles,
+                        onDeleteMessageForSelf = viewModel.chatController::deleteMessageForSelf,
+                        onStartForwardMessage = viewModel.chatController::startForwardMessage,
+                        onDismissForwardMessage = viewModel.chatController::dismissForwardMessage,
+                        onConfirmForwardMessage = viewModel.chatController::confirmForwardMessage,
+                        onStartVoiceRecording = viewModel.chatController::startVoiceRecording,
+                        onStopVoiceRecording = viewModel.chatController::stopVoiceRecordingForPreview,
+                        onDiscardVoiceRecording = viewModel.chatController::discardRecordedVoiceNote,
+                        onToggleVoicePlayback = viewModel.chatController::toggleVoicePlayback,
+                        onToggleVoicePreviewViewOnce = viewModel.chatController::setVoicePreviewViewOnce,
+                        onSelectVoicePreviewTtl = viewModel.chatController::setVoicePreviewTtlSec,
+                        onSendVoiceNote = viewModel.chatController::sendRecordedVoiceNote,
+                        onOpenViewOnceVoice = viewModel.chatController::openViewOnceVoiceMessage,
+                        onBurnViewOnceVoice = viewModel.chatController::closeAndBurnActiveViewOnce,
+                        onOpenGiflyPicker = { viewModel.chatController.openGiflyPicker("stickers") },
+                        onCloseGiflyPicker = viewModel.chatController::closeGiflyPicker,
+                        onSelectGiflyTab = viewModel.chatController::selectGiflyTab,
+                        onGiflyQueryChanged = viewModel.chatController::onGiflyQueryChanged,
+                        onLoadMoreGifly = viewModel.chatController::loadNextGiflyPage,
+                        onPreviewGiflyItem = viewModel.chatController::previewGiflyItem,
+                        onSendPreviewGifly = viewModel.chatController::sendPreviewedGiflyItem,
+                        onToggleMuteConversation = viewModel.chatController::toggleMuteActiveConversation,
+                        onBlockPeer = viewModel.chatController::blockPeerFromActiveChat,
+                        onReportPeer = viewModel.chatController::reportPeerFromActiveChat,
+                        onOpenSharedMediaTab = viewModel.chatController::openSharedMediaTab,
+                        onTriggerComingSoon = viewModel::triggerComingSoon,
+                        onDismissToast = viewModel.chatController::dismissChatToast,
+                        showEmbeddedSplitHeader = true,
+                      )
+                    }
+                  },
                 )
               }
             }
+          }
+
+          // Compact Handheld Full-Screen 1-on-1 E2EE Chat Overlay (Wide screens show it split-screen inside Home)
+          AnimatedVisibility(
+            visible = route == AppRootRoute.HOME && !isWideSplitHost && uiState.chatState.activeConversation != null,
+            enter = slideInVertically(initialOffsetY = { it / 6 }) + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { it / 6 }) + fadeOut(),
+          ) {
+            val activeConv = uiState.chatState.activeConversation
+            if (activeConv != null) {
+              TelefamOneOnOneChatScreen(
+                conversation = activeConv,
+                chatState = uiState.chatState,
+                chatPrivacy = uiState.chatPrivacy,
+                currentUserId = uiState.userId,
+                onBack = viewModel.chatController::closeActiveConversation,
+                onOpenPeerProfile = { peerUid -> viewModel.openUserProfile(peerUid) },
+                onComposerTextChanged = viewModel.chatController::onComposerTextChanged,
+                onSendTextOrEdit = viewModel.chatController::sendCurrentTextOrSaveEdit,
+                onSendGreetingSticker = viewModel.chatController::sendGreetingSticker,
+                onStartEditMessage = viewModel.chatController::startEditingMessage,
+                onCancelEditMessage = viewModel.chatController::cancelEditingMessage,
+                onUnsendMessage = viewModel.chatController::unsendMessageWithSparkles,
+                onDeleteMessageForSelf = viewModel.chatController::deleteMessageForSelf,
+                onStartForwardMessage = viewModel.chatController::startForwardMessage,
+                onDismissForwardMessage = viewModel.chatController::dismissForwardMessage,
+                onConfirmForwardMessage = viewModel.chatController::confirmForwardMessage,
+                onStartVoiceRecording = viewModel.chatController::startVoiceRecording,
+                onStopVoiceRecording = viewModel.chatController::stopVoiceRecordingForPreview,
+                onDiscardVoiceRecording = viewModel.chatController::discardRecordedVoiceNote,
+                onToggleVoicePlayback = viewModel.chatController::toggleVoicePlayback,
+                onToggleVoicePreviewViewOnce = viewModel.chatController::setVoicePreviewViewOnce,
+                onSelectVoicePreviewTtl = viewModel.chatController::setVoicePreviewTtlSec,
+                onSendVoiceNote = viewModel.chatController::sendRecordedVoiceNote,
+                onOpenViewOnceVoice = viewModel.chatController::openViewOnceVoiceMessage,
+                onBurnViewOnceVoice = viewModel.chatController::closeAndBurnActiveViewOnce,
+                onOpenGiflyPicker = { viewModel.chatController.openGiflyPicker("stickers") },
+                onCloseGiflyPicker = viewModel.chatController::closeGiflyPicker,
+                onSelectGiflyTab = viewModel.chatController::selectGiflyTab,
+                onGiflyQueryChanged = viewModel.chatController::onGiflyQueryChanged,
+                onLoadMoreGifly = viewModel.chatController::loadNextGiflyPage,
+                onPreviewGiflyItem = viewModel.chatController::previewGiflyItem,
+                onSendPreviewGifly = viewModel.chatController::sendPreviewedGiflyItem,
+                onToggleMuteConversation = viewModel.chatController::toggleMuteActiveConversation,
+                onBlockPeer = viewModel.chatController::blockPeerFromActiveChat,
+                onReportPeer = viewModel.chatController::reportPeerFromActiveChat,
+                onOpenSharedMediaTab = viewModel.chatController::openSharedMediaTab,
+                onTriggerComingSoon = viewModel::triggerComingSoon,
+                onDismissToast = viewModel.chatController::dismissChatToast,
+                showEmbeddedSplitHeader = false,
+              )
+            }
+          }
+
+          // Home Global Search Overlay (Conversations + Local Decrypted Messages + People)
+          AnimatedVisibility(
+            visible = route == AppRootRoute.HOME && uiState.chatState.isHomeSearchOpen,
+            enter = slideInVertically(initialOffsetY = { it / 8 }) + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { it / 8 }) + fadeOut(),
+          ) {
+            HomeGlobalSearchOverlay(
+              chatState = uiState.chatState,
+              onQueryChanged = viewModel.chatController::onHomeChatSearchQueryChanged,
+              onOpenConversation = { conv ->
+                viewModel.chatController.closeHomeChatSearch()
+                viewModel.selectHomeTab(HomeTab.CHATS)
+                viewModel.chatController.openConversation(conv.conversationId, conv.peerUserId)
+              },
+              onOpenPersonChat = { person ->
+                viewModel.chatController.closeHomeChatSearch()
+                viewModel.selectHomeTab(HomeTab.CHATS)
+                viewModel.chatController.openDirectChat(
+                  peerUserId = person.userId,
+                  peerFullName = person.fullName,
+                  peerUsername = person.username,
+                  peerAvatarUrl = person.avatarUrl,
+                )
+              },
+              onClose = viewModel.chatController::closeHomeChatSearch,
+            )
           }
 
           AnimatedVisibility(
@@ -354,7 +541,16 @@ class TelefamMainActivity : ComponentActivity() {
                 bottomChromePadding = 0.dp,
                 onBack = viewModel::closeTopUserProfile,
                 onToggleFollow = { viewModel.toggleFollowOnProfile(activeProfile.userId) },
-                onMessageClick = { viewModel.showProfileToast("Message — Coming soon") },
+                onMessageClick = {
+                  viewModel.closeTopUserProfile()
+                  viewModel.selectHomeTab(HomeTab.CHATS)
+                  viewModel.chatController.openDirectChat(
+                    peerUserId = activeProfile.userId,
+                    peerFullName = activeProfile.fullName,
+                    peerUsername = activeProfile.username,
+                    peerAvatarUrl = activeProfile.avatarUrl.orEmpty(),
+                  )
+                },
                 onSubscribeClick = { viewModel.showProfileToast("Subscribe — Coming soon") },
                 onOpenConnections = { isFollowers -> viewModel.openProfileConnections(activeProfile.userId, isFollowers) },
                 onDismissConnections = { viewModel.dismissProfileConnections(activeProfile.userId) },
@@ -507,6 +703,9 @@ class TelefamMainActivity : ComponentActivity() {
               onUpdatePrivacy = viewModel::updatePrivacySettings,
               onUpdateNotifications = viewModel::updateNotificationSettings,
               onUpdateContentPreferences = viewModel::updateContentPreferences,
+              onUpdateSyncPreferences = viewModel::updateSyncPreferences,
+              onTriggerManualSync = viewModel::triggerManualSyncNow,
+              onRefreshSyncStatus = viewModel::refreshOfflineSyncStatus,
               onRestrictedTabSelected = viewModel::onRestrictedAccountsTabSelected,
               onRestrictedQueryChanged = viewModel::onRestrictedAccountsQueryChanged,
               onUnblockAccount = viewModel::unblockAccountFromSettings,
@@ -533,9 +732,15 @@ class TelefamMainActivity : ComponentActivity() {
           ) {
             val chatRoute = uiState.activeChatPrivacyRoute
             if (chatRoute != null) {
+              val ownerName = uiState.ownProfileState?.fullName?.trim()?.takeIf { it.isNotBlank() }
+                ?: uiState.profileForm.fullName.trim().takeIf { it.isNotBlank() }
+                ?: uiState.ownProfileState?.username?.trim()?.takeIf { it.isNotBlank() }?.let { "@$it" }
+                ?: uiState.profileForm.username.trim().takeIf { it.isNotBlank() }?.let { "@$it" }
+                ?: "Telefam"
               TelefamChatPrivacyHostScreen(
                 route = chatRoute,
                 state = uiState.chatPrivacy,
+                previewSenderName = ownerName,
                 onNavigateBack = viewModel::navigateChatPrivacyBack,
                 onUpdatePrivacy = viewModel::updateChatPrivacy,
                 onOpenChatsTheme = viewModel::openChatsThemePicker,

@@ -842,6 +842,7 @@ struct TelefamIosProfileView: View {
     var onEditOwnerPost: (TelefamIosFeedItem) -> Void
     var onTapHashtag: (String, TelefamIosPostMode) -> Void
     var onTapAudio: (TelefamIosSongTrack, TelefamIosPostMode) -> Void
+    var onMessageUser: ((TelefamIosUserProfile) -> Void)? = nil
 
     @State private var activeOwnerTab: TelefamIosOwnerProfileTab = .posts
     @State private var selectedFilter: TelefamIosProfilePostFilter = .all
@@ -872,7 +873,8 @@ struct TelefamIosProfileView: View {
         onOpenUserProfile: @escaping (String) -> Void,
         onEditOwnerPost: @escaping (TelefamIosFeedItem) -> Void,
         onTapHashtag: @escaping (String, TelefamIosPostMode) -> Void,
-        onTapAudio: @escaping (TelefamIosSongTrack, TelefamIosPostMode) -> Void
+        onTapAudio: @escaping (TelefamIosSongTrack, TelefamIosPostMode) -> Void,
+        onMessageUser: ((TelefamIosUserProfile) -> Void)? = nil
     ) {
         self.isEmbeddedOwnProfileTab = isEmbeddedOwnProfileTab
         self.bottomChromePadding = bottomChromePadding
@@ -886,6 +888,7 @@ struct TelefamIosProfileView: View {
         self.onEditOwnerPost = onEditOwnerPost
         self.onTapHashtag = onTapHashtag
         self.onTapAudio = onTapAudio
+        self.onMessageUser = onMessageUser
         _profileStore = StateObject(
             wrappedValue: TelefamIosProfileStore(
                 targetUserId: targetUserId,
@@ -1582,7 +1585,7 @@ struct TelefamIosProfileView: View {
                     followActionButton(state: profile.relationship)
 
                     Button {
-                        profileStore.showToast("Message — Coming soon")
+                        onMessageUser?(profile)
                     } label: {
                         HStack(spacing: 6) {
                             PaperPlaneProfileSvgIcon(color: TelefamPalette.textPrimary(colorScheme))

@@ -186,8 +186,13 @@ class TelefamDeviceApprovalRobolectricTest {
     assertTrue(vm.uiState.value.isAuthenticated)
     assertTrue(vm.uiState.value.profileCompleted)
     assertEquals("user_existing_alex", vm.uiState.value.userId)
-    shadowOf(Looper.getMainLooper()).idle()
-    val hydrated = db.telefamDao().observeProfile("user_existing_alex").first()
+    var hydrated = db.telefamDao().observeProfile("user_existing_alex").first()
+    val hydrateDeadline = System.currentTimeMillis() + 3_000L
+    while (hydrated == null && System.currentTimeMillis() < hydrateDeadline) {
+      shadowOf(Looper.getMainLooper()).idleFor(100L, TimeUnit.MILLISECONDS)
+      Thread.sleep(20L)
+      hydrated = db.telefamDao().observeProfile("user_existing_alex").first()
+    }
     if (hydrated == null) {
       val diagFetch = repository.fetchUserProfile("user_existing_alex")
       val diagSession = identityStore.sessionFlow.first()
@@ -457,7 +462,7 @@ class TelefamDeviceApprovalRobolectricTest {
     shadowOf(cm).setNetworkCapabilities(active, caps)
   }
 
-  private class FakeDeviceSecurityApiService : TelefamApiService {
+  private class FakeDeviceSecurityApiService : AbstractTestChatApiStub() {
     var pollApproved = false
     var pollDenied = false
     var telemetryCalls = 0
@@ -658,5 +663,8 @@ class TelefamDeviceApprovalRobolectricTest {
     override suspend fun updateChatPrivacy(bearer: String, deviceFingerprint: String, body: telefam.company.data.network.ChatPrivacySettingsDto): Response<telefam.company.data.network.ChatPrivacyResponseDto> = Response.success(telefam.company.data.network.ChatPrivacyResponseDto(success = true, chatPrivacy = body))
     override suspend fun updateChatTheme(bearer: String, deviceFingerprint: String, body: telefam.company.data.network.UpdateChatThemeRequestDto): Response<telefam.company.data.network.ChatPrivacyResponseDto> = Response.success(telefam.company.data.network.ChatPrivacyResponseDto(success = true))
     override suspend fun downloadMedia(url: String): Response<ResponseBody> = Response.success(ByteArray(0).toResponseBody("application/octet-stream".toMediaType()))
+    override suspend fun getSyncSettings(bearer: String, deviceFingerprint: String): Response<telefam.company.data.network.SyncSettingsResponseDto> = Response.success(telefam.company.data.network.SyncSettingsResponseDto(success = true))
+    override suspend fun updateSyncSettings(bearer: String, deviceFingerprint: String, body: telefam.company.data.network.SyncPreferencesDto): Response<telefam.company.data.network.SyncSettingsResponseDto> = Response.success(telefam.company.data.network.SyncSettingsResponseDto(success = true, syncPreferences = body))
+    override suspend fun syncNow(bearer: String, deviceFingerprint: String, body: telefam.company.data.network.ManualSyncRequestDto): Response<telefam.company.data.network.ManualSyncResponseDto> = Response.success(telefam.company.data.network.ManualSyncResponseDto(success = true, ackedOpIds = body.operations.map { it.clientOpId }))
   }
 }

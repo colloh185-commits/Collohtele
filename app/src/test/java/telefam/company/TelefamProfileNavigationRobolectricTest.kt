@@ -677,7 +677,7 @@ class TelefamProfileNavigationRobolectricTest {
     shadowOf(cm).setNetworkCapabilities(active, caps)
   }
 
-  private class FakeProfileApiService : TelefamApiService {
+  private class FakeProfileApiService : AbstractTestChatApiStub() {
     var followingAlex = false
     val blockedIds = mutableSetOf<String>()
     val reports = mutableListOf<Pair<String, UserReportRequestDto>>()
@@ -1008,5 +1008,14 @@ class TelefamProfileNavigationRobolectricTest {
 
     override suspend fun syncDeviceContext(bearer: String, deviceFingerprint: String, body: telefam.company.data.network.DeviceContextTelemetryDto): Response<telefam.company.data.network.DeviceContextTelemetryResponseDto> =
       Response.success(telefam.company.data.network.DeviceContextTelemetryResponseDto(success = true))
+
+    override suspend fun getSyncSettings(bearer: String, deviceFingerprint: String): Response<telefam.company.data.network.SyncSettingsResponseDto> =
+      Response.success(telefam.company.data.network.SyncSettingsResponseDto(success = true))
+
+    override suspend fun updateSyncSettings(bearer: String, deviceFingerprint: String, body: telefam.company.data.network.SyncPreferencesDto): Response<telefam.company.data.network.SyncSettingsResponseDto> =
+      Response.success(telefam.company.data.network.SyncSettingsResponseDto(success = true, syncPreferences = body))
+
+    override suspend fun syncNow(bearer: String, deviceFingerprint: String, body: telefam.company.data.network.ManualSyncRequestDto): Response<telefam.company.data.network.ManualSyncResponseDto> =
+      Response.success(telefam.company.data.network.ManualSyncResponseDto(success = true, ackedOpIds = body.operations.map { it.clientOpId }))
   }
 }

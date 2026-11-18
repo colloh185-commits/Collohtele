@@ -95,6 +95,7 @@ private enum class DesktopSettingsSvgKind {
   SHARE_CARD,
   BELL,
   HEART,
+  CLOUD_SYNC,
   LOCK,
   BLOCK_MINUS,
   FLAG,
@@ -148,6 +149,9 @@ fun DesktopSettingsAndPrivacyScreen(
   var legalDocs by remember { mutableStateOf(DesktopSettingsCatalog.legalDocuments) }
   var selectedLegalDocId by remember { mutableStateOf<String?>(null) }
   var versionCheck by remember { mutableStateOf<DesktopVersionCheckResult?>(null) }
+  var pendingSyncCount by remember { mutableStateOf(0) }
+  var isSyncingNow by remember { mutableStateOf(false) }
+  var syncFeedback by remember { mutableStateOf("") }
 
   val currentDest = backStack.value.lastOrNull() ?: DesktopSettingsDestination.HUB
 
@@ -168,8 +172,16 @@ fun DesktopSettingsAndPrivacyScreen(
   }
 
   LaunchedEffect(Unit) {
+    pendingSyncCount = withContext(Dispatchers.IO) { apiClient.pendingSettingsOutboxCount() }
     val fresh = withContext(Dispatchers.IO) { apiClient.getSettings() }
     onSettingsUpdated(fresh)
+    pendingSyncCount = withContext(Dispatchers.IO) { apiClient.pendingSettingsOutboxCount() }
+  }
+
+  LaunchedEffect(currentDest) {
+    if (currentDest == DesktopSettingsDestination.OFFLINE_SYNC || currentDest == DesktopSettingsDestination.HUB) {
+      pendingSyncCount = withContext(Dispatchers.IO) { apiClient.pendingSettingsOutboxCount() }
+    }
   }
 
   LaunchedEffect(currentDest, restrictedQuery, restrictedTab) {
@@ -204,6 +216,7 @@ fun DesktopSettingsAndPrivacyScreen(
     DesktopSettingsDestination.SHARE_PROFILE -> "Share profile"
     DesktopSettingsDestination.NOTIFICATIONS -> "Notifications"
     DesktopSettingsDestination.CONTENT_PREFERENCES -> "Content preferences"
+    DesktopSettingsDestination.OFFLINE_SYNC -> "Offline sync"
     DesktopSettingsDestination.BLOCKED_ACCOUNTS -> "Blocked & muted"
     DesktopSettingsDestination.REPORT_PROBLEM -> "Report a problem"
     DesktopSettingsDestination.SAFETY_CENTER -> "Safety Center"
@@ -277,6 +290,7 @@ fun DesktopSettingsAndPrivacyScreen(
                   username = username,
                   avatarUrl = avatarUrl,
                   searchQuery = searchQuery,
+                  pendingSyncCount = pendingSyncCount,
                   selectedDest = activeRight,
                   onSearchQueryChanged = { searchQuery = it },
                   onToggleTheme = onToggleTheme,
@@ -293,6 +307,7 @@ fun DesktopSettingsAndPrivacyScreen(
                       DesktopSettingsDestination.SHARE_PROFILE -> "Share profile"
                       DesktopSettingsDestination.NOTIFICATIONS -> "Notifications"
                       DesktopSettingsDestination.CONTENT_PREFERENCES -> "Content preferences"
+                      DesktopSettingsDestination.OFFLINE_SYNC -> "Offline sync"
                       DesktopSettingsDestination.BLOCKED_ACCOUNTS -> "Blocked & muted accounts"
                       DesktopSettingsDestination.REPORT_PROBLEM -> "Report a problem"
                       DesktopSettingsDestination.SAFETY_CENTER -> "Safety Center"
@@ -392,6 +407,39 @@ fun DesktopSettingsAndPrivacyScreen(
                         versionCheck = withContext(Dispatchers.IO) { apiClient.checkAppVersion() }
                       }
                     },
+                    pendingSyncCount = pendingSyncCount,
+                    isSyncingNow = isSyncingNow,
+                    syncFeedback = syncFeedback,
+                    onUpdateSyncPrefs = { next ->
+                      val updated = settingsBundle.copy(syncPreferences = next)
+                      onSettingsUpdated(updated)
+                      scope.launch {
+                        val synced = withContext(Dispatchers.IO) { apiClient.updateSyncPreferences(next) }
+                        onSettingsUpdated(synced)
+                        pendingSyncCount = withContext(Dispatchers.IO) { apiClient.pendingSettingsOutboxCount() }
+                      }
+                    },
+                    onTriggerSyncNow = {
+                      if (!isSyncingNow) {
+                        isSyncingNow = true
+                        syncFeedback = "Syncing queued changes with server..."
+                        scope.launch {
+                          val res = withContext(Dispatchers.IO) { apiClient.syncNowToServer() }
+                          onSettingsUpdated(res.bundle)
+                          pendingSyncCount = res.pendingRemaining
+                          syncFeedback = res.message
+                          isSyncingNow = false
+                          onToast(res.message)
+                        }
+                      }
+                    },
+                    onRefreshSyncStatus = {
+                      scope.launch {
+                        val fresh = withContext(Dispatchers.IO) { apiClient.getSettings() }
+                        onSettingsUpdated(fresh)
+                        pendingSyncCount = withContext(Dispatchers.IO) { apiClient.pendingSettingsOutboxCount() }
+                      }
+                    },
                     onOpenDestination = openDestination,
                     onToast = onToast,
                   )
@@ -407,6 +455,7 @@ fun DesktopSettingsAndPrivacyScreen(
                   username = username,
                   avatarUrl = avatarUrl,
                   searchQuery = searchQuery,
+                  pendingSyncCount = pendingSyncCount,
                   selectedDest = null,
                   onSearchQueryChanged = { searchQuery = it },
                   onToggleTheme = onToggleTheme,
@@ -501,6 +550,39 @@ fun DesktopSettingsAndPrivacyScreen(
                       versionCheck = withContext(Dispatchers.IO) { apiClient.checkAppVersion() }
                     }
                   },
+                  pendingSyncCount = pendingSyncCount,
+                  isSyncingNow = isSyncingNow,
+                  syncFeedback = syncFeedback,
+                  onUpdateSyncPrefs = { next ->
+                    val updated = settingsBundle.copy(syncPreferences = next)
+                    onSettingsUpdated(updated)
+                    scope.launch {
+                      val synced = withContext(Dispatchers.IO) { apiClient.updateSyncPreferences(next) }
+                      onSettingsUpdated(synced)
+                      pendingSyncCount = withContext(Dispatchers.IO) { apiClient.pendingSettingsOutboxCount() }
+                    }
+                  },
+                  onTriggerSyncNow = {
+                    if (!isSyncingNow) {
+                      isSyncingNow = true
+                      syncFeedback = "Syncing queued changes with server..."
+                      scope.launch {
+                        val res = withContext(Dispatchers.IO) { apiClient.syncNowToServer() }
+                        onSettingsUpdated(res.bundle)
+                        pendingSyncCount = res.pendingRemaining
+                        syncFeedback = res.message
+                        isSyncingNow = false
+                        onToast(res.message)
+                      }
+                    }
+                  },
+                  onRefreshSyncStatus = {
+                    scope.launch {
+                      val fresh = withContext(Dispatchers.IO) { apiClient.getSettings() }
+                      onSettingsUpdated(fresh)
+                      pendingSyncCount = withContext(Dispatchers.IO) { apiClient.pendingSettingsOutboxCount() }
+                    }
+                  },
                   onOpenDestination = openDestination,
                   onToast = onToast,
                 )
@@ -589,18 +671,25 @@ private fun DesktopSettingsHubBody(
   username: String,
   avatarUrl: String,
   searchQuery: String,
+  pendingSyncCount: Int,
   selectedDest: DesktopSettingsDestination?,
   onSearchQueryChanged: (String) -> Unit,
   onToggleTheme: () -> Unit,
   onSelectDestination: (DesktopSettingsDestination) -> Unit,
   onRequestLogout: () -> Unit,
 ) {
-  val allRows = remember {
+  val syncSubtitle = if (pendingSyncCount > 0) {
+    "$pendingSyncCount queued · Sync now"
+  } else {
+    "Auto-sync, Wi-Fi only, cache"
+  }
+  val allRows = remember(syncSubtitle) {
     listOf(
       DesktopSettingsRowModel("account_privacy", "Account", "Privacy", "Private account, blocked accounts, activity", DesktopSettingsSvgKind.ACTIVITY_PULSE, DesktopSettingsDestination.PRIVACY, "private account discovery activity comment mention"),
       DesktopSettingsRowModel("share_profile", "Account", "Share profile", "QR code, link, copy profile URL", DesktopSettingsSvgKind.SHARE_CARD, DesktopSettingsDestination.SHARE_PROFILE, "qr code link url invite"),
       DesktopSettingsRowModel("notifications", "Content & activity", "Notifications", "Push, email, SMS", DesktopSettingsSvgKind.BELL, DesktopSettingsDestination.NOTIFICATIONS, "push email sms quiet hours pause alerts"),
       DesktopSettingsRowModel("content_prefs", "Content & activity", "Content preferences", "Suggested content, language, video quality", DesktopSettingsSvgKind.HEART, DesktopSettingsDestination.CONTENT_PREFERENCES, "autoplay captions reduced motion data saver topics language"),
+      DesktopSettingsRowModel("offline_sync", "Content & activity", "Offline sync", syncSubtitle, DesktopSettingsSvgKind.CLOUD_SYNC, DesktopSettingsDestination.OFFLINE_SYNC, "offline sync queue cache server wifi background upload"),
       DesktopSettingsRowModel("safety_privacy", "Privacy and safety", "Privacy", "Who can see your videos, likes, comments, following", DesktopSettingsSvgKind.LOCK, DesktopSettingsDestination.PRIVACY, "likes following visibility cookies data sharing"),
       DesktopSettingsRowModel("blocked_accounts", "Privacy and safety", "Blocked accounts", "Manage blocked users", DesktopSettingsSvgKind.BLOCK_MINUS, DesktopSettingsDestination.BLOCKED_ACCOUNTS, "unblock muted mute restrict"),
       DesktopSettingsRowModel("report_problem", "Privacy and safety", "Report a problem", "Send feedback, report abuse", DesktopSettingsSvgKind.FLAG, DesktopSettingsDestination.REPORT_PROBLEM, "bug feedback screenshot ticket reference"),
@@ -801,6 +890,12 @@ private fun DesktopSettingsDetailHost(
   onRefreshStatus: () -> Unit,
   onSelectLegalDoc: (String?) -> Unit,
   onCheckUpdates: () -> Unit,
+  pendingSyncCount: Int,
+  isSyncingNow: Boolean,
+  syncFeedback: String,
+  onUpdateSyncPrefs: (DesktopSyncPreferences) -> Unit,
+  onTriggerSyncNow: () -> Unit,
+  onRefreshSyncStatus: () -> Unit,
   onOpenDestination: (DesktopSettingsDestination) -> Unit,
   onToast: (String) -> Unit,
 ) {
@@ -1090,6 +1185,104 @@ private fun DesktopSettingsDetailHost(
             DesktopRowDivider()
             DesktopToggleRow("Reduced motion", "Minimize animations across feeds and transitions", cp.reducedMotion) {
               onUpdateContentPrefs(cp.copy(reducedMotion = it), false)
+            }
+          }
+        }
+      }
+    }
+
+    DesktopSettingsDestination.OFFLINE_SYNC -> {
+      val sp = bundle.syncPreferences
+      val lastSyncedText = remember(sp.lastSyncedAtMs) {
+        if (sp.lastSyncedAtMs <= 0L) "Not synced yet"
+        else SimpleDateFormat("MMM d, HH:mm", Locale.US).format(Date(sp.lastSyncedAtMs))
+      }
+      LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxSize()) {
+        item {
+          Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp), shadowElevation = 1.dp) {
+            Column(modifier = Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+              Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                Column(modifier = Modifier.weight(1f)) {
+                  Text("Server synchronization", fontSize = 16.5.sp, fontWeight = FontWeight.Bold)
+                  Text(
+                    text = if (pendingSyncCount == 0) "All changes synced · Last synced: $lastSyncedText"
+                    else "$pendingSyncCount queued offline change(s) waiting to upload",
+                    fontSize = 12.5.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                  )
+                }
+                Surface(
+                  color = if (pendingSyncCount == 0) Color(0xFF0E7A45).copy(alpha = 0.14f) else DesktopCrimson.copy(alpha = 0.14f),
+                  shape = RoundedCornerShape(12.dp),
+                ) {
+                  Text(
+                    text = if (pendingSyncCount == 0) sp.lastSyncStatus.uppercase() else "$pendingSyncCount PENDING",
+                    color = if (pendingSyncCount == 0) Color(0xFF0E7A45) else DesktopCrimson,
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                  )
+                }
+              }
+
+              if (sp.totalSyncedOps > 0L) {
+                Text(
+                  text = "Total operations synced with server: ${sp.totalSyncedOps}",
+                  fontSize = 12.sp,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+              }
+
+              if (syncFeedback.isNotBlank()) {
+                Text(syncFeedback, fontSize = 12.5.sp, fontWeight = FontWeight.Medium, color = DesktopCrimson)
+              }
+
+              Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                Button(
+                  enabled = !isSyncingNow,
+                  onClick = onTriggerSyncNow,
+                  shape = RoundedCornerShape(14.dp),
+                  colors = ButtonDefaults.buttonColors(containerColor = DesktopCrimson),
+                  modifier = Modifier.weight(1f).height(46.dp),
+                ) {
+                  Text(if (isSyncingNow) "Syncing..." else "Sync now", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+                OutlinedButton(
+                  enabled = !isSyncingNow,
+                  onClick = onRefreshSyncStatus,
+                  shape = RoundedCornerShape(14.dp),
+                  border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                  modifier = Modifier.height(46.dp),
+                ) {
+                  Text("Refresh")
+                }
+              }
+            }
+          }
+        }
+        item {
+          DesktopSectionCard("Sync automation") {
+            DesktopToggleRow("Auto-sync when online", "Automatically push offline changes as soon as connectivity returns.", sp.autoSyncEnabled) {
+              onUpdateSyncPrefs(sp.copy(autoSyncEnabled = it))
+            }
+            DesktopRowDivider()
+            DesktopToggleRow("Sync over Wi-Fi only", "Defer heavy queue uploads on metered connections.", sp.syncOverWifiOnly) {
+              onUpdateSyncPrefs(sp.copy(syncOverWifiOnly = it))
+            }
+            DesktopRowDivider()
+            DesktopToggleRow("Background sync", "Keep settings, privacy rules, and chat themes aligned silently.", sp.backgroundSyncEnabled) {
+              onUpdateSyncPrefs(sp.copy(backgroundSyncEnabled = it))
+            }
+          }
+        }
+        item {
+          DesktopSectionCard("Offline cache") {
+            DesktopToggleRow("Cache feeds offline", "Store recent feeds locally so browsing keeps working without internet.", sp.cacheFeedsOffline) {
+              onUpdateSyncPrefs(sp.copy(cacheFeedsOffline = it))
+            }
+            DesktopRowDivider()
+            DesktopToggleRow("Cache chat media offline", "Keep recent photos and audio cached for instant offline playback.", sp.cacheChatMediaOffline) {
+              onUpdateSyncPrefs(sp.copy(cacheChatMediaOffline = it))
             }
           }
         }
@@ -1639,6 +1832,20 @@ private fun DesktopRedCircleSvgBadge(kind: DesktopSettingsSvgKind, size: Dp) {
           drawCircle(white, radius = w * 0.38f, center = Offset(w * 0.5f, h * 0.5f), style = stroke)
           drawCircle(white, radius = w * 0.045f, center = Offset(w * 0.50f, h * 0.32f))
           drawLine(white, Offset(w * 0.50f, h * 0.46f), Offset(w * 0.50f, h * 0.70f), sw, StrokeCap.Round)
+        }
+        DesktopSettingsSvgKind.CLOUD_SYNC -> {
+          val cloud = Path().apply {
+            moveTo(w * 0.28f, h * 0.68f)
+            lineTo(w * 0.74f, h * 0.68f)
+            cubicTo(w * 0.88f, h * 0.68f, w * 0.88f, h * 0.46f, w * 0.73f, h * 0.45f)
+            cubicTo(w * 0.71f, h * 0.26f, w * 0.43f, h * 0.24f, w * 0.37f, h * 0.42f)
+            cubicTo(w * 0.18f, h * 0.42f, w * 0.14f, h * 0.68f, w * 0.28f, h * 0.68f)
+            close()
+          }
+          drawPath(cloud, white, style = stroke)
+          drawLine(white, Offset(w * 0.50f, h * 0.46f), Offset(w * 0.50f, h * 0.62f), sw, StrokeCap.Round)
+          drawLine(white, Offset(w * 0.43f, h * 0.53f), Offset(w * 0.50f, h * 0.45f), sw, StrokeCap.Round)
+          drawLine(white, Offset(w * 0.57f, h * 0.53f), Offset(w * 0.50f, h * 0.45f), sw, StrokeCap.Round)
         }
       }
     }

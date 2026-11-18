@@ -104,6 +104,22 @@ class DeviceIdentityStore(private val context: Context) {
     return context.telefamPrefs.data.first()[keyLastSyncedCountryIso].orEmpty()
   }
 
+  suspend fun saveEncryptedSyncPrefsJson(userId: String, json: String) {
+    val cleanUid = userId.trim().ifBlank { return }
+    val key = stringPreferencesKey("sync_prefs_enc_$cleanUid")
+    val enc = EncryptedTokenVault.encrypt(json)
+    context.telefamPrefs.edit { prefs ->
+      prefs[key] = enc
+    }
+  }
+
+  suspend fun getEncryptedSyncPrefsJson(userId: String): String? {
+    val cleanUid = userId.trim().ifBlank { return null }
+    val key = stringPreferencesKey("sync_prefs_enc_$cleanUid")
+    val enc = context.telefamPrefs.data.first()[key] ?: return null
+    return EncryptedTokenVault.decrypt(enc).ifBlank { null }
+  }
+
   suspend fun saveEncryptedSession(
     userId: String,
     email: String,

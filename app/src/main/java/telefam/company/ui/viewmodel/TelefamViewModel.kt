@@ -27,6 +27,8 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import telefam.company.chat.ChatFeatureController
+import telefam.company.chat.TelefamChatUiState
 import telefam.company.core.AdaptiveStreamSelector
 import telefam.company.core.AppVersionCheckResult
 import telefam.company.core.ChatAudienceOption
@@ -45,7 +47,9 @@ import telefam.company.core.HashtagItem
 import telefam.company.core.LegalDocumentItem
 import telefam.company.core.NetworkTier
 import telefam.company.core.NotificationSettingsState
+import telefam.company.core.OfflineSyncStatusSnapshot
 import telefam.company.core.OwnerProfileTab
+import telefam.company.core.SyncPreferencesState
 import telefam.company.core.PostFontOption
 import telefam.company.core.PostMode
 import telefam.company.core.PostPrivacy
@@ -389,6 +393,8 @@ data class TelefamUiState(
   val comingSoonMessage: String? = null,
   val showSettingsModal: Boolean = false,
   val settings: SettingsSnapshot = SettingsSnapshot(),
+  val syncStatus: OfflineSyncStatusSnapshot = OfflineSyncStatusSnapshot(),
+  val isWifiConnected: Boolean = true,
   val settingsBackStack: List<SettingsDestination> = emptyList(),
   val settingsSearchQuery: String = "",
   val restrictedAccountsTab: Int = 0,
@@ -427,6 +433,7 @@ data class TelefamUiState(
   val tryAnotherWayApprovalRequestId: String? = null,
   val chatPrivacy: ChatPrivacySettingsState = ChatPrivacySettingsState(),
   val chatPrivacyBackStack: List<ChatPrivacyRoute> = emptyList(),
+  val chatState: TelefamChatUiState = TelefamChatUiState(),
 ) {
   val activeUserProfile: UserProfileScreenState?
     get() = profileBackStack.lastOrNull()
@@ -468,6 +475,8 @@ class TelefamViewModel(
   private var previewPlayer: ExoPlayer? = null
   private var lastInitializedSettingsUid: String = ""
   private val profileMutationEpoch = mutableMapOf<String, Long>()
+
+  val chatController = ChatFeatureController(viewModelScope, repository, _uiState)
 
   init {
     viewModelScope.launch {
@@ -574,10 +583,16 @@ class TelefamViewModel(
         }
 
         if (wasOffline && tier != NetworkTier.OFFLINE && isAuthenticated) {
-          repository.flushOfflineQueue()
-          repository.flushPendingSettingsOps()
-          launch { repository.flushPendingDeviceContext(force = true) }
-          refreshAllSettingsFromServer()
+          val syncPrefs = _uiState.value.settings.syncPreferences
+          val wifiOk = !syncPrefs.syncOverWifiOnly || repository.isWifiOrUnmetered()
+          if (syncPrefs.autoSyncEnabled && wifiOk) {
+            repository.flushOfflineQueue()
+            repository.flushPendingSettingsOps()
+            launch { repository.flushPendingDeviceContext(force = true) }
+            refreshAllSettingsFromServer()
+          }
+          val latestStatus = runCatching { repository.getOfflineSyncStatus() }.getOrDefault(_uiState.value.syncStatus)
+          _uiState.update { it.copy(syncStatus = latestStatus, isWifiConnected = repository.isWifiOrUnmetered()) }
           refreshIncomingLoginRequests()
           when (_uiState.value.activeHomeTab) {
             HomeTab.CONTACTS -> refreshContacts()
@@ -3011,6 +3026,7 @@ class TelefamViewModel(
     }
     when (destination) {
       SettingsDestination.BLOCKED_ACCOUNTS -> refreshRestrictedAccounts()
+      SettingsDestination.OFFLINE_SYNC -> refreshOfflineSyncStatus()
       SettingsDestination.HELP_SUPPORT -> {
         refreshSupportTickets()
         searchFaqs(_uiState.value.faqSearchQuery)
@@ -3041,10 +3057,17 @@ class TelefamViewModel(
     val fetchedChatPrivacy = repository.fetchChatPrivacy()
     val blocked = repository.listRestrictedAccounts(isMuted = false, query = _uiState.value.restrictedAccountsQuery)
     val muted = repository.listRestrictedAccounts(isMuted = true, query = _uiState.value.restrictedAccountsQuery)
+    val latestSyncStatus = repository.getOfflineSyncStatus(
+      isSyncing = _uiState.value.syncStatus.isSyncing,
+      lastResultMessage = _uiState.value.syncStatus.lastResultMessage,
+    )
+    val wifiConnected = repository.isWifiOrUnmetered()
     _uiState.update { s ->
       s.copy(
         settings = fetched,
         chatPrivacy = fetchedChatPrivacy,
+        syncStatus = latestSyncStatus,
+        isWifiConnected = wifiConnected,
         blockedAccounts = blocked,
         mutedAccounts = muted,
         ownProfileState = s.ownProfileState?.copy(
@@ -3184,8 +3207,58 @@ class TelefamViewModel(
     }
     viewModelScope.launch {
       repository.saveContentPreferences(stamped, resetSuggestions = resetSuggestions)
+      refreshOfflineSyncStatus()
       if (resetSuggestions) {
         refreshFeeds()
+      }
+    }
+  }
+
+  fun refreshOfflineSyncStatus() {
+    viewModelScope.launch {
+      val currentMsg = _uiState.value.syncStatus.lastResultMessage
+      val status = repository.getOfflineSyncStatus(isSyncing = _uiState.value.syncStatus.isSyncing, lastResultMessage = currentMsg)
+      _uiState.update { it.copy(syncStatus = status, isWifiConnected = repository.isWifiOrUnmetered()) }
+    }
+  }
+
+  fun updateSyncPreferences(next: SyncPreferencesState) {
+    val stamped = next.copy(updatedAtMs = System.currentTimeMillis())
+    _uiState.update { s ->
+      s.copy(settings = s.settings.copy(syncPreferences = stamped))
+    }
+    viewModelScope.launch {
+      val updatedSnapshot = repository.saveSyncPreferences(stamped)
+      val status = repository.getOfflineSyncStatus(lastResultMessage = _uiState.value.syncStatus.lastResultMessage)
+      _uiState.update { s ->
+        s.copy(
+          settings = updatedSnapshot,
+          syncStatus = status,
+          isWifiConnected = repository.isWifiOrUnmetered(),
+        )
+      }
+    }
+  }
+
+  fun triggerManualSyncNow() {
+    if (_uiState.value.syncStatus.isSyncing) return
+    _uiState.update { s ->
+      s.copy(
+        syncStatus = s.syncStatus.copy(
+          isSyncing = true,
+          lastResultMessage = "Synchronizing queued changes with server...",
+        ),
+      )
+    }
+    viewModelScope.launch {
+      val (updatedSettings, updatedStatus) = repository.performManualServerSyncNow()
+      _uiState.update { s ->
+        s.copy(
+          settings = updatedSettings,
+          syncStatus = updatedStatus,
+          isWifiConnected = repository.isWifiOrUnmetered(),
+          profileToastMessage = updatedStatus.lastResultMessage.takeIf { it.isNotBlank() } ?: s.profileToastMessage,
+        )
       }
     }
   }
@@ -3789,6 +3862,7 @@ class TelefamViewModel(
   override fun onCleared() {
     super.onCleared()
     stopSongPreview()
+    chatController.cleanup()
   }
 
   class Factory(private val repository: TelefamRepository) : ViewModelProvider.Factory {

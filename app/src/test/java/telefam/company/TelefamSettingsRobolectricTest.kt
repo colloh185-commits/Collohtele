@@ -43,8 +43,10 @@ import org.robolectric.shadows.ShadowNetworkCapabilities
 import retrofit2.Response
 import telefam.company.core.ContentPreferencesState
 import telefam.company.core.NotificationSettingsState
+import telefam.company.core.OfflineSyncStatusSnapshot
 import telefam.company.core.PrivacySettingsState
 import telefam.company.core.SettingsDestination
+import telefam.company.core.SyncPreferencesState
 import telefam.company.core.TelefamQrEncoder
 import telefam.company.core.VideoQualityOption
 import telefam.company.data.local.DeviceIdentityStore
@@ -349,6 +351,118 @@ class TelefamSettingsRobolectricTest {
     assertTrue(showDialog)
   }
 
+  @Test
+  fun `offline sync preferences queue locally and manual syncNow clears outbox and updates server`() = runTest {
+    setNetworkOnline(false)
+    networkMonitor.refreshStatus()
+
+    repository.savePrivacySettings(PrivacySettingsState(isPrivateAccount = true))
+    repository.saveSyncPreferences(
+      SyncPreferencesState(
+        autoSyncEnabled = false,
+        syncOverWifiOnly = true,
+        backgroundSyncEnabled = false,
+        cacheFeedsOffline = false,
+        cacheChatMediaOffline = true,
+      ),
+    )
+
+    val ops = db.telefamDao().getReadySettingsOps("caller_1", System.currentTimeMillis() + 60_000L, 20)
+    assertTrue(ops.any { it.opKind == "sync_prefs" })
+    assertTrue(ops.size >= 2)
+    assertTrue(repository.getOfflineSyncStatus().totalPendingCount >= 2)
+
+    // On metered connection with syncOverWifiOnly=true, sync waits for Wi-Fi
+    setNetworkOnline(online = true, wifi = false)
+    networkMonitor.refreshStatus()
+    val (_, meteredStatus) = repository.performManualServerSyncNow()
+    assertTrue(meteredStatus.lastResultMessage.contains("Wi-Fi", ignoreCase = true))
+    assertEquals(0, fakeApi.manualSyncCount)
+
+    // Switch to Wi-Fi -> manual sync flushes outbox and updates server state
+    setNetworkOnline(online = true, wifi = true)
+    networkMonitor.refreshStatus()
+    val (mergedSnapshot, postStatus) = repository.performManualServerSyncNow()
+    assertTrue(fakeApi.manualSyncCount >= 1)
+    assertTrue(fakeApi.storedSyncPrefs.syncOverWifiOnly)
+    assertFalse(fakeApi.storedSyncPrefs.autoSyncEnabled)
+    assertTrue(mergedSnapshot.syncPreferences.syncOverWifiOnly)
+    assertTrue(db.telefamDao().getReadySettingsOps("caller_1", System.currentTimeMillis() + 60_000L, 20).isEmpty())
+    assertEquals(0, postStatus.totalPendingCount)
+    assertEquals(0, repository.getOfflineSyncStatus().totalPendingCount)
+  }
+
+  @Test
+  fun `settings screen shows offline sync hub row and triggers sync now and toggles`() {
+    var activeDest by mutableStateOf(SettingsDestination.HUB)
+    var syncPrefs by mutableStateOf(SyncPreferencesState())
+    var syncTriggered by mutableStateOf(false)
+
+    composeRule.setContent {
+      TelefamTheme(themeMode = ThemeMode.LIGHT) {
+        TelefamSettingsScreen(
+          uiState = TelefamUiState(
+            isAuthenticated = true,
+            profileCompleted = true,
+            userId = "caller_1",
+            showSettingsModal = true,
+            settingsBackStack = listOf(activeDest),
+            settings = telefam.company.core.SettingsSnapshot(syncPreferences = syncPrefs),
+            syncStatus = OfflineSyncStatusSnapshot(
+              pendingSettingsOps = 2,
+              lastSyncedAtMs = System.currentTimeMillis(),
+              lastResultMessage = "2 queued changes ready",
+            ),
+          ),
+          onNavigateBack = { activeDest = SettingsDestination.HUB },
+          onOpenDestination = { activeDest = it },
+          onSearchQueryChanged = {},
+          onToggleTheme = {},
+          onUpdatePrivacy = {},
+          onUpdateNotifications = {},
+          onUpdateContentPreferences = { _, _ -> },
+          onUpdateSyncPreferences = { syncPrefs = it },
+          onTriggerManualSync = { syncTriggered = true },
+          onRefreshSyncStatus = {},
+          onRestrictedTabSelected = {},
+          onRestrictedQueryChanged = {},
+          onUnblockAccount = {},
+          onUnmuteAccount = {},
+          onSubmitProblemReport = { _, _, _ -> },
+          onClearLastCreatedTicket = {},
+          onSearchFaq = {},
+          onRefreshTickets = {},
+          onRefreshStatus = {},
+          onSelectLegalDoc = {},
+          onCheckAppUpdates = {},
+          onShowToast = {},
+          onRequestLogout = {},
+          onDismissLogoutDialog = {},
+          onToggleLogoutAllDevices = {},
+          onConfirmLogout = {},
+        )
+      }
+    }
+
+    composeRule.onNodeWithTag("settings_hub_list").performScrollToNode(hasTestTag("settings_row_offline_sync"))
+    composeRule.onNodeWithTag("settings_row_offline_sync").assertIsDisplayed().performClick()
+    composeRule.waitForIdle()
+    assertEquals(SettingsDestination.OFFLINE_SYNC, activeDest)
+
+    composeRule.onNodeWithTag("offline_sync_pending_count").assertIsDisplayed()
+    composeRule.onNodeWithTag("sync_wifi_only_switch").performClick()
+    composeRule.waitForIdle()
+    assertTrue(syncPrefs.syncOverWifiOnly)
+
+    composeRule.onNodeWithTag("sync_auto_sync_switch").performClick()
+    composeRule.waitForIdle()
+    assertFalse(syncPrefs.autoSyncEnabled)
+
+    composeRule.onNodeWithTag("settings_offline_sync_now_button").performClick()
+    composeRule.waitForIdle()
+    assertTrue(syncTriggered)
+  }
+
   private fun waitUntilMain(timeoutMs: Long = 3_000L, predicate: () -> Boolean) {
     val deadline = System.currentTimeMillis() + timeoutMs
     while (!predicate() && System.currentTimeMillis() < deadline) {
@@ -360,22 +474,31 @@ class TelefamSettingsRobolectricTest {
     shadowOf(Looper.getMainLooper()).idle()
   }
 
-  private fun setNetworkOnline(online: Boolean) {
+  private fun setNetworkOnline(online: Boolean, wifi: Boolean = true) {
     val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
     val active = cm.activeNetwork ?: return
     val caps = ShadowNetworkCapabilities.newInstance()
     if (online) {
       shadowOf(caps).addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
       shadowOf(caps).addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+      if (wifi) {
+        shadowOf(caps).addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+        shadowOf(caps).addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+      } else {
+        shadowOf(caps).addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
+      }
     }
     shadowOf(cm).setNetworkCapabilities(active, caps)
   }
 
-  private class FakeSettingsApiService : TelefamApiService {
+  private class FakeSettingsApiService : AbstractTestChatApiStub() {
     var privacySavedCount = 0
     var notificationSavedCount = 0
     var contentPrefSavedCount = 0
+    var syncPrefSavedCount = 0
+    var manualSyncCount = 0
     var lastLogoutAllDevices: Boolean? = null
+    var storedSyncPrefs = telefam.company.data.network.SyncPreferencesDto()
 
     private val blocked = mutableListOf(
       RestrictedAccountItemDto("u_blk_1", "Blocked User", "blocked_u", "", 1_000L),
@@ -392,6 +515,7 @@ class TelefamSettingsRobolectricTest {
           privacy = PrivacySettingsDto(),
           notifications = NotificationSettingsDto(),
           contentPreferences = ContentPreferencesDto(),
+          syncPreferences = storedSyncPrefs,
         ),
       )
 
@@ -513,5 +637,38 @@ class TelefamSettingsRobolectricTest {
     override suspend fun getLoginRequestStatus(deviceFingerprint: String, pollToken: String, requestId: String): Response<telefam.company.data.network.LoginApprovalStatusResponseDto> = Response.success(telefam.company.data.network.LoginApprovalStatusResponseDto(success = true, status = "pending", remainingSeconds = 60L))
     override suspend fun respondToLoginRequest(bearer: String, deviceFingerprint: String, requestId: String, body: telefam.company.data.network.RespondLoginRequestDto): Response<telefam.company.data.network.RespondLoginRequestResponseDto> = Response.success(telefam.company.data.network.RespondLoginRequestResponseDto(success = true, requestId = requestId))
     override suspend fun syncDeviceContext(bearer: String, deviceFingerprint: String, body: telefam.company.data.network.DeviceContextTelemetryDto): Response<telefam.company.data.network.DeviceContextTelemetryResponseDto> = Response.success(telefam.company.data.network.DeviceContextTelemetryResponseDto(success = true))
+
+    override suspend fun getSyncSettings(bearer: String, deviceFingerprint: String): Response<telefam.company.data.network.SyncSettingsResponseDto> =
+      Response.success(telefam.company.data.network.SyncSettingsResponseDto(success = true, syncPreferences = storedSyncPrefs))
+
+    override suspend fun updateSyncSettings(bearer: String, deviceFingerprint: String, body: telefam.company.data.network.SyncPreferencesDto): Response<telefam.company.data.network.SyncSettingsResponseDto> {
+      syncPrefSavedCount++
+      storedSyncPrefs = body.copy(lastSyncedAtMs = System.currentTimeMillis())
+      return Response.success(telefam.company.data.network.SyncSettingsResponseDto(success = true, syncPreferences = storedSyncPrefs))
+    }
+
+    override suspend fun syncNow(bearer: String, deviceFingerprint: String, body: telefam.company.data.network.ManualSyncRequestDto): Response<telefam.company.data.network.ManualSyncResponseDto> {
+      manualSyncCount++
+      val now = System.currentTimeMillis()
+      val updatedPrefs = (body.syncPreferences ?: storedSyncPrefs).copy(
+        lastSyncedAtMs = now,
+        lastSyncStatus = "synced",
+        totalSyncedOps = storedSyncPrefs.totalSyncedOps + body.operations.size.toLong(),
+      )
+      storedSyncPrefs = updatedPrefs
+      return Response.success(
+        telefam.company.data.network.ManualSyncResponseDto(
+          success = true,
+          syncedOpsCount = body.operations.size,
+          ackedOpIds = body.operations.map { it.clientOpId },
+          syncPreferences = updatedPrefs,
+          privacy = body.privacy,
+          notifications = body.notifications,
+          contentPreferences = body.contentPreferences,
+          chatPrivacy = body.chatPrivacy,
+          serverEpochMs = now,
+        ),
+      )
+    }
   }
 }

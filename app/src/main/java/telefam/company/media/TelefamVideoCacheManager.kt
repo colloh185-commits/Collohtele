@@ -22,6 +22,8 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
 import coil.ImageLoader
+import coil.decode.GifDecoder
+import coil.decode.ImageDecoderDecoder
 import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import com.telefam.company.app.BuildConfig
@@ -109,6 +111,13 @@ object TelefamVideoCacheManager {
         val appCtx = context.applicationContext
         ImageLoader.Builder(appCtx)
           .okHttpClient { getHttpClient() }
+          .components {
+            if (android.os.Build.VERSION.SDK_INT >= 28) {
+              add(ImageDecoderDecoder.Factory())
+            } else {
+              add(GifDecoder.Factory())
+            }
+          }
           .memoryCache {
             MemoryCache.Builder(appCtx)
               .maxSizePercent(0.20)

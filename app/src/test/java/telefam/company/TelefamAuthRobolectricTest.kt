@@ -211,7 +211,7 @@ class TelefamAuthRobolectricTest {
     assertFalse(MediaUploadProcessor.isSupportedImageMagicBytes(scriptHeader))
   }
 
-  private class RecordingTelefamApiService : TelefamApiService {
+  private class RecordingTelefamApiService : AbstractTestChatApiStub() {
     var lastDeviceFp: String = ""
     var lastIpFp: String = ""
     var lastRequestedEmail: String = ""
@@ -595,5 +595,14 @@ class TelefamAuthRobolectricTest {
 
     override suspend fun syncDeviceContext(bearer: String, deviceFingerprint: String, body: telefam.company.data.network.DeviceContextTelemetryDto): Response<telefam.company.data.network.DeviceContextTelemetryResponseDto> =
       Response.success(telefam.company.data.network.DeviceContextTelemetryResponseDto(success = true))
+
+    override suspend fun getSyncSettings(bearer: String, deviceFingerprint: String): Response<telefam.company.data.network.SyncSettingsResponseDto> =
+      Response.success(telefam.company.data.network.SyncSettingsResponseDto(success = true))
+
+    override suspend fun updateSyncSettings(bearer: String, deviceFingerprint: String, body: telefam.company.data.network.SyncPreferencesDto): Response<telefam.company.data.network.SyncSettingsResponseDto> =
+      Response.success(telefam.company.data.network.SyncSettingsResponseDto(success = true, syncPreferences = body))
+
+    override suspend fun syncNow(bearer: String, deviceFingerprint: String, body: telefam.company.data.network.ManualSyncRequestDto): Response<telefam.company.data.network.ManualSyncResponseDto> =
+      Response.success(telefam.company.data.network.ManualSyncResponseDto(success = true, ackedOpIds = body.operations.map { it.clientOpId }))
   }
 }

@@ -257,6 +257,7 @@ class TelefamChatPrivacyRobolectricTest {
           TelefamChatPrivacyHostScreen(
             route = route,
             state = state,
+            previewSenderName = "Alex Mwangi",
             onNavigateBack = {
               if (backStack.isNotEmpty()) backStack.removeAt(backStack.lastIndex)
             },
@@ -308,7 +309,8 @@ class TelefamChatPrivacyRobolectricTest {
     composeRule.waitForIdle()
     assertEquals(13, TelefamChatPrivacyCatalog.themes.size)
     composeRule.onNodeWithText("Select theme").assertIsDisplayed()
-    composeRule.onNodeWithText("Executive officer").performScrollTo().assertIsDisplayed()
+    composeRule.onNodeWithText("Alex Mwangi").performScrollTo().assertIsDisplayed()
+    composeRule.onNodeWithText("Executive officer").assertDoesNotExist()
     composeRule.onNodeWithText("It's morning in Tokyo").performScrollTo().assertIsDisplayed()
     composeRule.onNodeWithTag("theme_tile_spring_meadow").performScrollTo().performClick()
     composeRule.waitForIdle()
@@ -349,7 +351,7 @@ class TelefamChatPrivacyRobolectricTest {
     shadowOf(cm).setNetworkCapabilities(active, caps)
   }
 
-  private class FakeChatPrivacyApiService : TelefamApiService {
+  private class FakeChatPrivacyApiService : AbstractTestChatApiStub() {
     var privacyUpdates = 0
     var themeUpdates = 0
     var stored = ChatPrivacySettingsDto()
@@ -437,5 +439,8 @@ class TelefamChatPrivacyRobolectricTest {
     override suspend fun getLoginRequestStatus(deviceFingerprint: String, pollToken: String, requestId: String): Response<LoginApprovalStatusResponseDto> = Response.success(LoginApprovalStatusResponseDto(success = true, status = "pending", remainingSeconds = 60L))
     override suspend fun respondToLoginRequest(bearer: String, deviceFingerprint: String, requestId: String, body: RespondLoginRequestDto): Response<RespondLoginRequestResponseDto> = Response.success(RespondLoginRequestResponseDto(success = true, requestId = requestId))
     override suspend fun syncDeviceContext(bearer: String, deviceFingerprint: String, body: DeviceContextTelemetryDto): Response<DeviceContextTelemetryResponseDto> = Response.success(DeviceContextTelemetryResponseDto(success = true))
+    override suspend fun getSyncSettings(bearer: String, deviceFingerprint: String): Response<telefam.company.data.network.SyncSettingsResponseDto> = Response.success(telefam.company.data.network.SyncSettingsResponseDto(success = true))
+    override suspend fun updateSyncSettings(bearer: String, deviceFingerprint: String, body: telefam.company.data.network.SyncPreferencesDto): Response<telefam.company.data.network.SyncSettingsResponseDto> = Response.success(telefam.company.data.network.SyncSettingsResponseDto(success = true, syncPreferences = body))
+    override suspend fun syncNow(bearer: String, deviceFingerprint: String, body: telefam.company.data.network.ManualSyncRequestDto): Response<telefam.company.data.network.ManualSyncResponseDto> = Response.success(telefam.company.data.network.ManualSyncResponseDto(success = true, ackedOpIds = body.operations.map { it.clientOpId }))
   }
 }

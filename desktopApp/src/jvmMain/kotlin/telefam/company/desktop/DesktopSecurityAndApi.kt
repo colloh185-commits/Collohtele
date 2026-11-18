@@ -25,6 +25,8 @@ import java.time.LocalDate
 import java.time.Period
 import java.util.Base64
 import java.util.UUID
+import java.util.zip.GZIPInputStream
+import java.util.zip.GZIPOutputStream
 import javax.crypto.Cipher
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
@@ -1464,7 +1466,8 @@ class DesktopApiClient(
       append("\"privacy\":").append(encodePrivacyJson(bundle.privacy)).append(',')
       append("\"notifications\":").append(encodeNotificationsJson(bundle.notifications)).append(',')
       append("\"content_preferences\":").append(encodeContentPrefsJson(bundle.contentPreferences, resetSuggestions = false)).append(',')
-      append("\"chat_privacy\":").append(encodeChatPrivacyJson(bundle.chatPrivacy))
+      append("\"chat_privacy\":").append(encodeChatPrivacyJson(bundle.chatPrivacy)).append(',')
+      append("\"sync_preferences\":").append(encodeSyncPrefsJson(bundle.syncPreferences))
       append('}')
     }
     saveCachedText("settings_$uid.json", json)
@@ -1501,8 +1504,13 @@ class DesktopApiClient(
     saveCachedText("settings_outbox_$uid.json", json)
   }
 
+  fun pendingSettingsOutboxCount(): Int = loadPendingSettingsOps().size
+
   private fun enqueueSettingsOp(kind: String, payloadJson: String) {
     val list = loadPendingSettingsOps()
+    if (kind == "privacy" || kind == "notifications" || kind == "content_prefs" || kind == "chat_privacy" || kind == "chat_theme" || kind == "sync_prefs") {
+      list.removeAll { it.opKind == kind }
+    }
     list.add(
       DesktopPendingSettingsOp(
         opId = "${kind}_${UUID.randomUUID()}",
@@ -1539,6 +1547,10 @@ class DesktopApiClient(
         }
         "chat_theme" -> {
           val r = executeRaw("PUT", "/v1/chat/theme", op.payloadJson.toByteArray(StandardCharsets.UTF_8), auth = true)
+          r != null && r.first in 200..299
+        }
+        "sync_prefs" -> {
+          val r = executeRaw("PUT", "/v1/settings/sync", op.payloadJson.toByteArray(StandardCharsets.UTF_8), auth = true)
           r != null && r.first in 200..299
         }
         "mute" -> {
@@ -1685,6 +1697,72 @@ class DesktopApiClient(
     }
     enqueueSettingsOp("chat_theme", payload)
     return updated
+  }
+
+  fun updateSyncPreferences(next: DesktopSyncPreferences): DesktopSettingsBundle {
+    val cur = loadCachedSettingsBundle()
+    val stamped = next.copy(updatedAtMs = System.currentTimeMillis())
+    val updated = cur.copy(syncPreferences = stamped)
+    saveCachedSettingsBundle(updated)
+    val payload = encodeSyncPrefsJson(stamped)
+    val resp = executeRaw("PUT", "/v1/settings/sync", payload.toByteArray(StandardCharsets.UTF_8), auth = true)
+    if (resp != null && resp.first in 200..299) {
+      val map = DesktopJson.parseObject(resp.second)
+      val spMap = DesktopJson.objOrNull(map, "sync_preferences")
+      val synced = if (spMap != null) updated.copy(syncPreferences = parseSyncPreferences(spMap)) else parseSettingsBundle(map)
+      saveCachedSettingsBundle(synced)
+      return synced
+    }
+    enqueueSettingsOp("sync_prefs", payload)
+    return updated
+  }
+
+  fun syncNowToServer(): DesktopSyncRunResult {
+    flushSettingsOutbox()
+    val cur = loadCachedSettingsBundle()
+    val payload = buildString {
+      append('{')
+      append("\"client_sync_id\":\"").append(DesktopJson.escape(UUID.randomUUID().toString())).append("\",")
+      append("\"privacy\":").append(encodePrivacyJson(cur.privacy)).append(',')
+      append("\"notifications\":").append(encodeNotificationsJson(cur.notifications)).append(',')
+      append("\"content_preferences\":").append(encodeContentPrefsJson(cur.contentPreferences, resetSuggestions = false)).append(',')
+      append("\"chat_privacy\":").append(encodeChatPrivacyJson(cur.chatPrivacy)).append(',')
+      append("\"sync_preferences\":").append(encodeSyncPrefsJson(cur.syncPreferences))
+      append('}')
+    }
+    val resp = executeRaw("POST", "/v1/sync/now", payload.toByteArray(StandardCharsets.UTF_8), auth = true)
+    if (resp != null && resp.first in 200..299) {
+      val map = DesktopJson.parseObject(resp.second)
+      if (DesktopJson.bool(map, "success")) {
+        val synced = parseSettingsBundle(map)
+        saveCachedSettingsBundle(synced)
+        val count = DesktopJson.long(map, "synced_ops_count", 0L).toInt()
+        val rem = pendingSettingsOutboxCount()
+        val msg = if (rem == 0) "All data synced with server" else "Synced $count section(s), $rem pending"
+        return DesktopSyncRunResult(
+          success = true,
+          syncedOpsCount = count,
+          pendingRemaining = rem,
+          message = msg,
+          bundle = synced,
+        )
+      }
+    }
+    val rem = pendingSettingsOutboxCount()
+    val queuedBundle = cur.copy(
+      syncPreferences = cur.syncPreferences.copy(
+        lastSyncStatus = if (rem > 0) "queued" else cur.syncPreferences.lastSyncStatus,
+        updatedAtMs = System.currentTimeMillis(),
+      ),
+    )
+    saveCachedSettingsBundle(queuedBundle)
+    return DesktopSyncRunResult(
+      success = false,
+      syncedOpsCount = 0,
+      pendingRemaining = rem,
+      message = "Offline or unreachable — changes remain safely queued",
+      bundle = queuedBundle,
+    )
   }
 
   fun listBlockedAccounts(query: String): List<DesktopRestrictedAccount> =
@@ -2002,6 +2080,7 @@ class DesktopApiClient(
     val nMap = DesktopJson.objOrNull(map, "notifications")
     val cMap = DesktopJson.objOrNull(map, "content_preferences")
     val cpMap = DesktopJson.objOrNull(map, "chat_privacy")
+    val spMap = DesktopJson.objOrNull(map, "sync_preferences")
     return DesktopSettingsBundle(
       privacy = if (pMap == null) DesktopPrivacySettings() else DesktopPrivacySettings(
         isPrivateAccount = DesktopJson.bool(pMap, "is_private_account"),
@@ -2043,7 +2122,34 @@ class DesktopApiClient(
         updatedAtMs = DesktopJson.long(cMap, "updated_at_ms", 0L),
       ),
       chatPrivacy = if (cpMap == null) DesktopChatPrivacySettings() else parseChatPrivacy(cpMap),
+      syncPreferences = if (spMap == null) DesktopSyncPreferences() else parseSyncPreferences(spMap),
     )
+  }
+
+  private fun parseSyncPreferences(m: Map<String, Any?>): DesktopSyncPreferences = DesktopSyncPreferences(
+    autoSyncEnabled = if (m.containsKey("auto_sync_enabled")) DesktopJson.bool(m, "auto_sync_enabled") else true,
+    syncOverWifiOnly = DesktopJson.bool(m, "sync_over_wifi_only"),
+    backgroundSyncEnabled = if (m.containsKey("background_sync_enabled")) DesktopJson.bool(m, "background_sync_enabled") else true,
+    cacheFeedsOffline = if (m.containsKey("cache_feeds_offline")) DesktopJson.bool(m, "cache_feeds_offline") else true,
+    cacheChatMediaOffline = if (m.containsKey("cache_chat_media_offline")) DesktopJson.bool(m, "cache_chat_media_offline") else true,
+    lastSyncedAtMs = DesktopJson.long(m, "last_synced_at_ms", 0L),
+    lastSyncStatus = DesktopJson.str(m, "last_sync_status").ifBlank { "idle" },
+    totalSyncedOps = DesktopJson.long(m, "total_synced_ops", 0L),
+    updatedAtMs = DesktopJson.long(m, "updated_at_ms", 0L),
+  )
+
+  private fun encodeSyncPrefsJson(s: DesktopSyncPreferences): String = buildString {
+    append('{')
+    append("\"auto_sync_enabled\":").append(s.autoSyncEnabled).append(',')
+    append("\"sync_over_wifi_only\":").append(s.syncOverWifiOnly).append(',')
+    append("\"background_sync_enabled\":").append(s.backgroundSyncEnabled).append(',')
+    append("\"cache_feeds_offline\":").append(s.cacheFeedsOffline).append(',')
+    append("\"cache_chat_media_offline\":").append(s.cacheChatMediaOffline).append(',')
+    append("\"last_synced_at_ms\":").append(s.lastSyncedAtMs).append(',')
+    append("\"last_sync_status\":\"").append(DesktopJson.escape(s.lastSyncStatus)).append("\",")
+    append("\"total_synced_ops\":").append(s.totalSyncedOps).append(',')
+    append("\"updated_at_ms\":").append(s.updatedAtMs)
+    append('}')
   }
 
   private fun parseChatPrivacy(m: Map<String, Any?>): DesktopChatPrivacySettings = DesktopChatPrivacySettings(
@@ -2219,6 +2325,75 @@ class DesktopApiClient(
     return if (status == 429) "Try again later" else "Unable to complete request ($status)"
   }
 
+  fun currentSessionSnapshot(): DesktopSession = session
+  fun currentBaseUrl(): String? = baseUrl()
+  fun currentDeviceFp(): String = deviceFingerprint
+  fun currentHttpClient(): HttpClient = httpClient
+
+  fun executeChatRaw(
+    method: String,
+    path: String,
+    jsonBody: String? = null,
+  ): Pair<Int, String>? = executeRaw(
+    method = method,
+    path = path,
+    body = jsonBody?.toByteArray(StandardCharsets.UTF_8),
+    auth = true,
+  )
+
+  fun uploadVoiceMediaMultipart(
+    conversationId: String,
+    durationMs: Long,
+    viewOnce: Boolean,
+    audioBytes: ByteArray,
+    filename: String,
+  ): Pair<Int, String>? {
+    val boundary = "TelefamVoiceBoundary${UUID.randomUUID().toString().replace("-", "")}"
+    val baos = ByteArrayOutputStream()
+    fun appendPart(name: String, value: String) {
+      baos.write("--$boundary\r\nContent-Disposition: form-data; name=\"$name\"\r\n\r\n$value\r\n".toByteArray(StandardCharsets.UTF_8))
+    }
+    appendPart("conversation_id", conversationId)
+    appendPart("duration_ms", durationMs.toString())
+    appendPart("view_once", viewOnce.toString())
+    val mime = if (filename.endsWith(".wav", ignoreCase = true)) "audio/wav" else "audio/mp4"
+    baos.write(
+      "--$boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"$filename\"\r\nContent-Type: $mime\r\n\r\n"
+        .toByteArray(StandardCharsets.UTF_8),
+    )
+    baos.write(audioBytes)
+    baos.write("\r\n--$boundary--\r\n".toByteArray(StandardCharsets.UTF_8))
+    return executeRaw(
+      method = "POST",
+      path = "/v1/chat/media/voice",
+      body = baos.toByteArray(),
+      auth = true,
+      contentType = "multipart/form-data; boundary=$boundary",
+    )
+  }
+
+  fun downloadMediaBytes(rawUrl: String): ByteArray? {
+    val clean = rawUrl.trim()
+    if (clean.isBlank()) return null
+    val resolved = when {
+      clean.startsWith("http://") || clean.startsWith("https://") -> clean
+      clean.startsWith("/") -> "${baseUrl() ?: return null}$clean"
+      else -> "${baseUrl() ?: return null}/$clean"
+    }
+    val reqBuilder = HttpRequest.newBuilder(URI(resolved))
+      .timeout(Duration.ofSeconds(30))
+      .GET()
+    val base = baseUrl().orEmpty()
+    if (base.isNotBlank() && resolved.startsWith(base) && session.accessToken.isNotBlank()) {
+      reqBuilder.header("Authorization", "Bearer ${session.accessToken}")
+      reqBuilder.header("X-Telefam-Device-FP", deviceFingerprint)
+    }
+    val res = runCatching {
+      httpClient.send(reqBuilder.build(), HttpResponse.BodyHandlers.ofByteArray())
+    }.getOrNull() ?: return null
+    return if (res.statusCode() in 200..299) res.body() else null
+  }
+
   private fun executeRaw(
     method: String,
     path: String,
@@ -2235,6 +2410,7 @@ class DesktopApiClient(
     val fullUrl = "$base$path"
     val builder = HttpRequest.newBuilder(URI(fullUrl))
       .timeout(Duration.ofSeconds(30))
+      .header("Accept-Encoding", "gzip")
       .header("X-Telefam-Device-FP", deviceFingerprint)
       .header("X-Telefam-Client-IP-Hint", ipHint)
     DesktopDeviceContextCollector.toHeaders().forEach { (k, v) ->
@@ -2251,12 +2427,29 @@ class DesktopApiClient(
       "DELETE" -> builder.DELETE()
       else -> {
         builder.header("Content-Type", contentType)
-        val pub = HttpRequest.BodyPublishers.ofByteArray(body ?: ByteArray(0))
+        val rawBytes = body ?: ByteArray(0)
+        val shouldGzip = rawBytes.size >= 256 &&
+          contentType.contains("json", ignoreCase = true) &&
+          !extraHeaders.containsKey("Content-Encoding")
+        val finalBytes = if (shouldGzip) {
+          val baos = ByteArrayOutputStream()
+          GZIPOutputStream(baos).use { gz -> gz.write(rawBytes) }
+          val compressed = baos.toByteArray()
+          if (compressed.size < rawBytes.size) {
+            builder.header("Content-Encoding", "gzip")
+            compressed
+          } else {
+            rawBytes
+          }
+        } else {
+          rawBytes
+        }
+        val pub = HttpRequest.BodyPublishers.ofByteArray(finalBytes)
         builder.method(method, pub)
       }
     }
     val response = runCatching {
-      httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
+      httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofByteArray())
     }.getOrNull() ?: return null
 
     if (response.statusCode() == 401 && auth && allowRefreshRetry && session.refreshToken.isNotBlank()) {
@@ -2264,7 +2457,14 @@ class DesktopApiClient(
         return executeRaw(method, path, body, auth, contentType, extraHeaders, allowRefreshRetry = false)
       }
     }
-    return response.statusCode() to response.body()
+    val enc = response.headers().firstValue("Content-Encoding").orElse("").lowercase()
+    val rawRespBytes = response.body() ?: ByteArray(0)
+    val decodedBytes = if (enc.contains("gzip") && rawRespBytes.isNotEmpty()) {
+      runCatching { GZIPInputStream(rawRespBytes.inputStream()).use { it.readBytes() } }.getOrDefault(rawRespBytes)
+    } else {
+      rawRespBytes
+    }
+    return response.statusCode() to String(decodedBytes, StandardCharsets.UTF_8)
   }
 
   private fun attemptRefreshToken(): Boolean {

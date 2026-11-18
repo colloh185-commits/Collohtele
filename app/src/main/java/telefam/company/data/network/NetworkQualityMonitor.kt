@@ -54,6 +54,16 @@ class NetworkQualityMonitor(context: Context) {
     }.getOrDefault("unknown")
   }
 
+  fun isWifiOrUnmetered(): Boolean {
+    return runCatching {
+      val active = connectivityManager.activeNetwork ?: return false
+      val caps = connectivityManager.getNetworkCapabilities(active) ?: return false
+      caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+        caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) ||
+        caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+    }.getOrDefault(false)
+  }
+
   private fun evaluateCurrentNetworkTier(): NetworkTier {
     return runCatching {
       val active = connectivityManager.activeNetwork

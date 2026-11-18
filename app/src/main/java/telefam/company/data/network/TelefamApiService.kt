@@ -708,12 +708,57 @@ data class UpdateChatThemeRequestDto(
 )
 
 @JsonClass(generateAdapter = true)
+data class SyncPreferencesDto(
+  @Json(name = "auto_sync_enabled") val autoSyncEnabled: Boolean = true,
+  @Json(name = "sync_over_wifi_only") val syncOverWifiOnly: Boolean = false,
+  @Json(name = "background_sync_enabled") val backgroundSyncEnabled: Boolean = true,
+  @Json(name = "cache_feeds_offline") val cacheFeedsOffline: Boolean = true,
+  @Json(name = "cache_chat_media_offline") val cacheChatMediaOffline: Boolean = true,
+  @Json(name = "last_synced_at_ms") val lastSyncedAtMs: Long = 0L,
+  @Json(name = "last_sync_status") val lastSyncStatus: String = "idle",
+  @Json(name = "total_synced_ops") val totalSyncedOps: Long = 0L,
+  @Json(name = "updated_at_ms") val updatedAtMs: Long = 0L,
+)
+
+@JsonClass(generateAdapter = true)
+data class SyncSettingsResponseDto(
+  val success: Boolean = false,
+  @Json(name = "sync_preferences") val syncPreferences: SyncPreferencesDto? = null,
+  @Json(name = "server_epoch_ms") val serverEpochMs: Long = 0L,
+)
+
+@JsonClass(generateAdapter = true)
+data class ManualSyncRequestDto(
+  @Json(name = "client_sync_id") val clientSyncId: String = "",
+  val operations: List<SyncOperationDto> = emptyList(),
+  val privacy: PrivacySettingsDto? = null,
+  val notifications: NotificationSettingsDto? = null,
+  @Json(name = "content_preferences") val contentPreferences: ContentPreferencesDto? = null,
+  @Json(name = "chat_privacy") val chatPrivacy: ChatPrivacySettingsDto? = null,
+  @Json(name = "sync_preferences") val syncPreferences: SyncPreferencesDto? = null,
+)
+
+@JsonClass(generateAdapter = true)
+data class ManualSyncResponseDto(
+  val success: Boolean = false,
+  @Json(name = "synced_ops_count") val syncedOpsCount: Int = 0,
+  @Json(name = "acked_op_ids") val ackedOpIds: List<String> = emptyList(),
+  @Json(name = "sync_preferences") val syncPreferences: SyncPreferencesDto? = null,
+  val privacy: PrivacySettingsDto? = null,
+  val notifications: NotificationSettingsDto? = null,
+  @Json(name = "content_preferences") val contentPreferences: ContentPreferencesDto? = null,
+  @Json(name = "chat_privacy") val chatPrivacy: ChatPrivacySettingsDto? = null,
+  @Json(name = "server_epoch_ms") val serverEpochMs: Long = 0L,
+)
+
+@JsonClass(generateAdapter = true)
 data class SettingsBundleResponseDto(
   val success: Boolean = false,
   val privacy: PrivacySettingsDto? = null,
   val notifications: NotificationSettingsDto? = null,
   @Json(name = "content_preferences") val contentPreferences: ContentPreferencesDto? = null,
   @Json(name = "chat_privacy") val chatPrivacy: ChatPrivacySettingsDto? = null,
+  @Json(name = "sync_preferences") val syncPreferences: SyncPreferencesDto? = null,
   @Json(name = "server_epoch_ms") val serverEpochMs: Long = 0L,
 )
 
@@ -832,6 +877,265 @@ data class AppVersionResponseDto(
 @JsonClass(generateAdapter = true)
 data class LogoutRequestDto(
   @Json(name = "all_devices") val allDevices: Boolean = false,
+)
+
+@JsonClass(generateAdapter = true)
+data class OneTimePreKeyDto(
+  @Json(name = "key_id") val keyId: Int,
+  @Json(name = "public_key_b64") val publicKeyB64: String,
+)
+
+@JsonClass(generateAdapter = true)
+data class E2eeKeyBundleUploadDto(
+  @Json(name = "registration_id") val registrationId: Int,
+  @Json(name = "identity_pub_b64") val identityPubB64: String,
+  @Json(name = "signed_prekey_id") val signedPreKeyId: Int,
+  @Json(name = "signed_prekey_pub_b64") val signedPreKeyPubB64: String,
+  @Json(name = "signed_prekey_sig_b64") val signedPreKeySigB64: String,
+  @Json(name = "kyber_prekey_id") val kyberPreKeyId: Int,
+  @Json(name = "kyber_prekey_pub_b64") val kyberPreKeyPubB64: String,
+  @Json(name = "kyber_prekey_sig_b64") val kyberPreKeySigB64: String,
+  @Json(name = "one_time_prekeys") val oneTimePreKeys: List<OneTimePreKeyDto>,
+)
+
+@JsonClass(generateAdapter = true)
+data class E2eeKeyBundleResponseDto(
+  val success: Boolean = false,
+  @Json(name = "user_id") val userId: String = "",
+  @Json(name = "device_id") val deviceId: Int = 1,
+  @Json(name = "registration_id") val registrationId: Int = 0,
+  @Json(name = "identity_pub_b64") val identityPubB64: String = "",
+  @Json(name = "signed_prekey_id") val signedPreKeyId: Int = 0,
+  @Json(name = "signed_prekey_pub_b64") val signedPreKeyPubB64: String = "",
+  @Json(name = "signed_prekey_sig_b64") val signedPreKeySigB64: String = "",
+  @Json(name = "kyber_prekey_id") val kyberPreKeyId: Int = 0,
+  @Json(name = "kyber_prekey_pub_b64") val kyberPreKeyPubB64: String = "",
+  @Json(name = "kyber_prekey_sig_b64") val kyberPreKeySigB64: String = "",
+  @Json(name = "prekey_id") val preKeyId: Int = 0,
+  @Json(name = "prekey_pub_b64") val preKeyPubB64: String = "",
+)
+
+@JsonClass(generateAdapter = true)
+data class ChatPeerCapabilitiesDto(
+  @Json(name = "can_call") val canCall: Boolean = true,
+  @Json(name = "can_screenshot") val canScreenshot: Boolean = false,
+  @Json(name = "can_share_chats") val canShareChats: Boolean = false,
+  @Json(name = "can_copy_messages") val canCopyMessages: Boolean = false,
+  @Json(name = "can_download_media") val canDownloadMedia: Boolean = true,
+  @Json(name = "show_read_receipts") val showReadReceipts: Boolean = true,
+  @Json(name = "show_typing_indicator") val showTypingIndicator: Boolean = false,
+  @Json(name = "show_online_indicator") val showOnlineIndicator: Boolean = false,
+  @Json(name = "is_blocked") val isBlocked: Boolean = false,
+  @Json(name = "is_muted") val isMuted: Boolean = false,
+)
+
+@JsonClass(generateAdapter = true)
+data class ChatConversationDto(
+  @Json(name = "conversation_id") val conversationId: String = "",
+  @Json(name = "peer_user_id") val peerUserId: String = "",
+  @Json(name = "peer_full_name") val peerFullName: String = "",
+  @Json(name = "peer_username") val peerUsername: String = "",
+  @Json(name = "peer_avatar_url") val peerAvatarUrl: String = "",
+  @Json(name = "last_message_id") val lastMessageId: String = "",
+  @Json(name = "last_message_type") val lastMessageType: String = "",
+  @Json(name = "last_sender_id") val lastSenderId: String = "",
+  @Json(name = "last_ciphertext_b64") val lastCiphertextB64: String = "",
+  @Json(name = "last_sender_ciphertext_b64") val lastSenderCiphertextB64: String = "",
+  @Json(name = "last_signal_msg_type") val lastSignalMsgType: Int = 0,
+  @Json(name = "last_delivery_status") val lastDeliveryStatus: String = "sent",
+  @Json(name = "last_message_at_ms") val lastMessageAtMs: Long = 0L,
+  @Json(name = "unread_count") val unreadCount: Int = 0,
+  @Json(name = "is_archived") val isArchived: Boolean = false,
+  @Json(name = "is_muted") val isMuted: Boolean = false,
+  @Json(name = "is_online") val isOnline: Boolean = false,
+  @Json(name = "last_seen_ms") val lastSeenMs: Long = 0L,
+  @Json(name = "last_seen_label") val lastSeenLabel: String = "last seen recently",
+  val permissions: ChatPeerCapabilitiesDto = ChatPeerCapabilitiesDto(),
+  @Json(name = "created_at_ms") val createdAtMs: Long = 0L,
+  @Json(name = "updated_at_ms") val updatedAtMs: Long = 0L,
+)
+
+@JsonClass(generateAdapter = true)
+data class ChatConversationsResponseDto(
+  val success: Boolean = false,
+  val conversations: List<ChatConversationDto> = emptyList(),
+)
+
+@JsonClass(generateAdapter = true)
+data class OpenDirectConversationResponseDto(
+  val success: Boolean = false,
+  val conversation: ChatConversationDto = ChatConversationDto(),
+)
+
+@JsonClass(generateAdapter = true)
+data class ChatMessageDto(
+  @Json(name = "message_id") val messageId: String = "",
+  @Json(name = "conversation_id") val conversationId: String = "",
+  @Json(name = "sender_user_id") val senderUserId: String = "",
+  @Json(name = "recipient_user_id") val recipientUserId: String = "",
+  @Json(name = "client_op_id") val clientOpId: String = "",
+  @Json(name = "message_type") val messageType: String = "text",
+  @Json(name = "compression_codec") val compressionCodec: String = "zlib",
+  @Json(name = "encryption_scheme") val encryptionScheme: String = "libsignal_v1",
+  @Json(name = "ciphertext_b64") val ciphertextB64: String = "",
+  @Json(name = "sender_ciphertext_b64") val senderCiphertextB64: String = "",
+  @Json(name = "signal_msg_type") val signalMsgType: Int = 3,
+  @Json(name = "media_url") val mediaUrl: String = "",
+  @Json(name = "media_id") val mediaId: String = "",
+  @Json(name = "voice_duration_ms") val voiceDurationMs: Long = 0L,
+  @Json(name = "view_once_ttl_sec") val viewOnceTtlSec: Int = 0,
+  @Json(name = "view_once_opened_at_ms") val viewOnceOpenedAtMs: Long = 0L,
+  @Json(name = "view_once_expires_at_ms") val viewOnceExpiresAtMs: Long = 0L,
+  @Json(name = "forwarded_from_user_id") val forwardedFromUserId: String = "",
+  @Json(name = "delivery_status") val deliveryStatus: String = "sent",
+  @Json(name = "edited_at_ms") val editedAtMs: Long = 0L,
+  @Json(name = "created_at_ms") val createdAtMs: Long = 0L,
+)
+
+@JsonClass(generateAdapter = true)
+data class ChatSecurityFlagDto(
+  @Json(name = "flag_id") val flagId: String = "",
+  @Json(name = "conversation_id") val conversationId: String = "",
+  @Json(name = "message_id") val messageId: String = "",
+  @Json(name = "actor_user_id") val actorUserId: String = "",
+  @Json(name = "target_user_id") val targetUserId: String = "",
+  @Json(name = "flag_type") val flagType: String = "",
+  val details: String = "",
+  @Json(name = "created_at_ms") val createdAtMs: Long = 0L,
+)
+
+@JsonClass(generateAdapter = true)
+data class ChatMessagesListResponseDto(
+  val success: Boolean = false,
+  val conversation: ChatConversationDto = ChatConversationDto(),
+  val messages: List<ChatMessageDto> = emptyList(),
+  @Json(name = "security_flags") val securityFlags: List<ChatSecurityFlagDto> = emptyList(),
+)
+
+@JsonClass(generateAdapter = true)
+data class SendChatMessageRequestDto(
+  @Json(name = "client_op_id") val clientOpId: String,
+  @Json(name = "message_type") val messageType: String,
+  @Json(name = "compression_codec") val compressionCodec: String = "zlib",
+  @Json(name = "encryption_scheme") val encryptionScheme: String = "libsignal_v1",
+  @Json(name = "ciphertext_b64") val ciphertextB64: String,
+  @Json(name = "sender_ciphertext_b64") val senderCiphertextB64: String,
+  @Json(name = "signal_msg_type") val signalMsgType: Int,
+  @Json(name = "media_url") val mediaUrl: String = "",
+  @Json(name = "media_id") val mediaId: String = "",
+  @Json(name = "voice_duration_ms") val voiceDurationMs: Long = 0L,
+  @Json(name = "view_once_ttl_sec") val viewOnceTtlSec: Int = 0,
+  @Json(name = "forwarded_from_user_id") val forwardedFromUserId: String = "",
+)
+
+@JsonClass(generateAdapter = true)
+data class ChatMessageSingleResponseDto(
+  val success: Boolean = false,
+  val message: ChatMessageDto = ChatMessageDto(),
+)
+
+@JsonClass(generateAdapter = true)
+data class EditChatMessageRequestDto(
+  @Json(name = "ciphertext_b64") val ciphertextB64: String,
+  @Json(name = "sender_ciphertext_b64") val senderCiphertextB64: String,
+  @Json(name = "signal_msg_type") val signalMsgType: Int,
+)
+
+@JsonClass(generateAdapter = true)
+data class ChatReceiptRequestDto(
+  val status: String,
+)
+
+@JsonClass(generateAdapter = true)
+data class BatchConversationActionRequestDto(
+  @Json(name = "conversation_ids") val conversationIds: List<String>,
+  val action: String,
+)
+
+@JsonClass(generateAdapter = true)
+data class VoiceMediaUploadResponseDto(
+  val success: Boolean = false,
+  @Json(name = "media_id") val mediaId: String = "",
+  @Json(name = "media_url") val mediaUrl: String = "",
+  @Json(name = "sha256_fingerprint") val sha256Fingerprint: String = "",
+  @Json(name = "byte_size") val byteSize: Int = 0,
+)
+
+@JsonClass(generateAdapter = true)
+data class ViewOnceOpenResponseDto(
+  val success: Boolean = false,
+  val message: ChatMessageDto = ChatMessageDto(),
+  @Json(name = "security_flag") val securityFlag: ChatSecurityFlagDto = ChatSecurityFlagDto(),
+)
+
+@JsonClass(generateAdapter = true)
+data class RecordSecurityFlagRequestDto(
+  @Json(name = "message_id") val messageId: String = "",
+  @Json(name = "flag_type") val flagType: String,
+  val details: String = "",
+)
+
+@JsonClass(generateAdapter = true)
+data class SecurityFlagResponseDto(
+  val success: Boolean = false,
+  val flag: ChatSecurityFlagDto = ChatSecurityFlagDto(),
+)
+
+@JsonClass(generateAdapter = true)
+data class SecurityFlagsListResponseDto(
+  val success: Boolean = false,
+  val flags: List<ChatSecurityFlagDto> = emptyList(),
+)
+
+@JsonClass(generateAdapter = true)
+data class GiflyMediaItemDto(
+  val id: Long = 0L,
+  val slug: String = "",
+  val title: String = "",
+  val type: String = "sticker",
+  val tags: List<String> = emptyList(),
+  val preview: String = "",
+  @Json(name = "preview_webp") val previewWebp: String = "",
+  val url: String = "",
+  @Json(name = "url_hd") val urlHd: String = "",
+  val mp4: String? = null,
+  val width: Int = 200,
+  val height: Int = 200,
+)
+
+@JsonClass(generateAdapter = true)
+data class GiflyGreetingResponseDto(
+  val success: Boolean = false,
+  val item: GiflyMediaItemDto = GiflyMediaItemDto(),
+)
+
+@JsonClass(generateAdapter = true)
+data class GiflySearchResponseDto(
+  val success: Boolean = false,
+  val type: String = "stickers",
+  val query: String = "",
+  val page: Int = 1,
+  @Json(name = "per_page") val perPage: Int = 24,
+  @Json(name = "has_next") val hasNext: Boolean = false,
+  val count: Int = 0,
+  val items: List<GiflyMediaItemDto> = emptyList(),
+)
+
+@JsonClass(generateAdapter = true)
+data class ChatSearchPersonDto(
+  @Json(name = "user_id") val userId: String = "",
+  @Json(name = "full_name") val fullName: String = "",
+  val username: String = "",
+  @Json(name = "avatar_url") val avatarUrl: String = "",
+  val location: String = "",
+  @Json(name = "conversation_id") val conversationId: String = "",
+)
+
+@JsonClass(generateAdapter = true)
+data class ChatGlobalSearchResponseDto(
+  val success: Boolean = false,
+  val conversations: List<ChatConversationDto> = emptyList(),
+  val people: List<ChatSearchPersonDto> = emptyList(),
 )
 
 interface TelefamApiService {
@@ -1268,6 +1572,166 @@ interface TelefamApiService {
     @Body body: UpdateChatThemeRequestDto,
   ): Response<ChatPrivacyResponseDto>
 
+  @GET("v1/settings/sync")
+  suspend fun getSyncSettings(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+  ): Response<SyncSettingsResponseDto>
+
+  @PUT("v1/settings/sync")
+  suspend fun updateSyncSettings(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Body body: SyncPreferencesDto,
+  ): Response<SyncSettingsResponseDto>
+
+  @POST("v1/sync/now")
+  suspend fun syncNow(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Body body: ManualSyncRequestDto,
+  ): Response<ManualSyncResponseDto>
+
+  // 1-on-1 E2EE Chat, Signal Key Bundles, Voice Notes, View-Once, Security Flags & Gifly Hub
+  @PUT("v1/chat/e2ee/keys")
+  suspend fun uploadE2eeKeys(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Body body: E2eeKeyBundleUploadDto,
+  ): Response<GenericSuccessDto>
+
+  @GET("v1/chat/e2ee/keys/{userId}")
+  suspend fun fetchPeerE2eeKeys(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Path("userId") userId: String,
+  ): Response<E2eeKeyBundleResponseDto>
+
+  @GET("v1/chat/conversations")
+  suspend fun listChatConversations(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Query("archived") archived: Boolean = false,
+  ): Response<ChatConversationsResponseDto>
+
+  @POST("v1/chat/conversations/direct/{userId}")
+  suspend fun openDirectConversation(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Path("userId") userId: String,
+  ): Response<OpenDirectConversationResponseDto>
+
+  @POST("v1/chat/conversations/batch-action")
+  suspend fun batchConversationAction(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Body body: BatchConversationActionRequestDto,
+  ): Response<ChatConversationsResponseDto>
+
+  @GET("v1/chat/conversations/{id}/messages")
+  suspend fun listChatMessages(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Path("id") conversationId: String,
+    @Query("since_ms") sinceMs: Long? = null,
+  ): Response<ChatMessagesListResponseDto>
+
+  @POST("v1/chat/conversations/{id}/messages")
+  suspend fun sendChatMessage(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Path("id") conversationId: String,
+    @Body body: SendChatMessageRequestDto,
+  ): Response<ChatMessageSingleResponseDto>
+
+  @PATCH("v1/chat/messages/{id}")
+  suspend fun editChatMessage(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Path("id") messageId: String,
+    @Body body: EditChatMessageRequestDto,
+  ): Response<ChatMessageSingleResponseDto>
+
+  @DELETE("v1/chat/messages/{id}")
+  suspend fun deleteChatMessage(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Path("id") messageId: String,
+    @Query("mode") mode: String = "unsend",
+  ): Response<GenericSuccessDto>
+
+  @POST("v1/chat/messages/{id}/receipt")
+  suspend fun sendChatReceipt(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Path("id") messageId: String,
+    @Body body: ChatReceiptRequestDto,
+  ): Response<ChatMessageSingleResponseDto>
+
+  @POST("v1/chat/messages/{id}/view-once/open")
+  suspend fun openViewOnceVoice(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Path("id") messageId: String,
+  ): Response<ViewOnceOpenResponseDto>
+
+  @POST("v1/chat/messages/{id}/view-once/consume")
+  suspend fun consumeViewOnceVoice(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Path("id") messageId: String,
+  ): Response<GenericSuccessDto>
+
+  @Multipart
+  @POST("v1/chat/media/voice")
+  suspend fun uploadVoiceMedia(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Part("conversation_id") conversationId: RequestBody,
+    @Part("duration_ms") durationMs: RequestBody,
+    @Part("view_once") viewOnce: RequestBody,
+    @Part file: MultipartBody.Part,
+  ): Response<VoiceMediaUploadResponseDto>
+
+  @POST("v1/chat/conversations/{id}/flags")
+  suspend fun recordSecurityFlag(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Path("id") conversationId: String,
+    @Body body: RecordSecurityFlagRequestDto,
+  ): Response<SecurityFlagResponseDto>
+
+  @GET("v1/chat/conversations/{id}/flags")
+  suspend fun listSecurityFlags(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Path("id") conversationId: String,
+  ): Response<SecurityFlagsListResponseDto>
+
+  @GET("v1/chat/stickers/greeting")
+  suspend fun getGreetingSticker(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Query("peer_id") peerId: String = "",
+  ): Response<GiflyGreetingResponseDto>
+
+  @GET("v1/chat/stickers/search")
+  suspend fun searchGiflyMedia(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Query("type") type: String = "stickers",
+    @Query("q") query: String = "",
+    @Query("page") page: Int = 1,
+    @Query("per_page") perPage: Int = 24,
+  ): Response<GiflySearchResponseDto>
+
+  @GET("v1/chat/search")
+  suspend fun searchChatsAndPeople(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Query("q") query: String = "",
+  ): Response<ChatGlobalSearchResponseDto>
+
   @GET
   suspend fun downloadMedia(@Url url: String): Response<ResponseBody>
 
@@ -1310,6 +1774,41 @@ interface TelefamApiService {
           }
           chain.proceed(reqBuilder.build())
         }
+      }
+      // Aggressively gzip-compress JSON request bodies (>= 256 bytes) for weak connections
+      clientBuilder.addInterceptor { chain ->
+        val orig = chain.request()
+        val body = orig.body
+        val mediaSubtype = body?.contentType()?.subtype?.lowercase().orEmpty()
+        if (body != null &&
+          orig.header("Content-Encoding") == null &&
+          mediaSubtype.contains("json")
+        ) {
+          val rawLen = runCatching { body.contentLength() }.getOrDefault(-1L)
+          if (rawLen < 0L || rawLen >= 256L) {
+            val buffer = okio.Buffer()
+            body.writeTo(buffer)
+            if (buffer.size >= 256L) {
+              val compressed = okio.Buffer()
+              okio.GzipSink(compressed).use { gzipSink ->
+                gzipSink.write(buffer, buffer.size)
+              }
+              val gzipBody = object : RequestBody() {
+                override fun contentType() = body.contentType()
+                override fun contentLength() = compressed.size
+                override fun writeTo(sink: okio.BufferedSink) {
+                  sink.writeAll(compressed.clone())
+                }
+              }
+              val gzippedReq = orig.newBuilder()
+                .header("Content-Encoding", "gzip")
+                .method(orig.method, gzipBody)
+                .build()
+              return@addInterceptor chain.proceed(gzippedReq)
+            }
+          }
+        }
+        chain.proceed(orig)
       }
       val okHttp = clientBuilder.build()
 

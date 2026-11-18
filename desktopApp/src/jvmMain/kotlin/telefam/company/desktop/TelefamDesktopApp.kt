@@ -298,6 +298,7 @@ fun main() = application {
   var loginApprovedState by remember { mutableStateOf<DesktopLoginApprovedState?>(null) }
   var isRespondingToLoginReq by remember { mutableStateOf(false) }
   var incomingLoginError by remember { mutableStateOf<String?>(null) }
+  val chatController = remember { DesktopChatController(apiClient) { settingsBundle.notifications.inAppSounds } }
 
   val openUserProfile: (String) -> Unit = { uid ->
     val clean = uid.trim()
@@ -321,6 +322,7 @@ fun main() = application {
 
   LaunchedEffect(session.isAuthenticated, session.userId) {
     if (session.isAuthenticated) {
+      chatController.attachSession(session.userId)
       val fetched = withContext(Dispatchers.IO) { apiClient.getSettings() }
       settingsBundle = fetched
       withContext(Dispatchers.IO) {
@@ -341,6 +343,7 @@ fun main() = application {
         delay(4000L)
       }
     } else {
+      chatController.detachSession()
       incomingLoginRequest = null
       loginApprovedState = null
     }
@@ -970,56 +973,32 @@ fun main() = application {
                       onToggleTheme = toggleTheme,
                       onOpenSettings = { showSettingsScreen = true },
                       onSignOut = { showSettingsScreen = true },
+                      onMessageUser = { targetProf ->
+                        chatController.openDirectConversationByUser(
+                          peerUserId = targetProf.userId,
+                          peerName = targetProf.fullName,
+                          peerUsername = targetProf.username,
+                          peerAvatar = targetProf.avatarUrl,
+                        ) {
+                          activeTab = "chats"
+                        }
+                      },
                       onToast = { toastMessage = it },
                     )
                   }
 
                   else -> {
-                    val cp = settingsBundle.chatPrivacy
-                    val activeTheme = DesktopChatPrivacyCatalog.themeById(cp.chatThemeId)
-                    val activeBubble = DesktopChatPrivacyCatalog.bubbleColorById(cp.bubbleColorId)
-                    val bubbleAccent = Color(if (isDark) activeBubble.darkStartHex else activeBubble.lightStartHex)
-                    Box(modifier = Modifier.fillMaxSize()) {
-                      DesktopChatWallpaperCanvas(
-                        theme = activeTheme,
-                        isDark = isDark,
-                        modifier = Modifier.fillMaxSize(),
-                      )
-                      Column(
-                        modifier = Modifier
-                          .align(Alignment.Center)
-                          .widthIn(max = 460.dp)
-                          .padding(24.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                      ) {
-                        Text(
-                          text = "Start a conversation",
-                          fontSize = 19.sp,
-                          fontWeight = FontWeight.Bold,
-                          color = MaterialTheme.colorScheme.onBackground,
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                          text = "Theme: ${activeTheme.title}  |  Bubble: ${activeBubble.label}",
-                          fontSize = 12.5.sp,
-                          color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Spacer(modifier = Modifier.height(14.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                          Button(
-                            onClick = { activeTab = "contacts" },
-                            colors = ButtonDefaults.buttonColors(containerColor = bubbleAccent),
-                          ) {
-                            Text("Open contacts", color = Color.White)
-                          }
-                          OutlinedButton(
-                            onClick = { chatPrivacyStack.add(DesktopChatPrivacyRoute.PRIVACY) },
-                          ) {
-                            Text("Privacy & Themes")
-                          }
-                        }
-                      }
-                    }
+                    DesktopChatsSplitScreen(
+                      controller = chatController,
+                      apiClient = apiClient,
+                      ownerUserId = session.userId,
+                      isDark = isDark,
+                      chatPrivacy = settingsBundle.chatPrivacy,
+                      searchQuery = searchQuery,
+                      onOpenUserProfile = { uid -> openUserProfile(uid) },
+                      onOpenPrivacyAndThemes = { chatPrivacyStack.add(DesktopChatPrivacyRoute.PRIVACY) },
+                      onToast = { toastMessage = it },
+                    )
                   }
                 }
               }
@@ -1181,6 +1160,17 @@ fun main() = application {
               onOpenSettings = { showSettingsScreen = true },
               onSignOut = {
                 showSettingsScreen = true
+              },
+              onMessageUser = { targetProf ->
+                profileBackStack.clear()
+                chatController.openDirectConversationByUser(
+                  peerUserId = targetProf.userId,
+                  peerName = targetProf.fullName,
+                  peerUsername = targetProf.username,
+                  peerAvatar = targetProf.avatarUrl,
+                ) {
+                  activeTab = "chats"
+                }
               },
               onToast = { toastMessage = it },
             )
@@ -1370,6 +1360,9 @@ fun main() = application {
               route = topChatPrivacyRoute,
               isDark = isDark,
               state = settingsBundle.chatPrivacy,
+              previewSenderName = apiClient.session.fullName.trim().ifBlank {
+                apiClient.session.username.trim().ifBlank { "Telefam" }
+              },
               onNavigateBack = {
                 if (chatPrivacyStack.isNotEmpty()) chatPrivacyStack.removeAt(chatPrivacyStack.lastIndex)
               },
@@ -4168,6 +4161,7 @@ private fun DesktopUserProfileScreen(
   onToggleTheme: () -> Unit,
   onOpenSettings: () -> Unit = {},
   onSignOut: () -> Unit,
+  onMessageUser: (DesktopUserProfile) -> Unit = {},
   onToast: (String) -> Unit,
 ) {
   val scope = rememberCoroutineScope()
@@ -4703,7 +4697,12 @@ private fun DesktopUserProfileScreen(
                     }
 
                     Surface(
-                      onClick = { onToast("Message — Coming soon") },
+                      onClick = {
+                        val target = p
+                        if (target != null) {
+                          onMessageUser(target)
+                        }
+                      },
                       shape = RoundedCornerShape(8.dp),
                       color = MaterialTheme.colorScheme.surface,
                       border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),

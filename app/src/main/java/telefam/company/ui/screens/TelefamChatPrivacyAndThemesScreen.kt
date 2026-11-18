@@ -90,6 +90,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
@@ -131,6 +132,7 @@ private enum class ChatAudienceField(
 fun TelefamChatPrivacyHostScreen(
   route: ChatPrivacyRoute,
   state: ChatPrivacySettingsState,
+  previewSenderName: String = "Telefam",
   onNavigateBack: () -> Unit,
   onUpdatePrivacy: (ChatPrivacySettingsState) -> Unit,
   onOpenChatsTheme: () -> Unit,
@@ -154,6 +156,7 @@ fun TelefamChatPrivacyHostScreen(
     ChatPrivacyRoute.CHATS_THEME -> TelefamChatsThemeScreen(
       selectedThemeId = state.chatThemeId,
       selectedBubbleColorId = state.bubbleColorId,
+      previewSenderName = previewSenderName,
       onBack = onNavigateBack,
       onSelectTheme = onSelectTheme,
     )
@@ -161,6 +164,7 @@ fun TelefamChatPrivacyHostScreen(
     ChatPrivacyRoute.BUBBLE_COLORS -> TelefamBubbleColorsScreen(
       selectedThemeId = state.chatThemeId,
       selectedBubbleColorId = state.bubbleColorId,
+      previewSenderName = previewSenderName,
       onBack = onNavigateBack,
       onSelectBubbleColor = onSelectBubbleColor,
     )
@@ -700,6 +704,7 @@ private fun NoThemeBadge(accent: Color) {
 fun TelefamChatsThemeScreen(
   selectedThemeId: String,
   selectedBubbleColorId: String,
+  previewSenderName: String = "Telefam",
   onBack: () -> Unit,
   onSelectTheme: (String) -> Unit,
 ) {
@@ -846,12 +851,13 @@ fun TelefamChatsThemeScreen(
           }
         }
 
-        // Live Chat Preview matching Image 2 ("Executive officer / Good morning! / Do you know what time it is? 14:05" + "It's morning in Tokyo 14:20")
+        // Live Chat Preview using the user's real profile name + localized preview dialog
         LiveChatThemePreviewCard(
           theme = activeTheme,
           bubbleColor = activeBubble,
           useThemeAccentBubble = activeTheme.themeId != "none",
           isDark = isDark,
+          previewSenderName = previewSenderName,
         )
 
         Spacer(modifier = Modifier.height(8.dp))
@@ -969,7 +975,9 @@ fun LiveChatThemePreviewCard(
   useThemeAccentBubble: Boolean,
   isDark: Boolean,
   modifier: Modifier = Modifier,
+  previewSenderName: String = "Telefam",
 ) {
+  val resolvedSenderName = previewSenderName.trim().ifBlank { stringResource(R.string.chat_theme_preview_sender) }
   val incomingBubbleBg = if (isDark) Color(0xFF23252A).copy(alpha = 0.94f) else TelefamPureWhite.copy(alpha = 0.95f)
   val incomingQuoteBg = if (isDark) {
     Color(theme.accentStartHex).copy(alpha = 0.16f)
@@ -1019,7 +1027,7 @@ fun LiveChatThemePreviewCard(
           .padding(horizontal = 14.dp, vertical = 18.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
       ) {
-        // Incoming bubble with quoted block matching Image 2
+        // Incoming bubble with quoted block showing user's real profile name
         Surface(
           modifier = Modifier
             .widthIn(max = 310.dp)
@@ -1047,12 +1055,15 @@ fun LiveChatThemePreviewCard(
               Spacer(modifier = Modifier.width(8.dp))
               Column {
                 Text(
-                  text = stringResource(R.string.chat_theme_preview_sender),
+                  text = resolvedSenderName,
                   style = MaterialTheme.typography.labelLarge.copy(
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold,
                   ),
                   color = Color(theme.accentEndHex),
+                  maxLines = 1,
+                  overflow = TextOverflow.Ellipsis,
+                  modifier = Modifier.testTag("chat_live_preview_sender"),
                 )
                 Text(
                   text = stringResource(R.string.chat_theme_preview_line1),
@@ -1124,6 +1135,7 @@ fun LiveChatThemePreviewCard(
 fun TelefamBubbleColorsScreen(
   selectedThemeId: String,
   selectedBubbleColorId: String,
+  previewSenderName: String = "Telefam",
   onBack: () -> Unit,
   onSelectBubbleColor: (String) -> Unit,
 ) {
@@ -1204,6 +1216,7 @@ fun TelefamBubbleColorsScreen(
             bubbleColor = activeBubble,
             useThemeAccentBubble = false,
             isDark = isDark,
+            previewSenderName = previewSenderName,
           )
 
           Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -1317,7 +1330,7 @@ private fun themeEmblemVector(kind: ChatPatternKind): ImageVector = when (kind) 
 }
 
 /**
- * Telegram-style vector line-art doodle wallpaper supporting all 12+1 themes across Light and Dark palettes.
+ * Luminous Telegram-grade vector line-art doodle wallpaper supporting all 12+1 themes across Light and Dark palettes.
  */
 @Composable
 fun ChatWallpaperCanvas(
@@ -1325,43 +1338,136 @@ fun ChatWallpaperCanvas(
   isDark: Boolean,
   modifier: Modifier = Modifier,
 ) {
-  val bg = Color(if (isDark) theme.darkBgHex else theme.lightBgHex)
-  val patternTint = if (isDark) {
-    Color(theme.selectionHex).copy(alpha = theme.darkPatternAlpha)
+  val baseBg = Color(if (isDark) theme.darkBgHex else theme.lightBgHex)
+  val accentStart = Color(theme.accentStartHex)
+  val accentEnd = Color(theme.accentEndHex)
+  val selectColor = Color(theme.selectionHex)
+
+  val tintAlpha = if (isDark) 0.16f else 0.13f
+  val midTintAlpha = if (isDark) 0.08f else 0.07f
+  val gradTopLeft = baseBg
+  val gradMid = Color(
+    red = baseBg.red + (accentStart.red - baseBg.red) * midTintAlpha,
+    green = baseBg.green + (accentStart.green - baseBg.green) * midTintAlpha,
+    blue = baseBg.blue + (accentStart.blue - baseBg.blue) * midTintAlpha,
+    alpha = 1f,
+  )
+  val gradBottomRight = Color(
+    red = baseBg.red + (accentEnd.red - baseBg.red) * tintAlpha,
+    green = baseBg.green + (accentEnd.green - baseBg.green) * tintAlpha,
+    blue = baseBg.blue + (accentEnd.blue - baseBg.blue) * tintAlpha,
+    alpha = 1f,
+  )
+
+  val primaryDoodleTint = if (isDark) {
+    selectColor.copy(alpha = (theme.darkPatternAlpha * 1.45f).coerceIn(0.14f, 0.28f))
   } else {
-    Color(theme.accentStartHex).copy(alpha = theme.lightPatternAlpha)
+    accentStart.copy(alpha = (theme.lightPatternAlpha * 1.35f).coerceIn(0.12f, 0.24f))
+  }
+  val secondaryDoodleTint = if (isDark) {
+    accentEnd.copy(alpha = (theme.darkPatternAlpha * 1.15f).coerceIn(0.11f, 0.22f))
+  } else {
+    selectColor.copy(alpha = (theme.lightPatternAlpha * 1.15f).coerceIn(0.10f, 0.20f))
   }
 
-  Canvas(
-    modifier = modifier.background(bg),
-  ) {
+  Canvas(modifier = modifier) {
+    drawRect(
+      brush = Brush.linearGradient(
+        colors = listOf(gradTopLeft, gradMid, gradBottomRight),
+        start = Offset.Zero,
+        end = Offset(size.width, size.height),
+      ),
+    )
+
+    val maxDim = maxOf(size.width, size.height).coerceAtLeast(1f)
+    // Atmospheric radial corner glows for depth
+    drawCircle(
+      brush = Brush.radialGradient(
+        colors = listOf(
+          accentEnd.copy(alpha = if (isDark) 0.22f else 0.14f),
+          Color.Transparent,
+        ),
+        center = Offset(size.width * 0.88f, size.height * 0.14f),
+        radius = maxDim * 0.65f,
+      ),
+      radius = maxDim * 0.65f,
+      center = Offset(size.width * 0.88f, size.height * 0.14f),
+    )
+    drawCircle(
+      brush = Brush.radialGradient(
+        colors = listOf(
+          accentStart.copy(alpha = if (isDark) 0.18f else 0.11f),
+          Color.Transparent,
+        ),
+        center = Offset(size.width * 0.14f, size.height * 0.86f),
+        radius = maxDim * 0.62f,
+      ),
+      radius = maxDim * 0.62f,
+      center = Offset(size.width * 0.14f, size.height * 0.86f),
+    )
+
     if (theme.patternKind == ChatPatternKind.CLEAN) {
-      val softDot = if (isDark) TelefamPureWhite.copy(alpha = 0.03f) else Color.Black.copy(alpha = 0.03f)
-      val step = 42.dp.toPx()
-      var y = step / 2f
-      while (y < size.height + step) {
-        var x = step / 2f
-        while (x < size.width + step) {
-          drawCircle(softDot, radius = 1.6.dp.toPx(), center = Offset(x, y))
-          x += step
+      val dotStep = 36.dp.toPx()
+      val softDot = if (isDark) TelefamPureWhite.copy(alpha = 0.045f) else Color.Black.copy(alpha = 0.035f)
+      val accentDot = accentEnd.copy(alpha = if (isDark) 0.08f else 0.06f)
+      var row = 0
+      var y = dotStep * 0.5f
+      while (y < size.height + dotStep) {
+        var col = 0
+        var x = dotStep * 0.5f + if (row % 2 == 1) dotStep * 0.5f else 0f
+        while (x < size.width + dotStep) {
+          val isAccent = (row + col) % 3 == 0
+          drawCircle(
+            color = if (isAccent) accentDot else softDot,
+            radius = if (isAccent) 2.dp.toPx() else 1.4.dp.toPx(),
+            center = Offset(x, y),
+          )
+          x += dotStep
+          col++
         }
-        y += step
+        y += dotStep
+        row++
       }
       return@Canvas
     }
 
-    val cellSize = 68.dp.toPx()
+    val cellSize = 62.dp.toPx()
     val cols = (size.width / cellSize).toInt() + 2
     val rows = (size.height / cellSize).toInt() + 2
-    val stroke = Stroke(width = 1.25.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
+    val stroke = Stroke(width = 1.35.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
+    val fineStroke = Stroke(width = 1.05.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
+    val rotationAngles = floatArrayOf(-18f, 12f, -9f, 22f, 6f, -24f)
 
     for (r in 0 until rows) {
       for (c in 0 until cols) {
-        val offsetX = if (r % 2 == 1) cellSize * 0.45f else 0f
-        val cx = c * cellSize + offsetX + cellSize * 0.25f
-        val cy = r * cellSize + cellSize * 0.35f
+        val offsetX = if (r % 2 == 1) cellSize * 0.48f else 0f
+        val jitterY = if ((r + c) % 2 == 0) -cellSize * 0.06f else cellSize * 0.06f
+        val cx = c * cellSize + offsetX + cellSize * 0.26f
+        val cy = r * cellSize + cellSize * 0.34f + jitterY
         val idx = (r * 3 + c) % 4
-        drawDoodleMotif(theme.patternKind, idx, Offset(cx, cy), cellSize * 0.34f, patternTint, stroke)
+        val angle = rotationAngles[(r * 5 + c) % rotationAngles.size]
+        val useSecondary = (r + c) % 2 == 1
+        val radius = cellSize * if ((r + c) % 3 == 0) 0.34f else 0.28f
+        val tint = if (useSecondary) secondaryDoodleTint else primaryDoodleTint
+
+        rotate(degrees = angle, pivot = Offset(cx, cy)) {
+          drawDoodleMotif(theme.patternKind, idx, Offset(cx, cy), radius, tint, stroke)
+        }
+
+        // Subtle interstitial sparkle accents between motifs
+        if ((r + c) % 2 == 0) {
+          val sx = cx + cellSize * 0.48f
+          val sy = cy + cellSize * 0.42f
+          if ((r * 3 + c) % 4 == 0) {
+            drawStarPath(Offset(sx, sy), cellSize * 0.075f, secondaryDoodleTint, fineStroke)
+          } else {
+            drawCircle(
+              color = primaryDoodleTint.copy(alpha = primaryDoodleTint.alpha * 0.85f),
+              radius = 1.6.dp.toPx(),
+              center = Offset(sx, sy),
+            )
+          }
+        }
       }
     }
   }

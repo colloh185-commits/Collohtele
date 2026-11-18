@@ -30,6 +30,7 @@ struct TelefamIosHomeView: View {
     @StateObject private var contactsStore: TelefamContactsStore
     @StateObject private var feedStore: TelefamIosFeedStore
     @StateObject private var settingsStore: TelefamIosSettingsStore
+    @StateObject private var chatStore: TelefamIosChatStore
     @Binding var themeMode: TelefamThemeMode
 
     private let serverURL: URL
@@ -45,26 +46,34 @@ struct TelefamIosHomeView: View {
     init(sessionStore: TelefamIosSessionStore, serverURL: URL, themeMode: Binding<TelefamThemeMode>) {
         self.sessionStore = sessionStore
         self.serverURL = serverURL
-        _contactsStore = StateObject(
-            wrappedValue: TelefamContactsStore(
-                baseUrl: serverURL.absoluteString,
-                sessionTokenProvider: { sessionStore.sessionToken },
-                deviceFingerprintProvider: { sessionStore.deviceFingerprint }
-            )
+        let cStore = TelefamContactsStore(
+            baseUrl: serverURL.absoluteString,
+            sessionTokenProvider: { sessionStore.sessionToken },
+            deviceFingerprintProvider: { sessionStore.deviceFingerprint }
         )
-        _feedStore = StateObject(
-            wrappedValue: TelefamIosFeedStore(
-                baseURL: serverURL,
-                tokenProvider: { sessionStore.sessionToken },
-                deviceFingerprint: sessionStore.deviceFingerprint
-            )
+        let fStore = TelefamIosFeedStore(
+            baseURL: serverURL,
+            tokenProvider: { sessionStore.sessionToken },
+            deviceFingerprint: sessionStore.deviceFingerprint
         )
-        _settingsStore = StateObject(
-            wrappedValue: TelefamIosSettingsStore(
+        let sStore = TelefamIosSettingsStore(
+            baseURL: serverURL,
+            userIdProvider: { sessionStore.userId },
+            tokenProvider: { sessionStore.sessionToken },
+            deviceFingerprint: sessionStore.deviceFingerprint
+        )
+        _contactsStore = StateObject(wrappedValue: cStore)
+        _feedStore = StateObject(wrappedValue: fStore)
+        _settingsStore = StateObject(wrappedValue: sStore)
+        _chatStore = StateObject(
+            wrappedValue: TelefamIosChatStore(
                 baseURL: serverURL,
                 userIdProvider: { sessionStore.userId },
                 tokenProvider: { sessionStore.sessionToken },
-                deviceFingerprint: sessionStore.deviceFingerprint
+                deviceFingerprint: sessionStore.deviceFingerprint,
+                soundsEnabledProvider: {
+                    !sStore.bundle.notifications.masterPause && sStore.bundle.notifications.typeMessages
+                }
             )
         )
         _themeMode = themeMode
@@ -111,7 +120,7 @@ struct TelefamIosHomeView: View {
                 }
                 .background((activeTab == .feeds ? Color(red: 0.027, green: 0.031, blue: 0.043) : (activeTab == .profile ? TelefamPalette.background(colorScheme) : TelefamPalette.crimson)).ignoresSafeArea(edges: .top))
 
-                if let toast = settingsStore.toastMessage ?? feedStore.toastMessage ?? contactsStore.toastMessage ?? comingSoonBanner {
+                if let toast = chatStore.toastMessage ?? settingsStore.toastMessage ?? feedStore.toastMessage ?? contactsStore.toastMessage ?? comingSoonBanner {
                     Text(toast)
                         .font(.system(size: 13.5, weight: .semibold))
                         .foregroundColor(.white)
@@ -160,9 +169,13 @@ struct TelefamIosHomeView: View {
             }
         }
         .task {
+            chatStore.attachIfNeeded()
             await settingsStore.refreshAll()
             sessionStore.startIncomingLoginRequestPoller()
             await sessionStore.captureAndSyncDeviceContext()
+        }
+        .onChange(of: chatFilterQuery) { q in
+            chatStore.runGlobalSearch(q)
         }
         .onDisappear {
             sessionStore.stopIncomingLoginRequestPoller()
@@ -219,6 +232,9 @@ struct TelefamIosHomeView: View {
                     onTapAudio: { song, mode in
                         profileBackStack.removeAll()
                         postLaunchTarget = .prefillSong(song: song, mode: mode)
+                    },
+                    onMessageUser: { prof in
+                        launchChat(with: prof)
                     }
                 )
                 .id(topUserId)
@@ -233,7 +249,10 @@ struct TelefamIosHomeView: View {
                 }
         }
         .fullScreenCover(isPresented: $showChatPrivacy) {
-            TelefamIosChatPrivacyAndThemesView(settingsStore: settingsStore)
+            let cleanFull = sessionStore.fullName.trimmingCharacters(in: .whitespacesAndNewlines)
+            let cleanUser = sessionStore.username.trimmingCharacters(in: .whitespacesAndNewlines)
+            let previewName = cleanFull.isEmpty ? (cleanUser.isEmpty ? "Telefam" : cleanUser) : cleanFull
+            TelefamIosChatPrivacyAndThemesView(settingsStore: settingsStore, previewSenderName: previewName)
                 .preferredColorScheme(themeMode.preferredColorScheme)
         }
         .preferredColorScheme(themeMode.preferredColorScheme)
@@ -311,8 +330,8 @@ struct TelefamIosHomeView: View {
                     .font(.system(size: 14))
                     .foregroundColor(TelefamPalette.textPrimary(colorScheme))
                     .onSubmit {
-                        contactsStore.searchQuery = chatFilterQuery
-                        activeTab = .contacts
+                        chatStore.runGlobalSearch(chatFilterQuery)
+                        activeTab = .chats
                     }
                 if !chatFilterQuery.isEmpty {
                     Button { chatFilterQuery = "" } label: {
@@ -359,58 +378,16 @@ struct TelefamIosHomeView: View {
     private func tabBody(isCompactWidth: Bool, safeBottomInset: CGFloat) -> some View {
         switch activeTab {
         case .chats:
-            let cp = settingsStore.bundle.chatPrivacy
-            let activeTheme = TelefamChatPrivacyCatalog.themeById(cp.chatThemeId)
-            let activeBubble = TelefamChatPrivacyCatalog.bubbleColorById(cp.bubbleColorId)
-            let bubbleColor = TelefamChatPrivacyCatalog.color(colorScheme == .dark ? activeBubble.darkStartHex : activeBubble.lightStartHex)
-            ZStack {
-                TelefamIosChatWallpaperView(theme: activeTheme)
-                    .ignoresSafeArea(edges: .bottom)
-
-                VStack(spacing: 14) {
-                    Spacer()
-                    Image(systemName: "bubble.left.and.bubble.right")
-                        .font(.system(size: 28))
-                        .foregroundColor(.white)
-                        .frame(width: 62, height: 62)
-                        .background(bubbleColor)
-                        .clipShape(Circle())
-                    Text("Start a conversation")
-                        .font(.system(size: 18, weight: .bold))
-                        .foregroundColor(TelefamPalette.textPrimary(colorScheme))
-                    Text("Theme: \(activeTheme.title)  |  Bubble: \(activeBubble.label)")
-                        .font(.system(size: 13))
-                        .foregroundColor(TelefamPalette.textMuted(colorScheme))
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 32)
-                    HStack(spacing: 10) {
-                        Button {
-                            selectTab(.contacts)
-                        } label: {
-                            Label("Browse contacts", systemImage: "person.2")
-                                .font(.system(size: 14, weight: .semibold))
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 18)
-                                .frame(height: 44)
-                                .background(bubbleColor)
-                                .clipShape(Capsule())
-                        }
-                        Button {
-                            showChatPrivacy = true
-                        } label: {
-                            Label("Themes", systemImage: "paintpalette")
-                                .font(.system(size: 14, weight: .semibold))
-                                .foregroundColor(TelefamPalette.textPrimary(colorScheme))
-                                .padding(.horizontal, 16)
-                                .frame(height: 44)
-                                .background(TelefamPalette.surface(colorScheme).opacity(0.92))
-                                .clipShape(Capsule())
-                        }
-                    }
-                    Spacer()
-                }
-                .frame(maxWidth: .infinity)
-            }
+            TelefamIosChatsHostView(
+                chatStore: chatStore,
+                settingsStore: settingsStore,
+                chatFilterQuery: chatFilterQuery,
+                isCompactWidth: isCompactWidth,
+                safeBottomInset: safeBottomInset,
+                onOpenUserProfile: { uid in pushProfile(uid) },
+                onOpenPrivacy: { showChatPrivacy = true },
+                onBrowseContacts: { selectTab(.contacts) }
+            )
         case .contacts:
             TelefamIosContactsView(
                 store: contactsStore,
@@ -461,7 +438,8 @@ struct TelefamIosHomeView: View {
                 onOpenUserProfile: { uid in pushProfile(uid) },
                 onEditOwnerPost: { item in postLaunchTarget = .edit(item: item) },
                 onTapHashtag: { tag, mode in postLaunchTarget = .prefillHashtag(tag: tag, mode: mode) },
-                onTapAudio: { song, mode in postLaunchTarget = .prefillSong(song: song, mode: mode) }
+                onTapAudio: { song, mode in postLaunchTarget = .prefillSong(song: song, mode: mode) },
+                onMessageUser: { prof in launchChat(with: prof) }
             )
         }
     }
@@ -545,6 +523,21 @@ struct TelefamIosHomeView: View {
         isBottomBarVisible = true
         if tab == .feeds {
             Task { await feedStore.refresh() }
+        }
+    }
+
+    private func launchChat(with prof: TelefamIosUserProfile) {
+        profileBackStack.removeAll()
+        showFeedSearch = false
+        activeTab = .chats
+        isBottomBarVisible = true
+        Task {
+            await chatStore.openDirectConversation(
+                peerUserId: prof.userId,
+                fullName: prof.fullName,
+                username: prof.username,
+                avatarUrl: prof.avatarUrl
+            )
         }
     }
 

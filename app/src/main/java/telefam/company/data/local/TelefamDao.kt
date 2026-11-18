@@ -318,4 +318,134 @@ interface TelefamDao {
 
   @Insert(onConflict = OnConflictStrategy.REPLACE)
   suspend fun upsertCachedChatPrivacy(entity: CachedChatPrivacyEntity)
+
+  // Live outbox counts for Settings -> Offline sync
+  @Query("SELECT COUNT(*) FROM pending_settings_ops WHERE userId = :userId")
+  suspend fun countPendingSettingsOps(userId: String): Int
+
+  @Query("SELECT COUNT(*) FROM contact_sync_actions")
+  suspend fun countPendingContactSyncActions(): Int
+
+  @Query("SELECT COUNT(*) FROM pending_feed_interactions")
+  suspend fun countPendingFeedInteractions(): Int
+
+  @Query("SELECT COUNT(*) FROM pending_post_uploads")
+  suspend fun countPendingPostUploads(): Int
+
+  @Query("SELECT COUNT(*) FROM offline_actions")
+  suspend fun countPendingOfflineActions(): Int
+
+  @Query("SELECT COUNT(*) FROM pending_chat_ops")
+  suspend fun countPendingChatOps(): Int
+
+  // Signal Protocol Key State
+  @Query("SELECT * FROM signal_key_states WHERE ownerUserId = :ownerUserId LIMIT 1")
+  suspend fun getSignalKeyState(ownerUserId: String): SignalKeyStateEntity?
+
+  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  suspend fun upsertSignalKeyState(state: SignalKeyStateEntity)
+
+  // 1-on-1 Conversations (reactive list + long-press actions + search)
+  @Query("SELECT * FROM chat_conversations WHERE isDeletedLocally = 0 AND isArchived = 0 ORDER BY lastMessageAtMs DESC, updatedAtMs DESC")
+  fun observeActiveConversations(): Flow<List<ChatConversationEntity>>
+
+  @Query("SELECT * FROM chat_conversations WHERE isDeletedLocally = 0 ORDER BY lastMessageAtMs DESC, updatedAtMs DESC")
+  suspend fun getAllActiveConversations(): List<ChatConversationEntity>
+
+  @Query("SELECT * FROM chat_conversations WHERE conversationId = :conversationId LIMIT 1")
+  suspend fun getConversation(conversationId: String): ChatConversationEntity?
+
+  @Query("SELECT * FROM chat_conversations WHERE conversationId = :conversationId LIMIT 1")
+  fun observeConversation(conversationId: String): Flow<ChatConversationEntity?>
+
+  @Query("SELECT * FROM chat_conversations WHERE peerUserId = :peerUserId AND isDeletedLocally = 0 LIMIT 1")
+  suspend fun getConversationByPeer(peerUserId: String): ChatConversationEntity?
+
+  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  suspend fun upsertConversation(conv: ChatConversationEntity)
+
+  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  suspend fun upsertConversations(convs: List<ChatConversationEntity>)
+
+  @Query("UPDATE chat_conversations SET unreadCount = 0 WHERE conversationId = :conversationId")
+  suspend fun clearConversationUnread(conversationId: String)
+
+  @Query("UPDATE chat_conversations SET unreadCount = :unreadCount WHERE conversationId = :conversationId")
+  suspend fun setConversationUnread(conversationId: String, unreadCount: Int)
+
+  @Query("UPDATE chat_conversations SET isArchived = :isArchived WHERE conversationId IN (:ids)")
+  suspend fun setConversationsArchived(ids: List<String>, isArchived: Boolean)
+
+  @Query("UPDATE chat_conversations SET isMuted = :isMuted WHERE conversationId IN (:ids)")
+  suspend fun setConversationsMuted(ids: List<String>, isMuted: Boolean)
+
+  @Query("UPDATE chat_conversations SET isDeletedLocally = :deleted WHERE conversationId IN (:ids)")
+  suspend fun setConversationsDeletedLocally(ids: List<String>, deleted: Boolean)
+
+  @Query("UPDATE chat_conversations SET draftText = :draftText WHERE conversationId = :conversationId")
+  suspend fun updateConversationDraft(conversationId: String, draftText: String)
+
+  // 1-on-1 Messages (instant offline-first write, reactive thread list, search, zero-trace delete)
+  @Query("SELECT * FROM chat_messages WHERE conversationId = :conversationId AND isPendingUnsend = 0 ORDER BY createdAtMs ASC")
+  fun observeMessagesForConversation(conversationId: String): Flow<List<ChatMessageEntity>>
+
+  @Query("SELECT * FROM chat_messages WHERE conversationId = :conversationId ORDER BY createdAtMs ASC")
+  suspend fun getMessagesForConversation(conversationId: String): List<ChatMessageEntity>
+
+  @Query("SELECT * FROM chat_messages WHERE messageId = :messageId LIMIT 1")
+  suspend fun getChatMessage(messageId: String): ChatMessageEntity?
+
+  @Query("SELECT * FROM chat_messages WHERE plainText LIKE '%' || :query || '%' AND isPendingUnsend = 0 ORDER BY createdAtMs DESC LIMIT 40")
+  suspend fun searchDecryptedMessages(query: String): List<ChatMessageEntity>
+
+  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  suspend fun upsertChatMessage(msg: ChatMessageEntity)
+
+  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  suspend fun upsertChatMessages(msgs: List<ChatMessageEntity>)
+
+  @Query("DELETE FROM chat_messages WHERE messageId = :messageId")
+  suspend fun deleteChatMessagePermanently(messageId: String)
+
+  @Query("DELETE FROM chat_messages WHERE clientOpId = :clientOpId")
+  suspend fun deleteChatMessageByClientOpId(clientOpId: String)
+
+  @Query("UPDATE chat_messages SET deliveryStatus = :status WHERE messageId = :messageId")
+  suspend fun updateChatMessageDeliveryStatus(messageId: String, status: String)
+
+  @Query("UPDATE chat_messages SET plainText = :newText, editedAtMs = :editedAtMs WHERE messageId = :messageId")
+  suspend fun updateChatMessageEditedText(messageId: String, newText: String, editedAtMs: Long)
+
+  @Query("UPDATE chat_messages SET viewOnceOpenedAtMs = :openedAtMs, viewOnceExpiresAtMs = :expiresAtMs WHERE messageId = :messageId")
+  suspend fun markChatMessageViewOnceOpened(messageId: String, openedAtMs: Long, expiresAtMs: Long)
+
+  // Persistent Security Flags (survive offline restart & refresh)
+  @Query("SELECT * FROM chat_security_flags WHERE conversationId = :conversationId ORDER BY createdAtMs DESC")
+  fun observeSecurityFlags(conversationId: String): Flow<List<ChatSecurityFlagEntity>>
+
+  @Query("SELECT * FROM chat_security_flags WHERE isSynced = 0 ORDER BY createdAtMs ASC")
+  suspend fun getUnsyncedSecurityFlags(): List<ChatSecurityFlagEntity>
+
+  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  suspend fun upsertSecurityFlag(flag: ChatSecurityFlagEntity)
+
+  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  suspend fun upsertSecurityFlags(flags: List<ChatSecurityFlagEntity>)
+
+  @Query("UPDATE chat_security_flags SET isSynced = 1 WHERE flagId = :flagId")
+  suspend fun markSecurityFlagSynced(flagId: String)
+
+  // Offline Chat Outbox Operations
+  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  suspend fun enqueueChatOp(op: PendingChatOpEntity)
+
+  @Query("SELECT * FROM pending_chat_ops WHERE nextRetryAtMs <= :nowMs ORDER BY createdAtMs ASC LIMIT :limit")
+  suspend fun getReadyChatOps(nowMs: Long, limit: Int): List<PendingChatOpEntity>
+
+  @Query("DELETE FROM pending_chat_ops WHERE opId = :opId")
+  suspend fun deleteChatOp(opId: String)
+
+  @Query("UPDATE pending_chat_ops SET retryCount = :retryCount, nextRetryAtMs = :nextRetryAtMs WHERE opId = :opId")
+  suspend fun scheduleChatOpRetry(opId: String, retryCount: Int, nextRetryAtMs: Long)
 }
+

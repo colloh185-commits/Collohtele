@@ -92,6 +92,7 @@ import telefam.company.core.DiscoverabilityOption
 import telefam.company.core.NotificationSettingsState
 import telefam.company.core.PrivacySettingsState
 import telefam.company.core.SettingsDestination
+import telefam.company.core.SyncPreferencesState
 import telefam.company.core.TelefamQrEncoder
 import telefam.company.core.TelefamSettingsContentCatalog
 import telefam.company.core.VideoQualityOption
@@ -123,6 +124,9 @@ fun TelefamSettingsScreen(
   onUpdatePrivacy: (PrivacySettingsState) -> Unit,
   onUpdateNotifications: (NotificationSettingsState) -> Unit,
   onUpdateContentPreferences: (ContentPreferencesState, Boolean) -> Unit,
+  onUpdateSyncPreferences: (SyncPreferencesState) -> Unit = {},
+  onTriggerManualSync: () -> Unit = {},
+  onRefreshSyncStatus: () -> Unit = {},
   onRestrictedTabSelected: (Int) -> Unit,
   onRestrictedQueryChanged: (String) -> Unit,
   onUnblockAccount: (String) -> Unit,
@@ -159,6 +163,7 @@ fun TelefamSettingsScreen(
     SettingsDestination.SHARE_PROFILE -> "Share profile"
     SettingsDestination.NOTIFICATIONS -> "Notifications"
     SettingsDestination.CONTENT_PREFERENCES -> "Content preferences"
+    SettingsDestination.OFFLINE_SYNC -> "Offline sync"
     SettingsDestination.BLOCKED_ACCOUNTS -> "Blocked & muted"
     SettingsDestination.REPORT_PROBLEM -> "Report a problem"
     SettingsDestination.SAFETY_CENTER -> "Safety Center"
@@ -237,6 +242,7 @@ fun TelefamSettingsScreen(
                 themeMode = uiState.themeMode,
                 searchQuery = uiState.settingsSearchQuery,
                 selectedDestination = activeRight,
+                pendingSyncCount = uiState.syncStatus.totalPendingCount,
                 onSearchQueryChanged = onSearchQueryChanged,
                 onToggleTheme = onToggleTheme,
                 onSelectDestination = onOpenDestination,
@@ -258,6 +264,7 @@ fun TelefamSettingsScreen(
                     SettingsDestination.SHARE_PROFILE -> "Share profile"
                     SettingsDestination.NOTIFICATIONS -> "Notifications"
                     SettingsDestination.CONTENT_PREFERENCES -> "Content preferences"
+                    SettingsDestination.OFFLINE_SYNC -> "Offline sync"
                     SettingsDestination.BLOCKED_ACCOUNTS -> "Blocked & muted accounts"
                     SettingsDestination.REPORT_PROBLEM -> "Report a problem"
                     SettingsDestination.SAFETY_CENTER -> "Safety Center"
@@ -278,6 +285,9 @@ fun TelefamSettingsScreen(
                   onUpdatePrivacy = onUpdatePrivacy,
                   onUpdateNotifications = onUpdateNotifications,
                   onUpdateContentPreferences = onUpdateContentPreferences,
+                  onUpdateSyncPreferences = onUpdateSyncPreferences,
+                  onTriggerManualSync = onTriggerManualSync,
+                  onRefreshSyncStatus = onRefreshSyncStatus,
                   onRestrictedTabSelected = onRestrictedTabSelected,
                   onRestrictedQueryChanged = onRestrictedQueryChanged,
                   onUnblockAccount = onUnblockAccount,
@@ -308,6 +318,7 @@ fun TelefamSettingsScreen(
                 themeMode = uiState.themeMode,
                 searchQuery = uiState.settingsSearchQuery,
                 selectedDestination = null,
+                pendingSyncCount = uiState.syncStatus.totalPendingCount,
                 onSearchQueryChanged = onSearchQueryChanged,
                 onToggleTheme = onToggleTheme,
                 onSelectDestination = onOpenDestination,
@@ -323,6 +334,9 @@ fun TelefamSettingsScreen(
                 onUpdatePrivacy = onUpdatePrivacy,
                 onUpdateNotifications = onUpdateNotifications,
                 onUpdateContentPreferences = onUpdateContentPreferences,
+                onUpdateSyncPreferences = onUpdateSyncPreferences,
+                onTriggerManualSync = onTriggerManualSync,
+                onRefreshSyncStatus = onRefreshSyncStatus,
                 onRestrictedTabSelected = onRestrictedTabSelected,
                 onRestrictedQueryChanged = onRestrictedQueryChanged,
                 onUnblockAccount = onUnblockAccount,
@@ -362,12 +376,18 @@ private fun SettingsHubBody(
   themeMode: telefam.company.ui.theme.ThemeMode,
   searchQuery: String,
   selectedDestination: SettingsDestination?,
+  pendingSyncCount: Int,
   onSearchQueryChanged: (String) -> Unit,
   onToggleTheme: () -> Unit,
   onSelectDestination: (SettingsDestination) -> Unit,
   onRequestLogout: () -> Unit,
 ) {
-  val allRows = remember {
+  val syncSubtitle = if (pendingSyncCount > 0) {
+    "$pendingSyncCount item(s) queued for server sync"
+  } else {
+    "Auto-sync, Wi-Fi only, up to date"
+  }
+  val allRows = remember(syncSubtitle) {
     listOf(
       SettingsHubRowModel(
         id = "account_privacy",
@@ -404,6 +424,15 @@ private fun SettingsHubBody(
         iconKind = SettingsSvgIconKind.HEART,
         destination = SettingsDestination.CONTENT_PREFERENCES,
         keywords = "autoplay captions reduced motion data saver topics language",
+      ),
+      SettingsHubRowModel(
+        id = "offline_sync",
+        section = "Content & activity",
+        title = "Offline sync",
+        subtitle = syncSubtitle,
+        iconKind = SettingsSvgIconKind.CLOUD_SYNC,
+        destination = SettingsDestination.OFFLINE_SYNC,
+        keywords = "offline sync queue server wifi cache background retry",
       ),
       SettingsHubRowModel(
         id = "safety_privacy",
@@ -659,6 +688,9 @@ private fun SettingsDetailHost(
   onUpdatePrivacy: (PrivacySettingsState) -> Unit,
   onUpdateNotifications: (NotificationSettingsState) -> Unit,
   onUpdateContentPreferences: (ContentPreferencesState, Boolean) -> Unit,
+  onUpdateSyncPreferences: (SyncPreferencesState) -> Unit,
+  onTriggerManualSync: () -> Unit,
+  onRefreshSyncStatus: () -> Unit,
   onRestrictedTabSelected: (Int) -> Unit,
   onRestrictedQueryChanged: (String) -> Unit,
   onUnblockAccount: (String) -> Unit,
@@ -691,6 +723,15 @@ private fun SettingsDetailHost(
     SettingsDestination.CONTENT_PREFERENCES -> ContentPreferencesPane(
       state = uiState.settings.contentPreferences,
       onChange = onUpdateContentPreferences,
+    )
+    SettingsDestination.OFFLINE_SYNC -> OfflineSyncPane(
+      prefs = uiState.settings.syncPreferences,
+      status = uiState.syncStatus,
+      networkTier = uiState.networkTier,
+      isWifiConnected = uiState.isWifiConnected,
+      onUpdatePrefs = onUpdateSyncPreferences,
+      onSyncNow = onTriggerManualSync,
+      onRefreshStatus = onRefreshSyncStatus,
     )
     SettingsDestination.BLOCKED_ACCOUNTS -> BlockedMutedAccountsPane(
       selectedTab = uiState.restrictedAccountsTab,

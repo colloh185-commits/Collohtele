@@ -9,6 +9,7 @@ enum class DesktopSettingsDestination {
   SHARE_PROFILE,
   NOTIFICATIONS,
   CONTENT_PREFERENCES,
+  OFFLINE_SYNC,
   BLOCKED_ACCOUNTS,
   REPORT_PROBLEM,
   SAFETY_CENTER,
@@ -124,11 +125,32 @@ data class DesktopContentPreferences(
   val updatedAtMs: Long = 0L,
 )
 
+data class DesktopSyncPreferences(
+  val autoSyncEnabled: Boolean = true,
+  val syncOverWifiOnly: Boolean = false,
+  val backgroundSyncEnabled: Boolean = true,
+  val cacheFeedsOffline: Boolean = true,
+  val cacheChatMediaOffline: Boolean = true,
+  val lastSyncedAtMs: Long = 0L,
+  val lastSyncStatus: String = "idle",
+  val totalSyncedOps: Long = 0L,
+  val updatedAtMs: Long = 0L,
+)
+
+data class DesktopSyncRunResult(
+  val success: Boolean,
+  val syncedOpsCount: Int,
+  val pendingRemaining: Int,
+  val message: String,
+  val bundle: DesktopSettingsBundle,
+)
+
 data class DesktopSettingsBundle(
   val privacy: DesktopPrivacySettings = DesktopPrivacySettings(),
   val notifications: DesktopNotificationSettings = DesktopNotificationSettings(),
   val contentPreferences: DesktopContentPreferences = DesktopContentPreferences(),
   val chatPrivacy: DesktopChatPrivacySettings = DesktopChatPrivacySettings(),
+  val syncPreferences: DesktopSyncPreferences = DesktopSyncPreferences(),
 )
 
 enum class DesktopChatPrivacyRoute {

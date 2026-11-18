@@ -217,7 +217,7 @@ class TelefamContactsRobolectricTest {
     shadowOf(cm).setNetworkCapabilities(active, caps)
   }
 
-  private class FakeContactsApiService : TelefamApiService {
+  private class FakeContactsApiService : AbstractTestChatApiStub() {
     val syncedActions = mutableListOf<telefam.company.data.network.ContactSyncActionDto>()
     private val directory = mutableListOf(
       ContactItemDto("u_amara", "Amara Okafor", "amara_reads", "Lagos", "NG", null, isFollowing = false, followsYou = false, relationshipState = "FOLLOW", riskScore = 10.0),
@@ -459,5 +459,14 @@ class TelefamContactsRobolectricTest {
 
     override suspend fun syncDeviceContext(bearer: String, deviceFingerprint: String, body: telefam.company.data.network.DeviceContextTelemetryDto): Response<telefam.company.data.network.DeviceContextTelemetryResponseDto> =
       Response.success(telefam.company.data.network.DeviceContextTelemetryResponseDto(success = true))
+
+    override suspend fun getSyncSettings(bearer: String, deviceFingerprint: String): Response<telefam.company.data.network.SyncSettingsResponseDto> =
+      Response.success(telefam.company.data.network.SyncSettingsResponseDto(success = true))
+
+    override suspend fun updateSyncSettings(bearer: String, deviceFingerprint: String, body: telefam.company.data.network.SyncPreferencesDto): Response<telefam.company.data.network.SyncSettingsResponseDto> =
+      Response.success(telefam.company.data.network.SyncSettingsResponseDto(success = true, syncPreferences = body))
+
+    override suspend fun syncNow(bearer: String, deviceFingerprint: String, body: telefam.company.data.network.ManualSyncRequestDto): Response<telefam.company.data.network.ManualSyncResponseDto> =
+      Response.success(telefam.company.data.network.ManualSyncResponseDto(success = true, ackedOpIds = body.operations.map { it.clientOpId }))
   }
 }

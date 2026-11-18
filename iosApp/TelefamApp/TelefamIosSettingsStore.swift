@@ -11,6 +11,7 @@ enum TelefamSettingsDestination: String, CaseIterable, Hashable, Identifiable {
     case shareProfile
     case notifications
     case contentPreferences
+    case offlineSync
     case blockedAccounts
     case reportProblem
     case safetyCenter
@@ -27,6 +28,7 @@ enum TelefamSettingsDestination: String, CaseIterable, Hashable, Identifiable {
         case .shareProfile: return "Share profile"
         case .notifications: return "Notifications"
         case .contentPreferences: return "Content preferences"
+        case .offlineSync: return "Offline sync"
         case .blockedAccounts: return "Blocked & muted"
         case .reportProblem: return "Report a problem"
         case .safetyCenter: return "Safety Center"
@@ -290,6 +292,45 @@ struct TelefamContentPreferences: Codable, Equatable {
     }
 }
 
+struct TelefamSyncPreferences: Codable, Equatable {
+    var autoSyncEnabled: Bool = true
+    var syncOverWifiOnly: Bool = false
+    var backgroundSyncEnabled: Bool = true
+    var cacheFeedsOffline: Bool = true
+    var cacheChatMediaOffline: Bool = true
+    var lastSyncedAtMs: Int64 = 0
+    var lastSyncStatus: String = "idle"
+    var totalSyncedOps: Int64 = 0
+    var updatedAtMs: Int64 = 0
+
+    enum CodingKeys: String, CodingKey {
+        case autoSyncEnabled = "auto_sync_enabled"
+        case syncOverWifiOnly = "sync_over_wifi_only"
+        case backgroundSyncEnabled = "background_sync_enabled"
+        case cacheFeedsOffline = "cache_feeds_offline"
+        case cacheChatMediaOffline = "cache_chat_media_offline"
+        case lastSyncedAtMs = "last_synced_at_ms"
+        case lastSyncStatus = "last_sync_status"
+        case totalSyncedOps = "total_synced_ops"
+        case updatedAtMs = "updated_at_ms"
+    }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        autoSyncEnabled = try c.decodeIfPresent(Bool.self, forKey: .autoSyncEnabled) ?? true
+        syncOverWifiOnly = try c.decodeIfPresent(Bool.self, forKey: .syncOverWifiOnly) ?? false
+        backgroundSyncEnabled = try c.decodeIfPresent(Bool.self, forKey: .backgroundSyncEnabled) ?? true
+        cacheFeedsOffline = try c.decodeIfPresent(Bool.self, forKey: .cacheFeedsOffline) ?? true
+        cacheChatMediaOffline = try c.decodeIfPresent(Bool.self, forKey: .cacheChatMediaOffline) ?? true
+        lastSyncedAtMs = try c.decodeIfPresent(Int64.self, forKey: .lastSyncedAtMs) ?? 0
+        lastSyncStatus = try c.decodeIfPresent(String.self, forKey: .lastSyncStatus) ?? "idle"
+        totalSyncedOps = try c.decodeIfPresent(Int64.self, forKey: .totalSyncedOps) ?? 0
+        updatedAtMs = try c.decodeIfPresent(Int64.self, forKey: .updatedAtMs) ?? 0
+    }
+}
+
 enum TelefamChatPrivacyRoute: Hashable {
     case chatsTheme
     case bubbleColors
@@ -458,6 +499,7 @@ struct TelefamSettingsBundle: Codable, Equatable {
     var notifications = TelefamNotificationSettings()
     var contentPreferences = TelefamContentPreferences()
     var chatPrivacy = TelefamChatPrivacySettings()
+    var syncPreferences = TelefamSyncPreferences()
 
     init() {}
 
@@ -467,6 +509,7 @@ struct TelefamSettingsBundle: Codable, Equatable {
         notifications = try c.decodeIfPresent(TelefamNotificationSettings.self, forKey: .notifications) ?? TelefamNotificationSettings()
         contentPreferences = try c.decodeIfPresent(TelefamContentPreferences.self, forKey: .contentPreferences) ?? TelefamContentPreferences()
         chatPrivacy = try c.decodeIfPresent(TelefamChatPrivacySettings.self, forKey: .chatPrivacy) ?? TelefamChatPrivacySettings()
+        syncPreferences = try c.decodeIfPresent(TelefamSyncPreferences.self, forKey: .syncPreferences) ?? TelefamSyncPreferences()
     }
 }
 
@@ -866,6 +909,11 @@ final class TelefamIosSettingsStore: ObservableObject {
     @Published var lastCreatedTicket: TelefamSupportTicket? = nil
     @Published var isSubmittingReport: Bool = false
     @Published var isCheckingUpdates: Bool = false
+    @Published var pendingOutboxCount: Int = 0
+    @Published var isNetworkConnected: Bool = true
+    @Published var isWifiConnected: Bool = true
+    @Published var isSyncingNow: Bool = false
+    @Published var lastSyncMessage: String = ""
     @Published var toastMessage: String? = nil
 
     private var outboxOps: [TelefamPendingSettingsOp] = []
@@ -901,9 +949,13 @@ final class TelefamIosSettingsStore: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 let nowSatisfied = path.status == .satisfied
+                let nowWifi = path.usesInterfaceType(.wifi) || path.usesInterfaceType(.wiredEthernet)
                 let recovered = !self.isNetworkSatisfied && nowSatisfied
                 self.isNetworkSatisfied = nowSatisfied
-                if recovered || nowSatisfied {
+                self.isNetworkConnected = nowSatisfied
+                self.isWifiConnected = nowWifi
+                let sp = self.bundle.syncPreferences
+                if (recovered || nowSatisfied) && sp.autoSyncEnabled && (!sp.syncOverWifiOnly || nowWifi) {
                     await self.flushPendingOps()
                 }
             }
@@ -953,6 +1005,7 @@ final class TelefamIosSettingsStore: ObservableObject {
         mutedAccounts = readProtected([TelefamRestrictedAccount].self, from: "muted") ?? []
         supportTickets = readProtected([TelefamSupportTicket].self, from: "tickets") ?? []
         outboxOps = readProtected([TelefamPendingSettingsOp].self, from: "outbox") ?? []
+        pendingOutboxCount = outboxOps.count
     }
 
     func clearCachesForCurrentUser() {
@@ -964,6 +1017,8 @@ final class TelefamIosSettingsStore: ObservableObject {
         mutedAccounts = []
         supportTickets = []
         outboxOps = []
+        pendingOutboxCount = 0
+        lastSyncMessage = ""
     }
 
     func installedVersionString() -> String {
@@ -997,11 +1052,59 @@ final class TelefamIosSettingsStore: ObservableObject {
         let notifications: TelefamNotificationSettings?
         let contentPreferences: TelefamContentPreferences?
         let chatPrivacy: TelefamChatPrivacySettings?
+        let syncPreferences: TelefamSyncPreferences?
 
         enum CodingKeys: String, CodingKey {
             case success, privacy, notifications
             case contentPreferences = "content_preferences"
             case chatPrivacy = "chat_privacy"
+            case syncPreferences = "sync_preferences"
+        }
+    }
+
+    private struct SyncSettingsResp: Codable {
+        let success: Bool
+        let syncPreferences: TelefamSyncPreferences?
+
+        enum CodingKeys: String, CodingKey {
+            case success
+            case syncPreferences = "sync_preferences"
+        }
+    }
+
+    private struct ManualSyncRequestPayload: Codable {
+        let clientSyncId: String
+        let privacy: TelefamPrivacySettings
+        let notifications: TelefamNotificationSettings
+        let contentPreferences: TelefamContentPreferences
+        let chatPrivacy: TelefamChatPrivacySettings
+        let syncPreferences: TelefamSyncPreferences
+
+        enum CodingKeys: String, CodingKey {
+            case clientSyncId = "client_sync_id"
+            case privacy, notifications
+            case contentPreferences = "content_preferences"
+            case chatPrivacy = "chat_privacy"
+            case syncPreferences = "sync_preferences"
+        }
+    }
+
+    private struct ManualSyncResp: Codable {
+        let success: Bool
+        let syncedOpsCount: Int?
+        let privacy: TelefamPrivacySettings?
+        let notifications: TelefamNotificationSettings?
+        let contentPreferences: TelefamContentPreferences?
+        let chatPrivacy: TelefamChatPrivacySettings?
+        let syncPreferences: TelefamSyncPreferences?
+
+        enum CodingKeys: String, CodingKey {
+            case success
+            case syncedOpsCount = "synced_ops_count"
+            case privacy, notifications
+            case contentPreferences = "content_preferences"
+            case chatPrivacy = "chat_privacy"
+            case syncPreferences = "sync_preferences"
         }
     }
 
@@ -1040,6 +1143,7 @@ final class TelefamIosSettingsStore: ObservableObject {
             if let n = parsed.notifications { next.notifications = n }
             if let c = parsed.contentPreferences { next.contentPreferences = c }
             if let cp = parsed.chatPrivacy { next.chatPrivacy = cp }
+            if let sp = parsed.syncPreferences { next.syncPreferences = sp }
             bundle = next
             writeProtected(bundle, to: "bundle")
         }
@@ -1215,6 +1319,87 @@ final class TelefamIosSettingsStore: ObservableObject {
             writeProtected(bundle, to: "bundle")
         }
         return true
+    }
+
+    func saveSyncPreferences(_ next: TelefamSyncPreferences) async {
+        var stamped = next
+        stamped.updatedAtMs = Int64(Date().timeIntervalSince1970 * 1000)
+        bundle.syncPreferences = stamped
+        writeProtected(bundle, to: "bundle")
+
+        guard let encoded = try? JSONEncoder().encode(stamped) else { return }
+        if await pushSyncPreferences(encoded) { return }
+        enqueueOp(kind: "sync_prefs", data: encoded)
+        showToast("Saved locally — will sync when online")
+    }
+
+    private func pushSyncPreferences(_ body: Data) async -> Bool {
+        let req = authorizedRequest(url: baseURL.appendingPathComponent("v1/settings/sync"), method: "PUT", body: body)
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              let http = resp as? HTTPURLResponse,
+              (200...299).contains(http.statusCode),
+              let parsed = try? JSONDecoder().decode(SyncSettingsResp.self, from: data),
+              parsed.success else {
+            return false
+        }
+        if let sp = parsed.syncPreferences {
+            bundle.syncPreferences = sp
+            writeProtected(bundle, to: "bundle")
+        }
+        return true
+    }
+
+    func syncNowToServer() async {
+        guard !isSyncingNow else { return }
+        isSyncingNow = true
+        lastSyncMessage = "Syncing queued changes with server..."
+        defer { isSyncingNow = false }
+
+        await flushPendingOps()
+
+        let reqPayload = ManualSyncRequestPayload(
+            clientSyncId: UUID().uuidString,
+            privacy: bundle.privacy,
+            notifications: bundle.notifications,
+            contentPreferences: bundle.contentPreferences,
+            chatPrivacy: bundle.chatPrivacy,
+            syncPreferences: bundle.syncPreferences
+        )
+        guard let body = try? JSONEncoder().encode(reqPayload) else {
+            lastSyncMessage = "Unable to encode sync payload"
+            return
+        }
+        let req = authorizedRequest(url: baseURL.appendingPathComponent("v1/sync/now"), method: "POST", body: body)
+        if let (data, resp) = try? await URLSession.shared.data(for: req),
+           let http = resp as? HTTPURLResponse,
+           (200...299).contains(http.statusCode),
+           let parsed = try? JSONDecoder().decode(ManualSyncResp.self, from: data),
+           parsed.success {
+            var next = bundle
+            if let p = parsed.privacy { next.privacy = p }
+            if let n = parsed.notifications { next.notifications = n }
+            if var c = parsed.contentPreferences {
+                c.resetSuggestions = false
+                next.contentPreferences = c
+            }
+            if let cp = parsed.chatPrivacy { next.chatPrivacy = cp }
+            if let sp = parsed.syncPreferences { next.syncPreferences = sp }
+            bundle = next
+            writeProtected(bundle, to: "bundle")
+            pendingOutboxCount = outboxOps.count
+            let msg = pendingOutboxCount == 0
+                ? "All data synced with server"
+                : "Synced \(parsed.syncedOpsCount ?? 0) item(s), \(pendingOutboxCount) pending"
+            lastSyncMessage = msg
+            showToast(msg)
+            return
+        }
+
+        bundle.syncPreferences.lastSyncStatus = outboxOps.isEmpty ? bundle.syncPreferences.lastSyncStatus : "queued"
+        writeProtected(bundle, to: "bundle")
+        pendingOutboxCount = outboxOps.count
+        lastSyncMessage = "Offline or unreachable — changes remain safely queued"
+        showToast(lastSyncMessage)
     }
 
     func refreshRestrictedAccounts(isMuted: Bool, query: String) async {
@@ -1593,7 +1778,7 @@ final class TelefamIosSettingsStore: ObservableObject {
 
     private func enqueueOp(kind: String, data: Data) {
         outboxOps.removeAll {
-            $0.opKind == kind && (kind == "privacy" || kind == "notifications" || kind == "content_prefs" || kind == "chat_privacy" || kind == "chat_theme")
+            $0.opKind == kind && (kind == "privacy" || kind == "notifications" || kind == "content_prefs" || kind == "chat_privacy" || kind == "chat_theme" || kind == "sync_prefs")
         }
         outboxOps.append(
             TelefamPendingSettingsOp(
@@ -1603,11 +1788,15 @@ final class TelefamIosSettingsStore: ObservableObject {
                 createdAtMs: Int64(Date().timeIntervalSince1970 * 1000)
             )
         )
+        pendingOutboxCount = outboxOps.count
         writeProtected(outboxOps, to: "outbox")
     }
 
     func flushPendingOps() async {
-        guard !outboxOps.isEmpty, !tokenProvider().isEmpty else { return }
+        guard !outboxOps.isEmpty, !tokenProvider().isEmpty else {
+            pendingOutboxCount = outboxOps.count
+            return
+        }
         var remaining: [TelefamPendingSettingsOp] = []
         for op in outboxOps {
             var ok = false
@@ -1622,6 +1811,8 @@ final class TelefamIosSettingsStore: ObservableObject {
                 ok = await pushChatPrivacy(op.payloadData)
             case "chat_theme":
                 ok = await pushChatTheme(op.payloadData)
+            case "sync_prefs":
+                ok = await pushSyncPreferences(op.payloadData)
             case "unblock":
                 if let uid = String(data: op.payloadData, encoding: .utf8), !uid.isEmpty {
                     ok = await pushSimpleUserAction(path: "v1/users/\(uid)/unblock")
@@ -1664,6 +1855,7 @@ final class TelefamIosSettingsStore: ObservableObject {
             }
         }
         outboxOps = remaining
+        pendingOutboxCount = outboxOps.count
         writeProtected(outboxOps, to: "outbox")
     }
 

@@ -1,12 +1,15 @@
 package main
 
 import (
+	"compress/gzip"
 	"context"
 	"crypto/rand"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -44,7 +47,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           securityHeadersMiddleware(mux),
+		Handler:           gzipMiddleware(securityHeadersMiddleware(mux)),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       300 * time.Second,
 		WriteTimeout:      300 * time.Second,
@@ -74,6 +77,75 @@ func loadHMACSecret() []byte {
 	buf := make([]byte, 32)
 	_, _ = rand.Read(buf)
 	return buf
+}
+
+type gzipResponseWriter struct {
+	http.ResponseWriter
+	gw          *gzip.Writer
+	wroteHeader bool
+}
+
+func (g *gzipResponseWriter) WriteHeader(statusCode int) {
+	if !g.wroteHeader {
+		g.wroteHeader = true
+		g.Header().Del("Content-Length")
+		g.ResponseWriter.WriteHeader(statusCode)
+	}
+}
+
+func (g *gzipResponseWriter) Write(p []byte) (int, error) {
+	if !g.wroteHeader {
+		g.WriteHeader(http.StatusOK)
+	}
+	return g.gw.Write(p)
+}
+
+func (g *gzipResponseWriter) Flush() {
+	_ = g.gw.Flush()
+	if f, ok := g.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func gzipMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Never alter WebSocket upgrades (preserves http.Hijacker)
+		if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") || r.URL.Path == "/v1/chat/ws" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Transparently decompress gzip request bodies from mobile/desktop clients
+		if strings.EqualFold(r.Header.Get("Content-Encoding"), "gzip") && r.Body != nil {
+			gr, err := gzip.NewReader(io.LimitReader(r.Body, 4<<20))
+			if err != nil {
+				http.Error(w, "invalid gzip body", http.StatusBadRequest)
+				return
+			}
+			defer gr.Close()
+			r.Body = gr
+		}
+
+		// Skip double-compressing already-encoded binary audio/video/image downloads
+		if !strings.Contains(strings.ToLower(r.Header.Get("Accept-Encoding")), "gzip") ||
+			strings.HasPrefix(r.URL.Path, "/v1/media/") ||
+			strings.HasPrefix(r.URL.Path, "/v1/chat/media/") ||
+			strings.Contains(r.URL.Path, "/download") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		gw, err := gzip.NewWriterLevel(w, gzip.BestCompression)
+		if err != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		defer gw.Close()
+
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Add("Vary", "Accept-Encoding")
+		next.ServeHTTP(&gzipResponseWriter{ResponseWriter: w, gw: gw}, r)
+	})
 }
 
 func securityHeadersMiddleware(next http.Handler) http.Handler {

@@ -388,3 +388,107 @@ data class CachedChatPrivacyEntity(
   val updatedAtMs: Long,
 )
 
+@Entity(tableName = "signal_key_states")
+data class SignalKeyStateEntity(
+  @PrimaryKey val ownerUserId: String,
+  val serializedStoreJson: String,
+  val bundleUploaded: Boolean,
+  val updatedAtMs: Long,
+)
+
+@Entity(
+  tableName = "chat_conversations",
+  indices = [Index(value = ["peerUserId"]), Index(value = ["updatedAtMs"])],
+)
+data class ChatConversationEntity(
+  @PrimaryKey val conversationId: String,
+  val peerUserId: String,
+  val peerFullName: String,
+  val peerUsername: String,
+  val peerAvatarUrl: String,
+  val lastMessageId: String,
+  val lastMessageType: String,
+  val lastSenderId: String,
+  val lastMessagePreviewPlain: String,
+  val lastDeliveryStatus: String,
+  val lastMessageAtMs: Long,
+  val unreadCount: Int,
+  val isArchived: Boolean,
+  val isMuted: Boolean,
+  val isDeletedLocally: Boolean,
+  val isOnline: Boolean,
+  val lastSeenMs: Long,
+  val lastSeenLabel: String,
+  val canCall: Boolean,
+  val canScreenshot: Boolean,
+  val canShareChats: Boolean,
+  val canCopyMessages: Boolean,
+  val canDownloadMedia: Boolean,
+  val showReadReceipts: Boolean,
+  val showTypingIndicator: Boolean,
+  val showOnlineIndicator: Boolean,
+  val isBlocked: Boolean,
+  val draftText: String,
+  val updatedAtMs: Long,
+)
+
+@Entity(
+  tableName = "chat_messages",
+  indices = [
+    Index(value = ["conversationId", "createdAtMs"]),
+    Index(value = ["clientOpId"]),
+  ],
+)
+data class ChatMessageEntity(
+  @PrimaryKey val messageId: String,
+  val conversationId: String,
+  val senderUserId: String,
+  val recipientUserId: String,
+  val clientOpId: String,
+  val messageType: String, // text | sticker | gif | clip | voice | voice_once
+  val plainText: String,
+  val mediaUrl: String,
+  val mediaLocalPath: String,
+  val mediaId: String,
+  val voiceDurationMs: Long,
+  val viewOnceTtlSec: Int,
+  val viewOnceOpenedAtMs: Long,
+  val viewOnceExpiresAtMs: Long,
+  val forwardedFromUserId: String,
+  val deliveryStatus: String, // sending | sent | delivered | seen
+  val syncState: String, // synced | pending | failed
+  val editedAtMs: Long,
+  val isPendingUnsend: Boolean,
+  val createdAtMs: Long,
+)
+
+@Entity(
+  tableName = "chat_security_flags",
+  indices = [Index(value = ["conversationId", "createdAtMs"])],
+)
+data class ChatSecurityFlagEntity(
+  @PrimaryKey val flagId: String,
+  val conversationId: String,
+  val messageId: String,
+  val actorUserId: String,
+  val targetUserId: String,
+  val flagType: String, // screenshot_disallowed | view_once_opened | view_once_capture_attempt
+  val details: String,
+  val isSynced: Boolean,
+  val createdAtMs: Long,
+)
+
+@Entity(
+  tableName = "pending_chat_ops",
+  indices = [Index(value = ["nextRetryAtMs"])],
+)
+data class PendingChatOpEntity(
+  @PrimaryKey val opId: String,
+  val opKind: String, // send | edit | unsend | delete_self | receipt | flag | consume_view_once | batch_conv
+  val conversationId: String,
+  val targetMessageId: String,
+  val payloadJson: String,
+  val createdAtMs: Long,
+  val retryCount: Int,
+  val nextRetryAtMs: Long,
+)

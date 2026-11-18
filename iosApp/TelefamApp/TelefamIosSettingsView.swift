@@ -9,6 +9,7 @@ private enum SettingsBadgeSvgKind {
     case shareCard
     case bell
     case heart
+    case cloudSync
     case lock
     case blockMinus
     case flag
@@ -56,52 +57,65 @@ struct TelefamIosSettingsView: View {
         colorScheme == .dark ? TelefamPalette.background(colorScheme) : Color(red: 0.953, green: 0.961, blue: 0.973)
     }
 
-    private let allRows: [SettingsHubRowItem] = [
-        SettingsHubRowItem(
-            id: "account_privacy",
-            section: "Account",
-            title: "Privacy",
-            subtitle: "Private account, blocked accounts, activity",
-            iconKind: .activityPulse,
-            destination: .privacy,
-            keywords: "private account discovery activity comment mention"
-        ),
-        SettingsHubRowItem(
-            id: "share_profile",
-            section: "Account",
-            title: "Share profile",
-            subtitle: "QR code, link, copy profile URL",
-            iconKind: .shareCard,
-            destination: .shareProfile,
-            keywords: "qr code link url invite"
-        ),
-        SettingsHubRowItem(
-            id: "notifications",
-            section: "Content & activity",
-            title: "Notifications",
-            subtitle: "Push, email, SMS",
-            iconKind: .bell,
-            destination: .notifications,
-            keywords: "push email sms quiet hours pause alerts messages comments"
-        ),
-        SettingsHubRowItem(
-            id: "content_prefs",
-            section: "Content & activity",
-            title: "Content preferences",
-            subtitle: "Suggested content, language, video quality",
-            iconKind: .heart,
-            destination: .contentPreferences,
-            keywords: "autoplay captions reduced motion data saver topics language"
-        ),
-        SettingsHubRowItem(
-            id: "safety_privacy",
-            section: "Privacy and safety",
-            title: "Privacy",
-            subtitle: "Who can see your videos, likes, comments, following",
-            iconKind: .lock,
-            destination: .privacy,
-            keywords: "likes following visibility cookies data sharing"
-        ),
+    private var allRows: [SettingsHubRowItem] {
+        let syncSub = settingsStore.pendingOutboxCount > 0
+            ? "\(settingsStore.pendingOutboxCount) queued · Tap to sync"
+            : "Auto-sync, Wi-Fi only, cache"
+        return [
+            SettingsHubRowItem(
+                id: "account_privacy",
+                section: "Account",
+                title: "Privacy",
+                subtitle: "Private account, blocked accounts, activity",
+                iconKind: .activityPulse,
+                destination: .privacy,
+                keywords: "private account discovery activity comment mention"
+            ),
+            SettingsHubRowItem(
+                id: "share_profile",
+                section: "Account",
+                title: "Share profile",
+                subtitle: "QR code, link, copy profile URL",
+                iconKind: .shareCard,
+                destination: .shareProfile,
+                keywords: "qr code link url invite"
+            ),
+            SettingsHubRowItem(
+                id: "notifications",
+                section: "Content & activity",
+                title: "Notifications",
+                subtitle: "Push, email, SMS",
+                iconKind: .bell,
+                destination: .notifications,
+                keywords: "push email sms quiet hours pause alerts messages comments"
+            ),
+            SettingsHubRowItem(
+                id: "content_prefs",
+                section: "Content & activity",
+                title: "Content preferences",
+                subtitle: "Suggested content, language, video quality",
+                iconKind: .heart,
+                destination: .contentPreferences,
+                keywords: "autoplay captions reduced motion data saver topics language"
+            ),
+            SettingsHubRowItem(
+                id: "offline_sync",
+                section: "Content & activity",
+                title: "Offline sync",
+                subtitle: syncSub,
+                iconKind: .cloudSync,
+                destination: .offlineSync,
+                keywords: "offline sync queue cache server wifi background upload"
+            ),
+            SettingsHubRowItem(
+                id: "safety_privacy",
+                section: "Privacy and safety",
+                title: "Privacy",
+                subtitle: "Who can see your videos, likes, comments, following",
+                iconKind: .lock,
+                destination: .privacy,
+                keywords: "likes following visibility cookies data sharing"
+            ),
         SettingsHubRowItem(
             id: "blocked_accounts",
             section: "Privacy and safety",
@@ -156,7 +170,8 @@ struct TelefamIosSettingsView: View {
             destination: .about,
             keywords: "version build update check open source license company"
         )
-    ]
+        ]
+    }
 
     var body: some View {
         GeometryReader { geo in
@@ -462,6 +477,8 @@ struct TelefamIosSettingsView: View {
             IosNotificationsSubscreen(settingsStore: settingsStore, accentCrimson: accentCrimson)
         case .contentPreferences:
             IosContentPreferencesSubscreen(settingsStore: settingsStore, accentCrimson: accentCrimson)
+        case .offlineSync:
+            IosOfflineSyncSubscreen(settingsStore: settingsStore, accentCrimson: accentCrimson)
         case .blockedAccounts:
             IosBlockedMutedSubscreen(settingsStore: settingsStore, sessionStore: sessionStore, accentCrimson: accentCrimson)
         case .reportProblem:
@@ -1947,6 +1964,191 @@ private struct IosAboutSubscreen: View {
     }
 }
 
+// MARK: - 11. Offline Sync Subscreen
+
+private struct IosOfflineSyncSubscreen: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @ObservedObject var settingsStore: TelefamIosSettingsStore
+    let accentCrimson: Color
+
+    private func formattedTimestamp(_ ms: Int64) -> String {
+        guard ms > 0 else { return "Not synced yet" }
+        let dt = Date(timeIntervalSince1970: Double(ms) / 1000.0)
+        let fmt = DateFormatter()
+        fmt.dateFormat = "MMM d, HH:mm"
+        return fmt.string(from: dt)
+    }
+
+    var body: some View {
+        let sp = settingsStore.bundle.syncPreferences
+        let pending = settingsStore.pendingOutboxCount
+        let netLabel: String = {
+            if !settingsStore.isNetworkConnected { return "Offline" }
+            return settingsStore.isWifiConnected ? "Online (Wi-Fi)" : "Online (Cellular)"
+        }()
+
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(alignment: .top) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Server synchronization")
+                                .font(.system(size: 16.5, weight: .bold))
+                                .foregroundColor(TelefamPalette.textPrimary(colorScheme))
+                            Text(
+                                pending == 0
+                                    ? "All changes synced • Last synced: \(formattedTimestamp(sp.lastSyncedAtMs))"
+                                    : "\(pending) queued offline change(s) waiting to upload"
+                            )
+                            .font(.system(size: 12.5))
+                            .foregroundColor(TelefamPalette.textMuted(colorScheme))
+                        }
+                        Spacer()
+                        Text(pending == 0 ? netLabel.uppercased() : "\(pending) PENDING")
+                            .font(.system(size: 11, weight: .bold))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(
+                                pending == 0
+                                    ? Color(red: 0.055, green: 0.478, blue: 0.271).opacity(0.14)
+                                    : accentCrimson.opacity(0.14)
+                            )
+                            .foregroundColor(
+                                pending == 0
+                                    ? Color(red: 0.055, green: 0.478, blue: 0.271)
+                                    : accentCrimson
+                            )
+                            .clipShape(Capsule())
+                    }
+
+                    if sp.totalSyncedOps > 0 {
+                        Text("Total operations synced with server: \(sp.totalSyncedOps)")
+                            .font(.system(size: 12))
+                            .foregroundColor(TelefamPalette.textMuted(colorScheme))
+                    }
+
+                    if !settingsStore.lastSyncMessage.isEmpty {
+                        Text(settingsStore.lastSyncMessage)
+                            .font(.system(size: 12.5, weight: .medium))
+                            .foregroundColor(accentCrimson)
+                    }
+
+                    HStack(spacing: 10) {
+                        Button {
+                            Task { await settingsStore.syncNowToServer() }
+                        } label: {
+                            HStack(spacing: 8) {
+                                if settingsStore.isSyncingNow {
+                                    ProgressView().tint(.white)
+                                }
+                                Text(settingsStore.isSyncingNow ? "Syncing..." : "Sync now")
+                                    .font(.system(size: 14.5, weight: .bold))
+                                    .foregroundColor(.white)
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 46)
+                            .background(accentCrimson)
+                            .clipShape(RoundedRectangle(cornerRadius: 14))
+                        }
+                        .disabled(settingsStore.isSyncingNow)
+
+                        Button {
+                            Task { await settingsStore.refreshAll() }
+                        } label: {
+                            Text("Refresh")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundColor(TelefamPalette.textPrimary(colorScheme))
+                                .padding(.horizontal, 16)
+                                .frame(minHeight: 46)
+                                .background(TelefamPalette.background(colorScheme))
+                                .clipShape(RoundedRectangle(cornerRadius: 14))
+                                .overlay(RoundedRectangle(cornerRadius: 14).stroke(TelefamPalette.border(colorScheme)))
+                        }
+                        .disabled(settingsStore.isSyncingNow)
+                    }
+                }
+                .padding(16)
+                .background(TelefamPalette.surface(colorScheme))
+                .clipShape(RoundedRectangle(cornerRadius: 20))
+
+                SettingsGroupCard(title: "Sync automation", scheme: colorScheme) {
+                    SettingsSwitchRow(
+                        title: "Auto-sync when online",
+                        subtitle: "Automatically upload queued offline edits when connectivity returns",
+                        isOn: Binding(
+                            get: { sp.autoSyncEnabled },
+                            set: { v in
+                                var next = settingsStore.bundle.syncPreferences
+                                next.autoSyncEnabled = v
+                                Task { await settingsStore.saveSyncPreferences(next) }
+                            }
+                        ),
+                        tint: accentCrimson
+                    )
+                    Divider()
+                    SettingsSwitchRow(
+                        title: "Sync over Wi-Fi only",
+                        subtitle: "Hold queued uploads until connected to Wi-Fi or Ethernet",
+                        isOn: Binding(
+                            get: { sp.syncOverWifiOnly },
+                            set: { v in
+                                var next = settingsStore.bundle.syncPreferences
+                                next.syncOverWifiOnly = v
+                                Task { await settingsStore.saveSyncPreferences(next) }
+                            }
+                        ),
+                        tint: accentCrimson
+                    )
+                    Divider()
+                    SettingsSwitchRow(
+                        title: "Background sync",
+                        subtitle: "Keep preferences, privacy settings, and themes synchronized quietly",
+                        isOn: Binding(
+                            get: { sp.backgroundSyncEnabled },
+                            set: { v in
+                                var next = settingsStore.bundle.syncPreferences
+                                next.backgroundSyncEnabled = v
+                                Task { await settingsStore.saveSyncPreferences(next) }
+                            }
+                        ),
+                        tint: accentCrimson
+                    )
+                }
+
+                SettingsGroupCard(title: "Offline cache", scheme: colorScheme) {
+                    SettingsSwitchRow(
+                        title: "Cache feeds offline",
+                        subtitle: "Save recent feed items on device so browsing continues offline",
+                        isOn: Binding(
+                            get: { sp.cacheFeedsOffline },
+                            set: { v in
+                                var next = settingsStore.bundle.syncPreferences
+                                next.cacheFeedsOffline = v
+                                Task { await settingsStore.saveSyncPreferences(next) }
+                            }
+                        ),
+                        tint: accentCrimson
+                    )
+                    Divider()
+                    SettingsSwitchRow(
+                        title: "Cache chat media offline",
+                        subtitle: "Retain recent photos and voice clips for instant offline viewing",
+                        isOn: Binding(
+                            get: { sp.cacheChatMediaOffline },
+                            set: { v in
+                                var next = settingsStore.bundle.syncPreferences
+                                next.cacheChatMediaOffline = v
+                                Task { await settingsStore.saveSyncPreferences(next) }
+                            }
+                        ),
+                        tint: accentCrimson
+                    )
+                }
+            }
+            .padding(16)
+        }
+    }
+}
+
 // MARK: - Reusable Setting Card & Toggle Rows
 
 private struct SettingsGroupCard<Content: View>: View {
@@ -2208,6 +2410,22 @@ private struct SettingsRedCircleBadgeView: View {
                     stem.move(to: CGPoint(x: w * 0.50, y: h * 0.45))
                     stem.addLine(to: CGPoint(x: w * 0.50, y: h * 0.68))
                     ctx.stroke(stem, with: .color(.white), style: stroke)
+                case .cloudSync:
+                    var cloud = Path()
+                    cloud.move(to: CGPoint(x: w * 0.28, y: h * 0.68))
+                    cloud.addLine(to: CGPoint(x: w * 0.74, y: h * 0.68))
+                    cloud.addCurve(to: CGPoint(x: w * 0.73, y: h * 0.45), control1: CGPoint(x: w * 0.88, y: h * 0.68), control2: CGPoint(x: w * 0.88, y: h * 0.46))
+                    cloud.addCurve(to: CGPoint(x: w * 0.37, y: h * 0.42), control1: CGPoint(x: w * 0.71, y: h * 0.26), control2: CGPoint(x: w * 0.43, y: h * 0.24))
+                    cloud.addCurve(to: CGPoint(x: w * 0.28, y: h * 0.68), control1: CGPoint(x: w * 0.18, y: h * 0.42), control2: CGPoint(x: w * 0.14, y: h * 0.68))
+                    cloud.closeSubpath()
+                    ctx.stroke(cloud, with: .color(.white), style: stroke)
+                    var arrow = Path()
+                    arrow.move(to: CGPoint(x: w * 0.50, y: h * 0.46))
+                    arrow.addLine(to: CGPoint(x: w * 0.50, y: h * 0.62))
+                    arrow.move(to: CGPoint(x: w * 0.43, y: h * 0.53))
+                    arrow.addLine(to: CGPoint(x: w * 0.50, y: h * 0.45))
+                    arrow.addLine(to: CGPoint(x: w * 0.57, y: h * 0.53))
+                    ctx.stroke(arrow, with: .color(.white), style: stroke)
                 }
             }
             .frame(width: size * 0.56, height: size * 0.56)

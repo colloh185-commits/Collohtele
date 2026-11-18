@@ -53,6 +53,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -117,6 +118,7 @@ fun DesktopChatPrivacyHostScreen(
   route: DesktopChatPrivacyRoute,
   isDark: Boolean,
   state: DesktopChatPrivacySettings,
+  previewSenderName: String = "Telefam",
   onNavigateBack: () -> Unit,
   onUpdatePrivacy: (DesktopChatPrivacySettings) -> Unit,
   onOpenChatsTheme: () -> Unit,
@@ -150,6 +152,7 @@ fun DesktopChatPrivacyHostScreen(
         isDark = isDark,
         selectedThemeId = state.chatThemeId,
         selectedBubbleColorId = state.bubbleColorId,
+        previewSenderName = previewSenderName,
         onBack = onNavigateBack,
         onSelectTheme = onSelectTheme,
       )
@@ -158,6 +161,7 @@ fun DesktopChatPrivacyHostScreen(
         isDark = isDark,
         selectedThemeId = state.chatThemeId,
         selectedBubbleColorId = state.bubbleColorId,
+        previewSenderName = previewSenderName,
         onBack = onNavigateBack,
         onSelectBubbleColor = onSelectBubbleColor,
       )
@@ -659,6 +663,7 @@ private fun DesktopChatsThemePickerScreen(
   isDark: Boolean,
   selectedThemeId: String,
   selectedBubbleColorId: String,
+  previewSenderName: String = "Telefam",
   onBack: () -> Unit,
   onSelectTheme: (String) -> Unit,
 ) {
@@ -766,6 +771,7 @@ private fun DesktopChatsThemePickerScreen(
             theme = activeTheme,
             bubbleColor = activeBubble,
             isDark = isDark,
+            previewSenderName = previewSenderName,
           )
 
           Row(
@@ -887,6 +893,7 @@ private fun DesktopBubbleColorsPickerScreen(
   isDark: Boolean,
   selectedThemeId: String,
   selectedBubbleColorId: String,
+  previewSenderName: String = "Telefam",
   onBack: () -> Unit,
   onSelectBubbleColor: (String) -> Unit,
 ) {
@@ -1000,6 +1007,7 @@ private fun DesktopBubbleColorsPickerScreen(
             theme = activeTheme,
             bubbleColor = activeBubble,
             isDark = isDark,
+            previewSenderName = previewSenderName,
           )
 
           Text(
@@ -1029,7 +1037,9 @@ fun DesktopLiveChatPreviewCard(
   bubbleColor: DesktopChatBubbleColorOption,
   isDark: Boolean,
   modifier: Modifier = Modifier,
+  previewSenderName: String = "Telefam",
 ) {
+  val resolvedSenderName = previewSenderName.trim().ifBlank { "Telefam" }
   val incomingBubbleBg = if (isDark) Color(0xFF21242B) else Color.White
   val quoteBg = if (isDark) Color(0xFF2D333E) else Color(0xFFF1F5F9)
   val quoteAccent = Color(if (isDark) theme.accentEndHex else theme.accentStartHex)
@@ -1073,7 +1083,7 @@ fun DesktopLiveChatPreviewCard(
               Box(modifier = Modifier.width(3.dp).height(30.dp).background(quoteAccent, RoundedCornerShape(2.dp)))
               Spacer(modifier = Modifier.width(8.dp))
               Column {
-                Text("Executive officer", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = quoteAccent)
+                Text(resolvedSenderName, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = quoteAccent, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text("Good morning!", fontSize = 12.5.sp, color = incomingText)
               }
             }
@@ -1118,22 +1128,143 @@ fun DesktopChatWallpaperCanvas(
   isDark: Boolean,
   modifier: Modifier = Modifier,
 ) {
-  val bg = Color(if (isDark) theme.darkBgHex else theme.lightBgHex)
-  val alpha = if (isDark) theme.darkPatternAlpha else theme.lightPatternAlpha
-  val inkA = Color(theme.accentStartHex).copy(alpha = alpha)
-  val inkB = Color(theme.accentEndHex).copy(alpha = alpha * 0.85f)
+  val baseBg = Color(if (isDark) theme.darkBgHex else theme.lightBgHex)
+  val accentStart = Color(theme.accentStartHex)
+  val accentEnd = Color(theme.accentEndHex)
+  val selectColor = Color(theme.selectionHex)
 
-  Canvas(modifier = modifier.background(bg)) {
-    if (theme.patternKind == DesktopChatPatternKind.CLEAN) return@Canvas
-    val step = 76.dp.toPx()
-    val cols = (size.width / step).toInt() + 2
-    val rows = (size.height / step).toInt() + 2
+  val tintAlpha = if (isDark) 0.16f else 0.13f
+  val midTintAlpha = if (isDark) 0.08f else 0.07f
+  val gradTopLeft = baseBg
+  val gradMid = Color(
+    red = baseBg.red + (accentStart.red - baseBg.red) * midTintAlpha,
+    green = baseBg.green + (accentStart.green - baseBg.green) * midTintAlpha,
+    blue = baseBg.blue + (accentStart.blue - baseBg.blue) * midTintAlpha,
+    alpha = 1f,
+  )
+  val gradBottomRight = Color(
+    red = baseBg.red + (accentEnd.red - baseBg.red) * tintAlpha,
+    green = baseBg.green + (accentEnd.green - baseBg.green) * tintAlpha,
+    blue = baseBg.blue + (accentEnd.blue - baseBg.blue) * tintAlpha,
+    alpha = 1f,
+  )
+
+  val primaryDoodleTint = if (isDark) {
+    selectColor.copy(alpha = (theme.darkPatternAlpha * 1.45f).coerceIn(0.14f, 0.28f))
+  } else {
+    accentStart.copy(alpha = (theme.lightPatternAlpha * 1.35f).coerceIn(0.12f, 0.24f))
+  }
+  val secondaryDoodleTint = if (isDark) {
+    accentEnd.copy(alpha = (theme.darkPatternAlpha * 1.15f).coerceIn(0.11f, 0.22f))
+  } else {
+    selectColor.copy(alpha = (theme.lightPatternAlpha * 1.15f).coerceIn(0.10f, 0.20f))
+  }
+
+  Canvas(modifier = modifier) {
+    drawRect(
+      brush = Brush.linearGradient(
+        colors = listOf(gradTopLeft, gradMid, gradBottomRight),
+        start = Offset.Zero,
+        end = Offset(size.width, size.height),
+      ),
+    )
+
+    val maxDim = maxOf(size.width, size.height).coerceAtLeast(1f)
+    drawCircle(
+      brush = Brush.radialGradient(
+        colors = listOf(
+          accentEnd.copy(alpha = if (isDark) 0.22f else 0.14f),
+          Color.Transparent,
+        ),
+        center = Offset(size.width * 0.88f, size.height * 0.14f),
+        radius = maxDim * 0.65f,
+      ),
+      radius = maxDim * 0.65f,
+      center = Offset(size.width * 0.88f, size.height * 0.14f),
+    )
+    drawCircle(
+      brush = Brush.radialGradient(
+        colors = listOf(
+          accentStart.copy(alpha = if (isDark) 0.18f else 0.11f),
+          Color.Transparent,
+        ),
+        center = Offset(size.width * 0.14f, size.height * 0.86f),
+        radius = maxDim * 0.62f,
+      ),
+      radius = maxDim * 0.62f,
+      center = Offset(size.width * 0.14f, size.height * 0.86f),
+    )
+
+    if (theme.patternKind == DesktopChatPatternKind.CLEAN) {
+      val dotStep = 38.dp.toPx()
+      val softDot = if (isDark) Color.White.copy(alpha = 0.045f) else Color.Black.copy(alpha = 0.035f)
+      val accentDot = accentEnd.copy(alpha = if (isDark) 0.08f else 0.06f)
+      var row = 0
+      var y = dotStep * 0.5f
+      while (y < size.height + dotStep) {
+        var col = 0
+        var x = dotStep * 0.5f + if (row % 2 == 1) dotStep * 0.5f else 0f
+        while (x < size.width + dotStep) {
+          val isAccent = (row + col) % 3 == 0
+          drawCircle(
+            color = if (isAccent) accentDot else softDot,
+            radius = if (isAccent) 2.dp.toPx() else 1.4.dp.toPx(),
+            center = Offset(x, y),
+          )
+          x += dotStep
+          col++
+        }
+        y += dotStep
+        row++
+      }
+      return@Canvas
+    }
+
+    val cellSize = 68.dp.toPx()
+    val cols = (size.width / cellSize).toInt() + 2
+    val rows = (size.height / cellSize).toInt() + 2
+    val rotationAngles = floatArrayOf(-18f, 12f, -9f, 22f, 6f, -24f)
+    val fineStroke = Stroke(width = 1.05.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
+
     for (r in 0 until rows) {
       for (c in 0 until cols) {
-        val cx = c * step + if (r % 2 == 1) step * 0.5f else 0f
-        val cy = r * step
-        val cInk = if ((r + c) % 2 == 0) inkA else inkB
-        drawDesktopWallpaperDoodle(theme.patternKind, cx, cy, step * 0.25f, cInk)
+        val offsetX = if (r % 2 == 1) cellSize * 0.48f else 0f
+        val jitterY = if ((r + c) % 2 == 0) -cellSize * 0.06f else cellSize * 0.06f
+        val cx = c * cellSize + offsetX + cellSize * 0.26f
+        val cy = r * cellSize + cellSize * 0.34f + jitterY
+        val angle = rotationAngles[(r * 5 + c) % rotationAngles.size]
+        val cInk = if ((r + c) % 2 == 1) secondaryDoodleTint else primaryDoodleTint
+        val radius = cellSize * if ((r + c) % 3 == 0) 0.27f else 0.22f
+
+        rotate(degrees = angle, pivot = Offset(cx, cy)) {
+          drawDesktopWallpaperDoodle(theme.patternKind, cx, cy, radius, cInk)
+        }
+
+        if ((r + c) % 2 == 0) {
+          val sx = cx + cellSize * 0.46f
+          val sy = cy + cellSize * 0.40f
+          if ((r * 3 + c) % 4 == 0) {
+            val sr = cellSize * 0.065f
+            val star = Path().apply {
+              moveTo(sx, sy - sr)
+              lineTo(sx + sr * 0.26f, sy - sr * 0.26f)
+              lineTo(sx + sr, sy)
+              lineTo(sx + sr * 0.26f, sy + sr * 0.26f)
+              lineTo(sx, sy + sr)
+              lineTo(sx - sr * 0.26f, sy + sr * 0.26f)
+              lineTo(sx - sr, sy)
+              lineTo(sx - sr * 0.26f, sy - sr * 0.26f)
+              close()
+            }
+            drawPath(star, secondaryDoodleTint, style = fineStroke)
+          } else {
+            drawCircle(
+              color = primaryDoodleTint.copy(alpha = primaryDoodleTint.alpha * 0.85f),
+              radius = 1.6.dp.toPx(),
+              center = Offset(sx, sy),
+            )
+          }
+        }
       }
     }
   }

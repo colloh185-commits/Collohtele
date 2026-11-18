@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"telefam.company/backend/internal/audit"
+	"telefam.company/backend/internal/chat"
 	"telefam.company/backend/internal/contacts"
 	"telefam.company/backend/internal/errors"
 	"telefam.company/backend/internal/feeds"
@@ -194,6 +195,7 @@ type Handler struct {
 	contacts            *contacts.Service
 	posts               *posts.Service
 	feeds               *feeds.Engine
+	chat                *chat.Service
 	mu                  sync.Mutex
 	profiles            map[string]storedProfile
 	usernames           map[string]string
@@ -203,6 +205,8 @@ type Handler struct {
 	chatPrivacySettings map[string]ChatPrivacySettingsDTO
 	notifSettings       map[string]NotificationSettingsDTO
 	contentPrefs        map[string]ContentPreferencesDTO
+	syncPrefs           map[string]SyncPreferencesDTO
+	syncCheckpoints     map[string]int64
 	supportTickets      map[string][]SupportTicketDTO
 	ackedOps            map[string]struct{}
 	emailToUserID       map[string]string
@@ -244,6 +248,8 @@ func NewHandler(
 		chatPrivacySettings: make(map[string]ChatPrivacySettingsDTO),
 		notifSettings:       make(map[string]NotificationSettingsDTO),
 		contentPrefs:        make(map[string]ContentPreferencesDTO),
+		syncPrefs:           make(map[string]SyncPreferencesDTO),
+		syncCheckpoints:     make(map[string]int64),
 		supportTickets:      make(map[string][]SupportTicketDTO),
 		ackedOps:            make(map[string]struct{}),
 		emailToUserID:       make(map[string]string),
@@ -303,8 +309,30 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/chat/privacy", h.handleGetChatPrivacy)
 	mux.HandleFunc("PUT /v1/chat/privacy", h.handleUpdateChatPrivacy)
 	mux.HandleFunc("PUT /v1/chat/theme", h.handleUpdateChatTheme)
+	mux.HandleFunc("PUT /v1/chat/e2ee/keys", h.handleUploadE2eeKeys)
+	mux.HandleFunc("GET /v1/chat/e2ee/keys/{userId}", h.handleFetchPeerE2eeKeys)
+	mux.HandleFunc("GET /v1/chat/conversations", h.handleListChatConversations)
+	mux.HandleFunc("POST /v1/chat/conversations/direct/{userId}", h.handleOpenDirectConversation)
+	mux.HandleFunc("POST /v1/chat/conversations/batch-action", h.handleBatchConversationAction)
+	mux.HandleFunc("GET /v1/chat/conversations/{id}/messages", h.handleListChatMessages)
+	mux.HandleFunc("POST /v1/chat/conversations/{id}/messages", h.handleSendChatMessage)
+	mux.HandleFunc("PATCH /v1/chat/messages/{id}", h.handleEditChatMessage)
+	mux.HandleFunc("DELETE /v1/chat/messages/{id}", h.handleDeleteChatMessage)
+	mux.HandleFunc("POST /v1/chat/messages/{id}/receipt", h.handleChatMessageReceipt)
+	mux.HandleFunc("POST /v1/chat/messages/{id}/view-once/open", h.handleOpenViewOnceVoice)
+	mux.HandleFunc("POST /v1/chat/messages/{id}/view-once/consume", h.handleConsumeViewOnceVoice)
+	mux.HandleFunc("POST /v1/chat/media/voice", h.handleUploadVoiceMedia)
+	mux.HandleFunc("GET /v1/chat/media/voice/{mediaId}", h.handleDownloadVoiceMedia)
+	mux.HandleFunc("GET /v1/chat/conversations/{id}/flags", h.handleListSecurityFlags)
+	mux.HandleFunc("POST /v1/chat/conversations/{id}/flags", h.handleRecordSecurityFlag)
+	mux.HandleFunc("GET /v1/chat/stickers/greeting", h.handleGiflyGreetingSticker)
+	mux.HandleFunc("GET /v1/chat/stickers/search", h.handleGiflySearch)
+	mux.HandleFunc("GET /v1/chat/search", h.handleChatGlobalSearch)
+	mux.HandleFunc("GET /v1/chat/ws", h.handleChatWebSocket)
 	mux.HandleFunc("PUT /v1/settings/notifications", h.handleUpdateNotificationSettings)
 	mux.HandleFunc("PUT /v1/settings/content-preferences", h.handleUpdateContentPreferences)
+	mux.HandleFunc("GET /v1/settings/sync", h.handleGetSyncSettings)
+	mux.HandleFunc("PUT /v1/settings/sync", h.handleUpdateSyncSettings)
 	mux.HandleFunc("GET /v1/settings/blocked-accounts", h.handleListBlockedAccounts)
 	mux.HandleFunc("GET /v1/settings/muted-accounts", h.handleListMutedAccounts)
 	mux.HandleFunc("GET /v1/settings/system-status", h.handleSystemStatus)
@@ -328,6 +356,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/contacts/sync", h.handleSyncContacts)
 	mux.HandleFunc("POST /v1/audit/event", h.handleAuditEvent)
 	mux.HandleFunc("POST /v1/sync/batch", h.handleSyncBatch)
+	mux.HandleFunc("POST /v1/sync/now", h.handleSyncNow)
 	mux.HandleFunc("GET /healthz", h.handleHealth)
 }
 
@@ -1409,6 +1438,7 @@ func (h *Handler) handleBlockUser(w http.ResponseWriter, r *http.Request) {
 	h.feeds.BlockUser(claims.UserID, targetID)
 	h.contacts.SetFollowing(claims.UserID, targetID, deviceFP, false)
 	h.contacts.AddRiskScore(targetID, 5.0)
+	h.ensureChatService().NotifyBlockStateChanged(claims.UserID, targetID)
 	h.audit.Record(claims.UserID, "user_blocked", deviceFP, ipFP, map[string]string{
 		"target_user_id": targetID,
 	})
@@ -1430,6 +1460,7 @@ func (h *Handler) handleUnblockUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.feeds.UnblockUser(claims.UserID, targetID)
+	h.ensureChatService().NotifyBlockStateChanged(claims.UserID, targetID)
 	h.audit.Record(claims.UserID, "user_unblocked", deviceFP, ipFP, map[string]string{
 		"target_user_id": targetID,
 	})

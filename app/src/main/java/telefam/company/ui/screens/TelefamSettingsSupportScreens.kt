@@ -50,6 +50,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -83,20 +85,27 @@ import com.telefam.company.app.R
 import telefam.company.core.AppVersionCheckResult
 import telefam.company.core.FaqEntry
 import telefam.company.core.LegalDocumentItem
+import telefam.company.core.NetworkTier
+import telefam.company.core.OfflineSyncStatusSnapshot
 import telefam.company.core.RestrictedAccountItem
 import telefam.company.core.SupportTicketItem
+import telefam.company.core.SyncPreferencesState
 import telefam.company.core.SystemServiceStatusItem
 import telefam.company.core.TelefamSettingsContentCatalog
 import telefam.company.ui.theme.TelefamCrimson
 import telefam.company.ui.theme.TelefamCrimsonBright
 import telefam.company.ui.theme.TelefamPureWhite
 import telefam.company.ui.theme.TelefamStatusOnline
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 enum class SettingsSvgIconKind {
   ACTIVITY_PULSE,
   SHARE_CARD,
   BELL,
   HEART,
+  CLOUD_SYNC,
   LOCK,
   BLOCK_MINUS,
   FLAG,
@@ -177,6 +186,38 @@ fun SettingsRedCircleBadge(
             close()
           }
           drawPath(p, color = white, style = stroke)
+        }
+        SettingsSvgIconKind.CLOUD_SYNC -> {
+          drawArc(
+            color = white,
+            startAngle = 210f,
+            sweepAngle = 140f,
+            useCenter = false,
+            topLeft = Offset(w * 0.16f, h * 0.16f),
+            size = Size(w * 0.68f, h * 0.68f),
+            style = stroke,
+          )
+          drawArc(
+            color = white,
+            startAngle = 30f,
+            sweepAngle = 140f,
+            useCenter = false,
+            topLeft = Offset(w * 0.16f, h * 0.16f),
+            size = Size(w * 0.68f, h * 0.68f),
+            style = stroke,
+          )
+          val arrowTop = Path().apply {
+            moveTo(w * 0.66f, h * 0.14f)
+            lineTo(w * 0.82f, h * 0.26f)
+            lineTo(w * 0.64f, h * 0.34f)
+          }
+          drawPath(arrowTop, color = white, style = stroke)
+          val arrowBot = Path().apply {
+            moveTo(w * 0.34f, h * 0.86f)
+            lineTo(w * 0.18f, h * 0.74f)
+            lineTo(w * 0.36f, h * 0.66f)
+          }
+          drawPath(arrowBot, color = white, style = stroke)
         }
         SettingsSvgIconKind.LOCK -> {
           drawRoundRect(
@@ -1154,4 +1195,243 @@ internal fun LogoutConfirmationDialog(
       }
     },
   )
+}
+
+@Composable
+internal fun OfflineSyncPane(
+  prefs: SyncPreferencesState,
+  status: OfflineSyncStatusSnapshot,
+  networkTier: NetworkTier,
+  isWifiConnected: Boolean,
+  onUpdatePrefs: (SyncPreferencesState) -> Unit,
+  onSyncNow: () -> Unit,
+  onRefreshStatus: () -> Unit,
+) {
+  val lastSyncLabel = remember(status.lastSyncedAtMs, prefs.lastSyncedAtMs) {
+    val ts = maxOf(status.lastSyncedAtMs, prefs.lastSyncedAtMs)
+    if (ts <= 0L) "Not synced yet"
+    else SimpleDateFormat("MMM d, HH:mm", Locale.getDefault()).format(Date(ts))
+  }
+  val connectionLabel = when {
+    networkTier == NetworkTier.OFFLINE -> "Offline"
+    isWifiConnected -> "Online (Wi-Fi)"
+    else -> "Online (Cellular)"
+  }
+  val connectionColor = when {
+    networkTier == NetworkTier.OFFLINE -> TelefamCrimsonBright
+    isWifiConnected -> TelefamStatusOnline
+    else -> Color(0xFFF59E0B)
+  }
+
+  LazyColumn(
+    modifier = Modifier
+      .fillMaxSize()
+      .testTag("settings_offline_sync_pane"),
+    contentPadding = PaddingValues(16.dp),
+    verticalArrangement = Arrangement.spacedBy(12.dp),
+  ) {
+    item {
+      Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(18.dp)) {
+        Column(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(16.dp),
+          verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            Column(modifier = Modifier.weight(1f)) {
+              Text(
+                text = "Server synchronization",
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+              )
+              Spacer(modifier = Modifier.height(2.dp))
+              Text(
+                text = "Last synced: $lastSyncLabel",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+              )
+            }
+            Surface(
+              color = connectionColor.copy(alpha = 0.14f),
+              shape = RoundedCornerShape(12.dp),
+            ) {
+              Text(
+                text = connectionLabel,
+                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = connectionColor,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+              )
+            }
+          }
+
+          Surface(
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+            shape = RoundedCornerShape(14.dp),
+          ) {
+            Column(
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+              verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+              ) {
+                Text(
+                  text = "Pending queued items",
+                  style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                )
+                Text(
+                  text = "${status.totalPendingCount}",
+                  style = MaterialTheme.typography.titleSmall.copy(
+                    fontWeight = FontWeight.Bold,
+                    color = if (status.totalPendingCount > 0) TelefamCrimson else TelefamStatusOnline,
+                  ),
+                  modifier = Modifier.testTag("offline_sync_pending_count"),
+                )
+              }
+              Text(
+                text = "Settings: ${status.pendingSettingsOps} · Contacts: ${status.pendingContactOps} · Feeds: ${status.pendingFeedOps} · Uploads: ${status.pendingPostUploads} · Actions: ${status.pendingActionOps}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+              )
+              if (prefs.totalSyncedOps > 0L) {
+                Text(
+                  text = "Total synced to server: ${prefs.totalSyncedOps}",
+                  style = MaterialTheme.typography.labelSmall,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+              }
+            }
+          }
+
+          if (status.lastResultMessage.isNotBlank()) {
+            Text(
+              text = status.lastResultMessage,
+              style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
+              color = if (networkTier == NetworkTier.OFFLINE) TelefamCrimson else MaterialTheme.colorScheme.primary,
+              modifier = Modifier.testTag("offline_sync_result_message"),
+            )
+          }
+
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+          ) {
+            Button(
+              onClick = onSyncNow,
+              enabled = !status.isSyncing,
+              shape = RoundedCornerShape(22.dp),
+              colors = ButtonDefaults.buttonColors(containerColor = TelefamCrimson, contentColor = TelefamPureWhite),
+              modifier = Modifier
+                .weight(1f)
+                .height(48.dp)
+                .testTag("settings_offline_sync_now_button"),
+            ) {
+              if (status.isSyncing) {
+                CircularProgressIndicator(modifier = Modifier.size(18.dp), color = TelefamPureWhite, strokeWidth = 2.dp)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Syncing...", fontWeight = FontWeight.Bold)
+              } else {
+                Text("Sync now", fontWeight = FontWeight.Bold)
+              }
+            }
+            OutlinedButton(
+              onClick = onRefreshStatus,
+              shape = RoundedCornerShape(22.dp),
+              modifier = Modifier.height(48.dp),
+            ) {
+              Icon(Icons.Filled.Refresh, contentDescription = "Refresh queue", modifier = Modifier.size(18.dp))
+            }
+          }
+        }
+      }
+    }
+
+    item {
+      Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(18.dp)) {
+        Column(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(16.dp),
+          verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+          Text(
+            text = "Sync rules",
+            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+          )
+          SyncSwitchRow(
+            label = "Auto-sync when online",
+            subtitle = "Automatically upload queued edits when connectivity returns",
+            checked = prefs.autoSyncEnabled,
+            tag = "sync_auto_sync_switch",
+            onCheckedChange = { onUpdatePrefs(prefs.copy(autoSyncEnabled = it)) },
+          )
+          HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+          SyncSwitchRow(
+            label = "Sync over Wi-Fi only",
+            subtitle = "Pause automatic background transfers on metered cellular data",
+            checked = prefs.syncOverWifiOnly,
+            tag = "sync_wifi_only_switch",
+            onCheckedChange = { onUpdatePrefs(prefs.copy(syncOverWifiOnly = it)) },
+          )
+          HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+          SyncSwitchRow(
+            label = "Background sync",
+            subtitle = "Keep chats, settings, and profile state reconciled periodically",
+            checked = prefs.backgroundSyncEnabled,
+            tag = "sync_background_switch",
+            onCheckedChange = { onUpdatePrefs(prefs.copy(backgroundSyncEnabled = it)) },
+          )
+          HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+          SyncSwitchRow(
+            label = "Cache feeds offline",
+            subtitle = "Store recent posts and metadata for offline viewing",
+            checked = prefs.cacheFeedsOffline,
+            tag = "sync_cache_feeds_switch",
+            onCheckedChange = { onUpdatePrefs(prefs.copy(cacheFeedsOffline = it)) },
+          )
+          HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+          SyncSwitchRow(
+            label = "Cache chat media offline",
+            subtitle = "Retain encrypted chat attachments in local storage",
+            checked = prefs.cacheChatMediaOffline,
+            tag = "sync_cache_media_switch",
+            onCheckedChange = { onUpdatePrefs(prefs.copy(cacheChatMediaOffline = it)) },
+          )
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun SyncSwitchRow(
+  label: String,
+  subtitle: String,
+  checked: Boolean,
+  tag: String,
+  onCheckedChange: (Boolean) -> Unit,
+) {
+  Row(
+    modifier = Modifier.fillMaxWidth(),
+    horizontalArrangement = Arrangement.SpaceBetween,
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+      Text(label, style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold))
+      Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+    Switch(
+      checked = checked,
+      onCheckedChange = onCheckedChange,
+      colors = SwitchDefaults.colors(checkedThumbColor = TelefamPureWhite, checkedTrackColor = TelefamCrimson),
+      modifier = Modifier.testTag(tag),
+    )
+  }
 }

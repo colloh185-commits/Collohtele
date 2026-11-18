@@ -241,6 +241,7 @@ func (h *Handler) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	chatPriv := h.getUserChatPrivacyLocked(claims.UserID)
 	notif := h.getUserNotificationsLocked(claims.UserID)
 	content := h.getUserContentPrefsLocked(claims.UserID)
+	syncPrefs := h.getUserSyncPrefsLocked(claims.UserID)
 	h.mu.Unlock()
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -249,6 +250,7 @@ func (h *Handler) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		"chat_privacy":        chatPriv,
 		"notifications":       notif,
 		"content_preferences": content,
+		"sync_preferences":    syncPrefs,
 		"server_epoch_ms":     time.Now().UnixMilli(),
 	})
 }

@@ -151,6 +151,16 @@ fun TelefamHomeScreen(
   onDismissProfileToast: () -> Unit = {},
   onSignOut: () -> Unit = {},
   onOpenChatPrivacy: () -> Unit = {},
+  onOpenHomeChatSearch: () -> Unit = {},
+  onOpenChatConversation: (telefam.company.data.local.ChatConversationEntity) -> Unit = {},
+  onEnterChatMultiSelect: (String) -> Unit = {},
+  onToggleChatSelection: (String) -> Unit = {},
+  onSelectAllChats: () -> Unit = {},
+  onExitChatMultiSelect: () -> Unit = {},
+  onBatchChatAction: (String) -> Unit = {},
+  onUndoChatBatch: () -> Unit = {},
+  onDismissChatBatchUndo: () -> Unit = {},
+  embeddedSplitChatContent: (@Composable () -> Unit)? = null,
 ) {
   val context = LocalContext.current
   val snackbarHostState = remember { SnackbarHostState() }
@@ -228,7 +238,7 @@ fun TelefamHomeScreen(
               .weight(1f)
               .height(42.dp)
               .clip(RoundedCornerShape(24.dp))
-              .clickable { onTriggerComingSoon("Search", "search_tapped") }
+              .clickable { onOpenHomeChatSearch() }
               .testTag("home_search_bar"),
             color = if (isDark) MaterialTheme.colorScheme.surface else TelefamPureWhite,
             shape = RoundedCornerShape(24.dp),
@@ -315,7 +325,8 @@ fun TelefamHomeScreen(
                   uiState = uiState,
                   blushBg = blushBg,
                   feedBottomPadding = 0.dp,
-                  onStartChatClick = { onTriggerComingSoon("Start chat", "start_chat_tapped") },
+                  isWideSplitScreen = true,
+                  onStartChatClick = onOpenHomeChatSearch,
                   onReturnToChats = { onSelectTab(HomeTab.CHATS) },
                   onToggleContactFollow = onToggleContactFollow,
                   onLoadNextContactsPage = onLoadNextContactsPage,
@@ -364,6 +375,15 @@ fun TelefamHomeScreen(
                   onShowProfileToast = onShowProfileToast,
                   onToggleTheme = onToggleTheme,
                   onSignOut = onSignOut,
+                  onOpenChatConversation = onOpenChatConversation,
+                  onEnterChatMultiSelect = onEnterChatMultiSelect,
+                  onToggleChatSelection = onToggleChatSelection,
+                  onSelectAllChats = onSelectAllChats,
+                  onExitChatMultiSelect = onExitChatMultiSelect,
+                  onBatchChatAction = onBatchChatAction,
+                  onUndoChatBatch = onUndoChatBatch,
+                  onDismissChatBatchUndo = onDismissChatBatchUndo,
+                  embeddedSplitChatContent = embeddedSplitChatContent,
                 )
               }
             }
@@ -377,7 +397,8 @@ fun TelefamHomeScreen(
                   uiState = uiState,
                   blushBg = blushBg,
                   feedBottomPadding = 68.dp,
-                  onStartChatClick = { onTriggerComingSoon("Start chat", "start_chat_tapped") },
+                  isWideSplitScreen = false,
+                  onStartChatClick = onOpenHomeChatSearch,
                   onReturnToChats = { onSelectTab(HomeTab.CHATS) },
                   onToggleContactFollow = onToggleContactFollow,
                   onLoadNextContactsPage = onLoadNextContactsPage,
@@ -426,6 +447,15 @@ fun TelefamHomeScreen(
                   onShowProfileToast = onShowProfileToast,
                   onToggleTheme = onToggleTheme,
                   onSignOut = onSignOut,
+                  onOpenChatConversation = onOpenChatConversation,
+                  onEnterChatMultiSelect = onEnterChatMultiSelect,
+                  onToggleChatSelection = onToggleChatSelection,
+                  onSelectAllChats = onSelectAllChats,
+                  onExitChatMultiSelect = onExitChatMultiSelect,
+                  onBatchChatAction = onBatchChatAction,
+                  onUndoChatBatch = onUndoChatBatch,
+                  onDismissChatBatchUndo = onDismissChatBatchUndo,
+                  embeddedSplitChatContent = null,
                 )
               }
 
@@ -511,6 +541,16 @@ private fun HomeTabContent(
   onShowProfileToast: (String) -> Unit,
   onToggleTheme: () -> Unit,
   onSignOut: () -> Unit,
+  isWideSplitScreen: Boolean = false,
+  onOpenChatConversation: (telefam.company.data.local.ChatConversationEntity) -> Unit = {},
+  onEnterChatMultiSelect: (String) -> Unit = {},
+  onToggleChatSelection: (String) -> Unit = {},
+  onSelectAllChats: () -> Unit = {},
+  onExitChatMultiSelect: () -> Unit = {},
+  onBatchChatAction: (String) -> Unit = {},
+  onUndoChatBatch: () -> Unit = {},
+  onDismissChatBatchUndo: () -> Unit = {},
+  embeddedSplitChatContent: (@Composable () -> Unit)? = null,
 ) {
   val activeTab = uiState.activeHomeTab
 
@@ -521,97 +561,94 @@ private fun HomeTabContent(
   ) {
     val isDark = LocalTelefamDarkTheme.current
     val chatTheme = telefam.company.core.TelefamChatPrivacyCatalog.themeById(uiState.chatPrivacy.chatThemeId)
-    val bubblePalette = telefam.company.core.TelefamChatPrivacyCatalog.bubbleColorById(uiState.chatPrivacy.bubbleColorId)
-    val activeBubbleColor = Color(if (isDark) bubblePalette.darkStartHex else bubblePalette.lightStartHex)
 
-    Box(
-      modifier = Modifier.fillMaxSize(),
-      contentAlignment = Alignment.Center,
-    ) {
-      if (chatTheme.themeId != "none") {
-        ChatWallpaperCanvas(
-          theme = chatTheme,
-          isDark = isDark,
-          modifier = Modifier.fillMaxSize(),
+    val listPane: @Composable (Modifier) -> Unit = { paneModifier ->
+      Box(modifier = paneModifier) {
+        TelefamConversationsListPane(
+          chatState = uiState.chatState,
+          chatPrivacy = uiState.chatPrivacy,
+          currentUserId = uiState.userId,
+          blushBg = blushBg,
+          bottomPadding = feedBottomPadding,
+          onStartChatClick = onStartChatClick,
+          onOpenConversation = onOpenChatConversation,
+          onEnterMultiSelect = onEnterChatMultiSelect,
+          onToggleSelection = onToggleChatSelection,
+          onSelectAll = onSelectAllChats,
+          onExitMultiSelect = onExitChatMultiSelect,
+          onBatchAction = onBatchChatAction,
+          onUndoBatch = onUndoChatBatch,
+          onDismissUndo = onDismissChatBatchUndo,
         )
       }
+    }
 
-      Surface(
-        modifier = Modifier
-          .padding(horizontal = 24.dp)
-          .widthIn(max = 380.dp),
-        shape = RoundedCornerShape(24.dp),
-        color = if (chatTheme.themeId != "none") {
-          MaterialTheme.colorScheme.surface.copy(alpha = 0.90f)
-        } else {
-          Color.Transparent
-        },
-      ) {
-        Column(
-          modifier = Modifier.padding(horizontal = 20.dp, vertical = 22.dp),
-          horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-          Box(
-            modifier = Modifier
-              .size(62.dp)
-              .clip(CircleShape)
-              .background(blushBg),
-            contentAlignment = Alignment.Center,
-          ) {
-            Icon(
-              imageVector = Icons.Outlined.Forum,
-              contentDescription = null,
-              tint = TelefamCrimson,
-              modifier = Modifier.size(28.dp),
-            )
-          }
-
-          Spacer(modifier = Modifier.height(18.dp))
-
-          Text(
-            text = stringResource(R.string.home_start_conversation),
-            style = MaterialTheme.typography.titleMedium.copy(fontSize = 18.sp, fontWeight = FontWeight.Bold),
-            color = MaterialTheme.colorScheme.onBackground,
-            textAlign = TextAlign.Center,
-          )
-
-          Spacer(modifier = Modifier.height(8.dp))
-
-          Text(
-            text = stringResource(R.string.home_start_conversation_desc),
-            style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-          )
-
-          Spacer(modifier = Modifier.height(22.dp))
-
-          Button(
-            onClick = onStartChatClick,
-            shape = RoundedCornerShape(24.dp),
-            colors = ButtonDefaults.buttonColors(
-              containerColor = if (uiState.chatPrivacy.bubbleColorId != "cyan" || chatTheme.themeId != "none") activeBubbleColor else TelefamCrimson,
-              contentColor = TelefamPureWhite,
-            ),
-            contentPadding = PaddingValues(horizontal = 22.dp, vertical = 10.dp),
-            elevation = ButtonDefaults.buttonElevation(defaultElevation = 6.dp),
-            modifier = Modifier
-              .height(44.dp)
-              .testTag("start_chat_button"),
-          ) {
-            Icon(
-              imageVector = Icons.Outlined.AddComment,
-              contentDescription = null,
-              modifier = Modifier.size(18.dp),
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(
-              text = stringResource(R.string.home_start_chat),
-              style = MaterialTheme.typography.labelLarge.copy(fontSize = 14.sp),
-            )
+    if (isWideSplitScreen) {
+      Row(modifier = Modifier.fillMaxSize().testTag("chats_split_layout")) {
+        listPane(Modifier.width(340.dp).fillMaxHeight())
+        HorizontalDivider(
+          modifier = Modifier.width(1.dp).fillMaxHeight(),
+          color = MaterialTheme.colorScheme.outlineVariant,
+        )
+        Box(modifier = Modifier.weight(1f).fillMaxHeight().testTag("chats_split_detail_pane")) {
+          if (uiState.chatState.activeConversation != null && embeddedSplitChatContent != null) {
+            embeddedSplitChatContent()
+          } else {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+              if (chatTheme.themeId != "none") {
+                ChatWallpaperCanvas(
+                  theme = chatTheme,
+                  isDark = isDark,
+                  modifier = Modifier.fillMaxSize(),
+                )
+              }
+              Surface(
+                modifier = Modifier
+                  .padding(horizontal = 32.dp)
+                  .widthIn(max = 360.dp),
+                shape = RoundedCornerShape(22.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+              ) {
+                Column(
+                  modifier = Modifier.padding(24.dp),
+                  horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                  Box(
+                    modifier = Modifier
+                      .size(56.dp)
+                      .clip(CircleShape)
+                      .background(blushBg),
+                    contentAlignment = Alignment.Center,
+                  ) {
+                    Icon(
+                      imageVector = Icons.Outlined.Forum,
+                      contentDescription = null,
+                      tint = TelefamCrimson,
+                      modifier = Modifier.size(26.dp),
+                    )
+                  }
+                  Spacer(modifier = Modifier.height(14.dp))
+                  Text(
+                    text = stringResource(R.string.chat_split_select_title),
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.onBackground,
+                    textAlign = TextAlign.Center,
+                  )
+                  Spacer(modifier = Modifier.height(6.dp))
+                  Text(
+                    text = stringResource(R.string.chat_split_select_subtitle),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                  )
+                }
+              }
+            }
           }
         }
       }
+    } else {
+      listPane(Modifier.fillMaxSize())
     }
   }
 
@@ -716,7 +753,7 @@ private fun HomeTabContent(
       bottomChromePadding = if (feedBottomPadding > 0.dp) feedBottomPadding + 6.dp else 0.dp,
       onBack = onReturnToChats,
       onToggleFollow = { onToggleProfileFollow(ownProfile.userId) },
-      onMessageClick = { onShowProfileToast("Message — Coming soon") },
+      onMessageClick = { onReturnToChats() },
       onSubscribeClick = { onShowProfileToast("Subscribe — Coming soon") },
       onOpenConnections = { isFollowers -> onOpenProfileConnections(ownProfile.userId, isFollowers) },
       onDismissConnections = { onDismissProfileConnections(ownProfile.userId) },
