@@ -44,6 +44,7 @@ import javax.sound.sampled.AudioSystem
 import javax.sound.sampled.Clip
 import javax.sound.sampled.DataLine
 import javax.sound.sampled.LineEvent
+import javax.sound.sampled.SourceDataLine
 import javax.sound.sampled.TargetDataLine
 import kotlin.concurrent.thread
 import kotlin.math.PI
@@ -576,6 +577,9 @@ class DesktopChatLocalStore(private val ownerUserId: String) {
     append("\"forwarded_from_user_id\":\"").append(DesktopJson.escape(m.forwardedFromUserId)).append("\",")
     append("\"delivery_status\":\"").append(DesktopJson.escape(m.deliveryStatus)).append("\",")
     append("\"sync_state\":\"").append(DesktopJson.escape(m.syncState)).append("\",")
+    append("\"star_gift_amount\":").append(m.starGiftAmount).append(',')
+    append("\"star_gift_tx_id\":\"").append(DesktopJson.escape(m.starGiftTxId)).append("\",")
+    append("\"star_gift_verified\":").append(m.starGiftVerified).append(',')
     append("\"edited_at_ms\":").append(m.editedAtMs).append(',')
     append("\"created_at_ms\":").append(m.createdAtMs)
     append('}')
@@ -604,6 +608,9 @@ class DesktopChatLocalStore(private val ownerUserId: String) {
     forwardedFromUserId = DesktopJson.str(m, "forwarded_from_user_id"),
     deliveryStatus = DesktopJson.str(m, "delivery_status").ifBlank { "sent" },
     syncState = DesktopJson.str(m, "sync_state").ifBlank { "synced" },
+    starGiftAmount = DesktopJson.long(m, "star_gift_amount", 0L),
+    starGiftTxId = DesktopJson.str(m, "star_gift_tx_id"),
+    starGiftVerified = DesktopJson.bool(m, "star_gift_verified"),
     editedAtMs = DesktopJson.long(m, "edited_at_ms", 0L),
     createdAtMs = DesktopJson.long(m, "created_at_ms", 0L),
   )
@@ -773,6 +780,11 @@ class DesktopChatAudioEngine {
     playToneAsync(freqStart = 420.0, freqEnd = 480.0, durationMs = 32, gain = 0.08)
   }
 
+  fun playStarGiftChime(enabled: Boolean) {
+    if (!enabled) return
+    playToneAsync(freqStart = 784.0, freqEnd = 1318.5, durationMs = 150, gain = 0.24)
+  }
+
   private fun playToneAsync(freqStart: Double, freqEnd: Double, durationMs: Int, gain: Double) {
     thread(isDaemon = true, name = "TelefamDesktopTone") {
       runCatching {
@@ -790,7 +802,7 @@ class DesktopChatAudioEngine {
           val v = (sin(phase) * env * gain * 32767.0).toInt().toShort()
           bb.putShort(v)
         }
-        val line = AudioSystem.getSourceDataLine(format)
+    val line = AudioSystem.getSourceDataLine(format)
         line.open(format)
         line.start()
         line.write(buf, 0, buf.size)
@@ -802,15 +814,137 @@ class DesktopChatAudioEngine {
 }
 
 /**
- * RFC 6455 WebSocket listener for live chat delivery, typing/recording indicators, online state, and unsends.
+ * Full-duplex 16kHz PCM audio capture/playback and ringtone synthesizer for Desktop calls.
+ */
+class DesktopCallMediaEngine {
+  private val pcmFormat = AudioFormat(16000f, 16, 1, true, false)
+  @Volatile private var running = false
+  @Volatile private var muted = false
+  private var captureLine: TargetDataLine? = null
+  private var playbackLine: SourceDataLine? = null
+  private var captureThread: Thread? = null
+  @Volatile private var toneRunning = false
+  private var toneThread: Thread? = null
+
+  fun setMuted(isMuted: Boolean) {
+    muted = isMuted
+  }
+
+  fun startRingingTone(outgoing: Boolean) {
+    stopToneLoop()
+    toneRunning = true
+    toneThread = thread(isDaemon = true, name = "TelefamDesktopCallRing") {
+      runCatching {
+        val sampleRate = 22050f
+        val format = AudioFormat(sampleRate, 16, 1, true, false)
+        val line = AudioSystem.getSourceDataLine(format)
+        line.open(format)
+        line.start()
+        val burstMs = if (outgoing) 900 else 700
+        val pauseMs = if (outgoing) 1600 else 1300
+        val count = ((sampleRate * burstMs) / 1000f).toInt()
+        val buf = ByteArray(count * 2)
+        val bb = ByteBuffer.wrap(buf).order(ByteOrder.LITTLE_ENDIAN)
+        for (i in 0 until count) {
+          val t = i.toDouble() / sampleRate
+          val env = (sin(Math.PI * (i.toDouble() / count))).coerceIn(0.0, 1.0)
+          val sig = if (outgoing) {
+            0.5 * sin(2.0 * Math.PI * 440.0 * t) + 0.5 * sin(2.0 * Math.PI * 480.0 * t)
+          } else {
+            0.55 * sin(2.0 * Math.PI * 523.25 * t) + 0.45 * sin(2.0 * Math.PI * 659.25 * t)
+          }
+          bb.putShort((sig * env * 0.16 * 32767.0).toInt().toShort())
+        }
+        while (toneRunning) {
+          line.write(buf, 0, buf.size)
+          var waited = 0
+          while (toneRunning && waited < pauseMs) {
+            Thread.sleep(50)
+            waited += 50
+          }
+        }
+        line.stop()
+        line.close()
+      }
+    }
+  }
+
+  fun stopToneLoop() {
+    toneRunning = false
+    runCatching { toneThread?.join(300L) }
+    toneThread = null
+  }
+
+  fun startAudioSession(onFrameB64: (String) -> Unit) {
+    stopToneLoop()
+    if (running) return
+    running = true
+    runCatching {
+      val spkInfo = DataLine.Info(SourceDataLine::class.java, pcmFormat)
+      if (AudioSystem.isLineSupported(spkInfo)) {
+        val spk = AudioSystem.getLine(spkInfo) as SourceDataLine
+        spk.open(pcmFormat, 6400)
+        spk.start()
+        playbackLine = spk
+      }
+    }
+    captureThread = thread(isDaemon = true, name = "TelefamDesktopCallAudio") {
+      runCatching {
+        val micInfo = DataLine.Info(TargetDataLine::class.java, pcmFormat)
+        if (!AudioSystem.isLineSupported(micInfo)) return@runCatching
+        val mic = AudioSystem.getLine(micInfo) as TargetDataLine
+        mic.open(pcmFormat, 3200)
+        mic.start()
+        captureLine = mic
+        val chunk = ByteArray(1280) // 40ms @ 16kHz 16-bit mono
+        while (running) {
+          val n = runCatching { mic.read(chunk, 0, chunk.size) }.getOrDefault(-1)
+          if (n > 0 && !muted) {
+            val b64 = Base64.getEncoder().encodeToString(chunk.copyOfRange(0, n))
+            onFrameB64(b64)
+          }
+        }
+      }
+    }
+  }
+
+  fun playRemoteAudioFrame(dataB64: String) {
+    if (!running || dataB64.isBlank()) return
+    val bytes = runCatching { Base64.getDecoder().decode(dataB64) }.getOrNull() ?: return
+    if (bytes.isEmpty()) return
+    runCatching { playbackLine?.write(bytes, 0, bytes.size) }
+  }
+
+  fun stopAll() {
+    running = false
+    stopToneLoop()
+    runCatching {
+      captureLine?.stop()
+      captureLine?.close()
+    }
+    captureLine = null
+    runCatching { captureThread?.join(350L) }
+    captureThread = null
+    runCatching {
+      playbackLine?.stop()
+      playbackLine?.close()
+    }
+    playbackLine = null
+  }
+}
+
+/**
+ * RFC 6455 WebSocket listener for live chat delivery, typing/recording indicators, online state, calls, and unsends.
  */
 class DesktopChatWebSocketClient(private val apiClient: DesktopApiClient) {
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-  private val _events = MutableSharedFlow<DesktopChatWsEvent>(extraBufferCapacity = 64)
+  private val _events = MutableSharedFlow<DesktopChatWsEvent>(extraBufferCapacity = 128)
   val events: SharedFlow<DesktopChatWsEvent> = _events.asSharedFlow()
 
-  private var socket: WebSocket? = null
+  @Volatile private var socket: WebSocket? = null
   private var job: Job? = null
+
+  fun isConnected(): Boolean = socket != null
 
   fun connect() {
     val session = apiClient.currentSessionSnapshot()
@@ -887,9 +1021,38 @@ class DesktopChatWebSocketClient(private val apiClient: DesktopApiClient) {
     }
   }
 
-  fun sendTyping(conversationId: String, mode: String) {
-    if (conversationId.isBlank()) return
+  fun sendTyping(conversationId: String, mode: String): Boolean {
+    if (conversationId.isBlank()) return false
+    val sock = socket ?: return false
     val json = "{\"event\":\"typing\",\"conversation_id\":\"${DesktopJson.escape(conversationId)}\",\"typing_mode\":\"${DesktopJson.escape(mode)}\"}"
+    sock.sendText(json, true)
+    return true
+  }
+
+  fun sendCallAccept(callId: String) {
+    if (callId.isBlank()) return
+    socket?.sendText("{\"event\":\"call_accept\",\"call_id\":\"${DesktopJson.escape(callId)}\"}", true)
+  }
+
+  fun sendCallReject(callId: String, reason: String = "declined") {
+    if (callId.isBlank()) return
+    socket?.sendText("{\"event\":\"call_reject\",\"call_id\":\"${DesktopJson.escape(callId)}\",\"status\":\"${DesktopJson.escape(reason)}\"}", true)
+  }
+
+  fun sendCallEnd(callId: String, reason: String = "hangup") {
+    if (callId.isBlank()) return
+    socket?.sendText("{\"event\":\"call_end\",\"call_id\":\"${DesktopJson.escape(callId)}\",\"status\":\"${DesktopJson.escape(reason)}\"}", true)
+  }
+
+  fun sendCallSignal(callId: String, signalKind: String, payload: String) {
+    if (callId.isBlank()) return
+    val json = "{\"event\":\"call_signal\",\"call_id\":\"${DesktopJson.escape(callId)}\",\"signal_kind\":\"${DesktopJson.escape(signalKind)}\",\"signal_payload\":\"${DesktopJson.escape(payload)}\"}"
+    socket?.sendText(json, true)
+  }
+
+  fun sendCallMedia(callId: String, mediaKind: String, dataB64: String, width: Int = 0, height: Int = 0) {
+    if (callId.isBlank() || dataB64.isBlank()) return
+    val json = "{\"event\":\"call_media\",\"call_id\":\"${DesktopJson.escape(callId)}\",\"signal_kind\":\"${DesktopJson.escape(mediaKind)}\",\"data_b64\":\"${DesktopJson.escape(dataB64)}\",\"width\":$width,\"height\":$height}"
     socket?.sendText(json, true)
   }
 
@@ -914,6 +1077,17 @@ class DesktopChatWebSocketClient(private val apiClient: DesktopApiClient) {
       isOnline = DesktopJson.bool(m, "is_online"),
       lastSeenMs = DesktopJson.long(m, "last_seen_ms", 0L),
       lastSeenLabel = DesktopJson.str(m, "last_seen_label"),
+      starGiftAmount = DesktopJson.long(m, "star_gift_amount", 0L),
+      starBalanceAvailable = DesktopJson.long(m, "star_balance_available", 0L),
+      starBalanceReceived = DesktopJson.long(m, "star_balance_received", 0L),
+      callId = DesktopJson.str(m, "call_id"),
+      callType = DesktopJson.str(m, "call_type"),
+      callState = DesktopJson.str(m, "state"),
+      signalKind = DesktopJson.str(m, "signal_kind"),
+      signalPayload = DesktopJson.str(m, "signal_payload"),
+      mediaB64 = DesktopJson.str(m, "data_b64"),
+      videoWidth = DesktopJson.long(m, "width", 0L).toInt(),
+      videoHeight = DesktopJson.long(m, "height", 0L).toInt(),
       timestampMs = DesktopJson.long(m, "timestamp_ms", System.currentTimeMillis()),
     )
   }.getOrNull()

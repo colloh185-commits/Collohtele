@@ -299,6 +299,8 @@ fun main() = application {
   var isRespondingToLoginReq by remember { mutableStateOf(false) }
   var incomingLoginError by remember { mutableStateOf<String?>(null) }
   val chatController = remember { DesktopChatController(apiClient) { settingsBundle.notifications.inAppSounds } }
+  val starsController = remember { DesktopStarsController(apiClient, chatController) { settingsBundle.notifications.inAppSounds } }
+  val starsState by starsController.state.collectAsState()
 
   val openUserProfile: (String) -> Unit = { uid ->
     val clean = uid.trim()
@@ -323,6 +325,7 @@ fun main() = application {
   LaunchedEffect(session.isAuthenticated, session.userId) {
     if (session.isAuthenticated) {
       chatController.attachSession(session.userId)
+      starsController.attachSession(session.userId)
       val fetched = withContext(Dispatchers.IO) { apiClient.getSettings() }
       settingsBundle = fetched
       withContext(Dispatchers.IO) {
@@ -344,8 +347,21 @@ fun main() = application {
       }
     } else {
       chatController.detachSession()
+      starsController.detachSession()
       incomingLoginRequest = null
       loginApprovedState = null
+    }
+  }
+
+  LaunchedEffect(starsState.launchCheckoutUrl) {
+    val url = starsState.launchCheckoutUrl ?: return@LaunchedEffect
+    starsController.consumeLaunchCheckoutUrl()
+    runCatching {
+      if (java.awt.Desktop.isDesktopSupported()) {
+        java.awt.Desktop.getDesktop().browse(java.net.URI(url))
+      }
+    }.onFailure {
+      toastMessage = "Open checkout URL in your browser: $url"
     }
   }
 
@@ -481,6 +497,7 @@ fun main() = application {
     onPreviewKeyEvent = { ev ->
       if (ev.type == KeyEventType.KeyDown && ev.key == Key.Escape) {
         when {
+          starsState.currentRoute != null -> starsController.navigateBack()
           chatPrivacyStack.isNotEmpty() -> {
             chatPrivacyStack.removeAt(chatPrivacyStack.lastIndex)
             true
@@ -983,6 +1000,7 @@ fun main() = application {
                           activeTab = "chats"
                         }
                       },
+                      onOpenStars = { starsController.openStarsHub() },
                       onToast = { toastMessage = it },
                     )
                   }
@@ -997,6 +1015,18 @@ fun main() = application {
                       searchQuery = searchQuery,
                       onOpenUserProfile = { uid -> openUserProfile(uid) },
                       onOpenPrivacyAndThemes = { chatPrivacyStack.add(DesktopChatPrivacyRoute.PRIVACY) },
+                      onOpenSendStars = { conv ->
+                        starsController.openSendStars(
+                          DesktopStarGiftRecipientTarget(
+                            userId = conv.peerUserId,
+                            fullName = conv.peerFullName,
+                            username = conv.peerUsername,
+                            avatarUrl = conv.peerAvatarUrl,
+                            isOnline = conv.isOnline,
+                            conversationId = conv.conversationId,
+                          ),
+                        )
+                      },
                       onToast = { toastMessage = it },
                     )
                   }
@@ -1172,6 +1202,7 @@ fun main() = application {
                   activeTab = "chats"
                 }
               },
+              onOpenStars = { starsController.openStarsHub() },
               onToast = { toastMessage = it },
             )
           }
@@ -1399,7 +1430,33 @@ fun main() = application {
               },
             )
           }
+
+          if (starsState.currentRoute != null) {
+            DesktopStarsModalHost(
+              state = starsState,
+              apiClient = apiClient,
+              isDark = isDark,
+              onNavigateBack = { starsController.navigateBack() },
+              onOpenBuy = { pre -> starsController.openBuyStars(pre) },
+              onOpenCheckout = { tier -> starsController.openCheckoutForPackage(tier) },
+              onSelectProvider = { prov -> starsController.selectProvider(prov) },
+              onProceedToPay = { starsController.proceedToPay() },
+              onVerifyPending = { starsController.verifyPendingPayment(silent = false) },
+              onSendStars = { amt -> starsController.sendStarsFromSheet(amt) },
+              onOpenSenderProfile = { uid ->
+                starsController.closeAll()
+                openUserProfile(uid)
+              },
+              onRefreshSummary = { starsController.refreshSummary(silent = false) },
+              onDismissError = { starsController.clearErrorBanner() },
+            )
+          }
         }
+
+        DesktopStarGiftCelebrationOverlay(
+          celebration = starsState.activeCelebration,
+          onDismiss = { starsController.dismissCelebration() },
+        )
 
         val pendingReq = incomingLoginRequest
         if (pendingReq != null && loginApprovedState == null) {
@@ -4162,6 +4219,7 @@ private fun DesktopUserProfileScreen(
   onOpenSettings: () -> Unit = {},
   onSignOut: () -> Unit,
   onMessageUser: (DesktopUserProfile) -> Unit = {},
+  onOpenStars: () -> Unit = {},
   onToast: (String) -> Unit,
 ) {
   val scope = rememberCoroutineScope()
@@ -4177,6 +4235,7 @@ private fun DesktopUserProfileScreen(
   var showBackgroundsDialog by remember { mutableStateOf(false) }
   var isUploadingBg by remember { mutableStateOf(false) }
   var showEditProfileDialog by remember { mutableStateOf(false) }
+  var showProfileMenuScreen by remember(targetUserId) { mutableStateOf(false) }
   var showReportCategories by remember { mutableStateOf(false) }
   var pendingReportReason by remember { mutableStateOf<String?>(null) }
   var reportDetails by remember { mutableStateOf("") }
@@ -4454,7 +4513,7 @@ private fun DesktopUserProfileScreen(
                                 .size(38.dp)
                                 .clip(CircleShape)
                                 .background(Color.Black.copy(alpha = 0.42f))
-                                .clickable { onToast("Menu — Coming soon") },
+                                .clickable { showProfileMenuScreen = true },
                               contentAlignment = Alignment.Center,
                             ) {
                               DesktopSvgIcon(DesktopIconKind.THREE_DASHES, Color.White, 18.dp)
@@ -5435,6 +5494,18 @@ private fun DesktopUserProfileScreen(
             }
           }
         }
+      }
+
+      if (showProfileMenuScreen) {
+        DesktopProfileMenuOverlay(
+          isDark = isDark,
+          onBack = { showProfileMenuScreen = false },
+          onOpenStars = {
+            showProfileMenuScreen = false
+            onOpenStars()
+          },
+          onToast = onToast,
+        )
       }
     }
   }

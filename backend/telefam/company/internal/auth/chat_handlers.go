@@ -94,7 +94,12 @@ func (h *Handler) ensureChatService() *chat.Service {
 			GetPrivacy: func(userID string) chat.PrivacyView {
 				h.mu.Lock()
 				cp := h.getUserChatPrivacyLocked(userID)
+				pv := h.getUserPrivacyLocked(userID)
 				h.mu.Unlock()
+				onlineRule := cp.OnlineIndicators
+				if !pv.ShowActivityStatus {
+					onlineRule = "nobody"
+				}
 				return chat.PrivacyView{
 					MessageRequests:     cp.MessageRequests,
 					WhoCanCall:          cp.WhoCanCall,
@@ -104,7 +109,7 @@ func (h *Handler) ensureChatService() *chat.Service {
 					WhoCanDownloadMedia: cp.WhoCanDownloadMedia,
 					ReadReceipts:        cp.ReadReceipts,
 					TypingIndicators:    cp.TypingIndicators,
-					OnlineIndicators:    cp.OnlineIndicators,
+					OnlineIndicators:    onlineRule,
 				}
 			},
 			IsBlocked: func(a, b string) bool {
@@ -541,6 +546,144 @@ func (h *Handler) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.ensureChatService().ServeWebSocket(w, r, claims.UserID, deviceFP)
+}
+
+func (h *Handler) handleChatTyping(w http.ResponseWriter, r *http.Request) {
+	claims, _, _, ok := h.requireAuth(w, r)
+	if !ok {
+		return
+	}
+	convID := security.SanitizeText(r.PathValue("id"), 64, false)
+	var payload chat.TypingSignalPayload
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2048)).Decode(&payload); err != nil {
+		sanitizer.WriteSanitizedError(w, http.StatusBadRequest, "decode_typing", err, sanitizer.GenericErrorMessage)
+		return
+	}
+	h.ensureChatService().HandleTypingSignal(claims.UserID, convID, payload.TypingMode)
+	writeJSON(w, http.StatusOK, map[string]any{"success": true})
+}
+
+func (h *Handler) handleStartChatCall(w http.ResponseWriter, r *http.Request) {
+	claims, deviceFP, ipFP, ok := h.requireAuth(w, r)
+	if !ok {
+		return
+	}
+	var payload chat.StartCallPayload
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024)).Decode(&payload); err != nil {
+		sanitizer.WriteSanitizedError(w, http.StatusBadRequest, "decode_start_call", err, sanitizer.GenericErrorMessage)
+		return
+	}
+	call, err := h.ensureChatService().StartCall(claims.UserID, payload)
+	if err != nil {
+		writeChatErr(w, err)
+		return
+	}
+	h.audit.Record(claims.UserID, "chat_call_started", deviceFP, ipFP, map[string]string{
+		"call_id":   call.CallID,
+		"call_type": call.CallType,
+	})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":         true,
+		"call":            call,
+		"server_epoch_ms": time.Now().UnixMilli(),
+	})
+}
+
+func (h *Handler) handleAcceptChatCall(w http.ResponseWriter, r *http.Request) {
+	claims, _, _, ok := h.requireAuth(w, r)
+	if !ok {
+		return
+	}
+	callID := security.SanitizeText(r.PathValue("callId"), 64, false)
+	var payload chat.CallActionPayload
+	if r.Body != nil {
+		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024)).Decode(&payload)
+	}
+	call, err := h.ensureChatService().AcceptCall(claims.UserID, callID, payload)
+	if err != nil {
+		writeChatErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":         true,
+		"call":            call,
+		"server_epoch_ms": time.Now().UnixMilli(),
+	})
+}
+
+func (h *Handler) handleRejectChatCall(w http.ResponseWriter, r *http.Request) {
+	claims, _, _, ok := h.requireAuth(w, r)
+	if !ok {
+		return
+	}
+	callID := security.SanitizeText(r.PathValue("callId"), 64, false)
+	var payload chat.CallActionPayload
+	if r.Body != nil {
+		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&payload)
+	}
+	call, err := h.ensureChatService().RejectCall(claims.UserID, callID, payload)
+	if err != nil {
+		writeChatErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":         true,
+		"call":            call,
+		"server_epoch_ms": time.Now().UnixMilli(),
+	})
+}
+
+func (h *Handler) handleEndChatCall(w http.ResponseWriter, r *http.Request) {
+	claims, _, _, ok := h.requireAuth(w, r)
+	if !ok {
+		return
+	}
+	callID := security.SanitizeText(r.PathValue("callId"), 64, false)
+	var payload chat.CallActionPayload
+	if r.Body != nil {
+		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&payload)
+	}
+	call, err := h.ensureChatService().EndCall(claims.UserID, callID, payload)
+	if err != nil {
+		writeChatErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":         true,
+		"call":            call,
+		"server_epoch_ms": time.Now().UnixMilli(),
+	})
+}
+
+func (h *Handler) handleRelayChatCallSignal(w http.ResponseWriter, r *http.Request) {
+	claims, _, _, ok := h.requireAuth(w, r)
+	if !ok {
+		return
+	}
+	callID := security.SanitizeText(r.PathValue("callId"), 64, false)
+	var payload chat.CallSignalPayload
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 512*1024)).Decode(&payload); err != nil {
+		sanitizer.WriteSanitizedError(w, http.StatusBadRequest, "decode_call_signal", err, sanitizer.GenericErrorMessage)
+		return
+	}
+	if err := h.ensureChatService().RelayCallSignal(claims.UserID, callID, payload); err != nil {
+		writeChatErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true})
+}
+
+func (h *Handler) handleGetActiveChatCall(w http.ResponseWriter, r *http.Request) {
+	claims, _, _, ok := h.requireAuth(w, r)
+	if !ok {
+		return
+	}
+	call := h.ensureChatService().GetActiveCallForUser(claims.UserID)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":         true,
+		"call":            call,
+		"server_epoch_ms": time.Now().UnixMilli(),
+	})
 }
 
 func writeChatErr(w http.ResponseWriter, err error) {

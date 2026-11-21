@@ -35,7 +35,7 @@ import androidx.room.RoomDatabase
     ChatSecurityFlagEntity::class,
     PendingChatOpEntity::class,
   ],
-  version = 10,
+  version = 11,
   exportSchema = false,
 )
 abstract class TelefamDatabase : RoomDatabase() {

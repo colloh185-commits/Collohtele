@@ -197,8 +197,17 @@ func (h *Handler) handleUpdateChatPrivacy(w http.ResponseWriter, r *http.Request
 		UpdatedAtMs:         nowMs,
 	}
 	h.chatPrivacySettings[claims.UserID] = cleaned
+	if cleaned.OnlineIndicators == "anyone" || cleaned.OnlineIndicators == "friends" {
+		pv := h.getUserPrivacyLocked(claims.UserID)
+		if !pv.ShowActivityStatus {
+			pv.ShowActivityStatus = true
+			pv.UpdatedAtMs = nowMs
+			h.privacySettings[claims.UserID] = pv
+		}
+	}
 	h.mu.Unlock()
 
+	h.ensureChatService().NotifyPrivacyChanged(claims.UserID)
 	h.audit.Record(claims.UserID, "chat_privacy_updated", deviceFP, ipFP, map[string]string{
 		"theme_id":     cleaned.ChatThemeID,
 		"bubble_color": cleaned.BubbleColorID,

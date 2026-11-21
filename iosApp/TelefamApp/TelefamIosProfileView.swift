@@ -843,6 +843,7 @@ struct TelefamIosProfileView: View {
     var onTapHashtag: (String, TelefamIosPostMode) -> Void
     var onTapAudio: (TelefamIosSongTrack, TelefamIosPostMode) -> Void
     var onMessageUser: ((TelefamIosUserProfile) -> Void)? = nil
+    var onOpenStars: (() -> Void)? = nil
 
     @State private var activeOwnerTab: TelefamIosOwnerProfileTab = .posts
     @State private var selectedFilter: TelefamIosProfilePostFilter = .all
@@ -856,6 +857,7 @@ struct TelefamIosProfileView: View {
     @State private var showSettingsSheet: Bool = false
     @State private var showBackgroundsSheet: Bool = false
     @State private var showEditProfileSheet: Bool = false
+    @State private var showProfileMenuSheet: Bool = false
     @State private var heroIndex: Int = 0
     private let heroCycleTimer = Timer.publish(every: 5.0, on: .main, in: .common).autoconnect()
 
@@ -874,7 +876,8 @@ struct TelefamIosProfileView: View {
         onEditOwnerPost: @escaping (TelefamIosFeedItem) -> Void,
         onTapHashtag: @escaping (String, TelefamIosPostMode) -> Void,
         onTapAudio: @escaping (TelefamIosSongTrack, TelefamIosPostMode) -> Void,
-        onMessageUser: ((TelefamIosUserProfile) -> Void)? = nil
+        onMessageUser: ((TelefamIosUserProfile) -> Void)? = nil,
+        onOpenStars: (() -> Void)? = nil
     ) {
         self.isEmbeddedOwnProfileTab = isEmbeddedOwnProfileTab
         self.bottomChromePadding = bottomChromePadding
@@ -889,6 +892,7 @@ struct TelefamIosProfileView: View {
         self.onTapHashtag = onTapHashtag
         self.onTapAudio = onTapAudio
         self.onMessageUser = onMessageUser
+        self.onOpenStars = onOpenStars
         _profileStore = StateObject(
             wrappedValue: TelefamIosProfileStore(
                 targetUserId: targetUserId,
@@ -1206,6 +1210,17 @@ struct TelefamIosProfileView: View {
             )
             .preferredColorScheme(themeMode.preferredColorScheme)
         }
+        .fullScreenCover(isPresented: $showProfileMenuSheet) {
+            TelefamIosProfileMenuView(
+                onOpenStars: {
+                    showProfileMenuSheet = false
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                        onOpenStars?()
+                    }
+                }
+            )
+            .preferredColorScheme(themeMode.preferredColorScheme)
+        }
         .fullScreenCover(isPresented: Binding(get: { viewerPosts != nil }, set: { if !$0 { viewerPosts = nil } })) {
             if let vPosts = viewerPosts {
                 TelefamIosFeedView(
@@ -1424,9 +1439,9 @@ struct TelefamIosProfileView: View {
                                             .clipShape(Circle())
                                     }
 
-                                    // Three horizontal dashes -> Menu (Coming soon)
+                                    // Three horizontal dashes -> Creator & Account Menu
                                     Button {
-                                        profileStore.showToast("Menu — Coming soon")
+                                        showProfileMenuSheet = true
                                     } label: {
                                         MenuDashesSvgIcon(color: .white)
                                             .frame(width: 18, height: 18)
@@ -2984,5 +2999,280 @@ private struct EditProfileSheet: View {
             .background(TelefamPalette.surface(colorScheme))
             .clipShape(RoundedRectangle(cornerRadius: 12))
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(TelefamPalette.border(colorScheme)))
+    }
+}
+
+// MARK: - Profile Creator & Account Menu Screen
+
+private enum IosProfileMenuIconKind {
+    case dashboard, stars, subscription, monetization, wallet, linkedDevice, createCampaign, verified
+}
+
+private struct IosProfileMenuEntry: Identifiable {
+    let id: String
+    let title: String
+    let subtitle: String
+    let icon: IosProfileMenuIconKind
+    let hasVerifyPillCta: Bool
+}
+
+private let iosProfileMenuEntries: [IosProfileMenuEntry] = [
+    IosProfileMenuEntry(id: "dashboard", title: "Dashboard", subtitle: "View your performance, analytics and insights", icon: .dashboard, hasVerifyPillCta: false),
+    IosProfileMenuEntry(id: "stars", title: "Stars", subtitle: "Get support from your fans", icon: .stars, hasVerifyPillCta: false),
+    IosProfileMenuEntry(id: "subscription", title: "Subscription", subtitle: "Manage your subscriptions and exclusive content", icon: .subscription, hasVerifyPillCta: false),
+    IosProfileMenuEntry(id: "monetization", title: "Monetization", subtitle: "Earn from your content and creator programs", icon: .monetization, hasVerifyPillCta: false),
+    IosProfileMenuEntry(id: "wallet", title: "Wallet", subtitle: "View your balance and transaction history", icon: .wallet, hasVerifyPillCta: false),
+    IosProfileMenuEntry(id: "linked_device", title: "Linked device", subtitle: "Manage your linked devices", icon: .linkedDevice, hasVerifyPillCta: false),
+    IosProfileMenuEntry(id: "create_campaign", title: "Create campaign", subtitle: "Collaborate with brands and grow your reach", icon: .createCampaign, hasVerifyPillCta: false),
+    IosProfileMenuEntry(id: "get_verified", title: "Get Verified", subtitle: "Apply for a verified badge and build more trust with your audience.", icon: .verified, hasVerifyPillCta: true),
+]
+
+struct TelefamIosProfileMenuView: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.dismiss) private var dismiss
+    var onOpenStars: (() -> Void)? = nil
+    @State private var localToast: String? = nil
+
+    private var screenBg: Color {
+        colorScheme == .dark ? TelefamPalette.darkBackground : Color(red: 0.953, green: 0.961, blue: 0.976)
+    }
+
+    private var cardBg: Color {
+        colorScheme == .dark ? TelefamPalette.darkSurface : .white
+    }
+
+    private var cardBorder: Color {
+        colorScheme == .dark ? TelefamPalette.darkBorder : Color(red: 0.906, green: 0.922, blue: 0.945)
+    }
+
+    private var badgeCrimson: Color {
+        TelefamPalette.crimsonBright
+    }
+
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "arrow.left")
+                            .font(.system(size: 19, weight: .semibold))
+                            .foregroundColor(TelefamPalette.textPrimary(colorScheme))
+                            .frame(width: 48, height: 48)
+                    }
+                    .accessibilityLabel("Back")
+
+                    Text("Menu")
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundColor(TelefamPalette.textPrimary(colorScheme))
+
+                    Spacer()
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+
+                ScrollView {
+                    VStack(spacing: 12) {
+                        ForEach(iosProfileMenuEntries) { entry in
+                            Button {
+                                if entry.id == "stars", let onOpenStars {
+                                    dismiss()
+                                    onOpenStars()
+                                } else {
+                                    showToast("\(entry.title) — Coming soon")
+                                }
+                            } label: {
+                                HStack(spacing: 14) {
+                                    ZStack {
+                                        RoundedRectangle(cornerRadius: 12)
+                                            .fill(badgeCrimson)
+                                            .frame(width: 46, height: 46)
+                                        IosProfileMenuBadgeSvgIcon(kind: entry.icon, accentRed: badgeCrimson)
+                                            .frame(width: 26, height: 26)
+                                    }
+
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(entry.title)
+                                            .font(.system(size: 15.5, weight: .bold))
+                                            .foregroundColor(TelefamPalette.textPrimary(colorScheme))
+                                        Text(entry.subtitle)
+                                            .font(.system(size: 13))
+                                            .foregroundColor(TelefamPalette.textMuted(colorScheme))
+                                            .multilineTextAlignment(.leading)
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                                    if entry.hasVerifyPillCta {
+                                        HStack(spacing: 6) {
+                                            IosProfileMenuBadgeSvgIcon(kind: .verified, accentRed: badgeCrimson)
+                                                .frame(width: 16, height: 16)
+                                            Text("Get Verified")
+                                                .font(.system(size: 12.5, weight: .bold))
+                                                .foregroundColor(.white)
+                                                .lineLimit(1)
+                                            Image(systemName: "chevron.right")
+                                                .font(.system(size: 10.5, weight: .bold))
+                                                .foregroundColor(.white)
+                                        }
+                                        .padding(.horizontal, 12)
+                                        .frame(height: 36)
+                                        .background(badgeCrimson)
+                                        .clipShape(Capsule())
+                                    } else {
+                                        Image(systemName: "chevron.right")
+                                            .font(.system(size: 13.5, weight: .semibold))
+                                            .foregroundColor(TelefamPalette.textMuted(colorScheme))
+                                    }
+                                }
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 14)
+                                .background(cardBg)
+                                .overlay(RoundedRectangle(cornerRadius: 16).stroke(cardBorder, lineWidth: 1))
+                                .clipShape(RoundedRectangle(cornerRadius: 16))
+                                .shadow(color: Color.black.opacity(colorScheme == .dark ? 0 : 0.04), radius: 3, y: 1)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .frame(maxWidth: 720)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .frame(maxWidth: .infinity)
+                }
+            }
+            .background(screenBg.ignoresSafeArea())
+
+            if let msg = localToast {
+                Text(msg)
+                    .font(.system(size: 13.5, weight: .semibold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 10)
+                    .background(Color.black.opacity(0.86))
+                    .clipShape(Capsule())
+                    .padding(.bottom, 28)
+                    .transition(.opacity)
+            }
+        }
+    }
+
+    private func showToast(_ msg: String) {
+        localToast = msg
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            if localToast == msg { localToast = nil }
+        }
+    }
+}
+
+private struct IosProfileMenuBadgeSvgIcon: View {
+    let kind: IosProfileMenuIconKind
+    let accentRed: Color
+
+    var body: some View {
+        Canvas { ctx, size in
+            let w = size.width
+            let h = size.height
+            switch kind {
+            case .dashboard:
+                let bw = w * 0.20
+                ctx.fill(Path(roundedRect: CGRect(x: w * 0.13, y: h * 0.54, width: bw, height: h * 0.32), cornerRadius: bw * 0.4), with: .color(.white))
+                ctx.fill(Path(roundedRect: CGRect(x: w * 0.40, y: h * 0.34, width: bw, height: h * 0.52), cornerRadius: bw * 0.4), with: .color(.white))
+                ctx.fill(Path(roundedRect: CGRect(x: w * 0.67, y: h * 0.14, width: bw, height: h * 0.72), cornerRadius: bw * 0.4), with: .color(.white))
+
+            case .stars:
+                var star = Path()
+                let cx = w * 0.5, cy = h * 0.52, outerR = w * 0.42, innerR = w * 0.18
+                for i in 0..<10 {
+                    let rad = (-Double.pi / 2.0) + Double(i) * (Double.pi / 5.0)
+                    let r = i % 2 == 0 ? outerR : innerR
+                    let pt = CGPoint(x: cx + CGFloat(cos(rad)) * r, y: cy + CGFloat(sin(rad)) * r)
+                    if i == 0 { star.move(to: pt) } else { star.addLine(to: pt) }
+                }
+                star.closeSubpath()
+                ctx.fill(star, with: .color(.white))
+
+            case .subscription:
+                var crown = Path()
+                crown.move(to: CGPoint(x: w * 0.14, y: h * 0.72))
+                crown.addLine(to: CGPoint(x: w * 0.12, y: h * 0.32))
+                crown.addLine(to: CGPoint(x: w * 0.34, y: h * 0.50))
+                crown.addLine(to: CGPoint(x: w * 0.50, y: h * 0.22))
+                crown.addLine(to: CGPoint(x: w * 0.66, y: h * 0.50))
+                crown.addLine(to: CGPoint(x: w * 0.88, y: h * 0.32))
+                crown.addLine(to: CGPoint(x: w * 0.86, y: h * 0.72))
+                crown.closeSubpath()
+                ctx.fill(crown, with: .color(.white))
+                ctx.fill(Path(roundedRect: CGRect(x: w * 0.16, y: h * 0.76, width: w * 0.68, height: h * 0.10), cornerRadius: w * 0.05), with: .color(.white))
+
+            case .monetization:
+                ctx.fill(Path(ellipseIn: CGRect(x: w * 0.14, y: h * 0.14, width: w * 0.72, height: h * 0.70)), with: .color(.white))
+                var tail = Path()
+                tail.move(to: CGPoint(x: w * 0.24, y: h * 0.68))
+                tail.addLine(to: CGPoint(x: w * 0.14, y: h * 0.86))
+                tail.addLine(to: CGPoint(x: w * 0.38, y: h * 0.80))
+                tail.closeSubpath()
+                ctx.fill(tail, with: .color(.white))
+                var dollar = Path()
+                dollar.move(to: CGPoint(x: w * 0.50, y: h * 0.27))
+                dollar.addLine(to: CGPoint(x: w * 0.50, y: h * 0.71))
+                dollar.move(to: CGPoint(x: w * 0.60, y: h * 0.37))
+                dollar.addCurve(to: CGPoint(x: w * 0.40, y: h * 0.41), control1: CGPoint(x: w * 0.60, y: h * 0.31), control2: CGPoint(x: w * 0.40, y: h * 0.31))
+                dollar.addCurve(to: CGPoint(x: w * 0.60, y: h * 0.58), control1: CGPoint(x: w * 0.40, y: h * 0.50), control2: CGPoint(x: w * 0.60, y: h * 0.49))
+                dollar.addCurve(to: CGPoint(x: w * 0.40, y: h * 0.59), control1: CGPoint(x: w * 0.60, y: h * 0.66), control2: CGPoint(x: w * 0.40, y: h * 0.67))
+                ctx.stroke(dollar, with: .color(accentRed), style: StrokeStyle(lineWidth: w * 0.085, lineCap: .round, lineJoin: .round))
+
+            case .wallet:
+                ctx.fill(Path(roundedRect: CGRect(x: w * 0.12, y: h * 0.24, width: w * 0.74, height: h * 0.56), cornerRadius: w * 0.14), with: .color(.white))
+                ctx.fill(Path(roundedRect: CGRect(x: w * 0.22, y: h * 0.30, width: w * 0.48, height: h * 0.07), cornerRadius: w * 0.03), with: .color(accentRed))
+                ctx.fill(Path(roundedRect: CGRect(x: w * 0.58, y: h * 0.44, width: w * 0.30, height: h * 0.20), cornerRadius: w * 0.08), with: .color(.white))
+                ctx.fill(Path(ellipseIn: CGRect(x: w * 0.63, y: h * 0.49, width: w * 0.10, height: w * 0.10)), with: .color(accentRed))
+
+            case .linkedDevice:
+                let st = StrokeStyle(lineWidth: w * 0.085, lineCap: .round, lineJoin: .round)
+                var back = Path()
+                back.move(to: CGPoint(x: w * 0.52, y: h * 0.68))
+                back.addLine(to: CGPoint(x: w * 0.16, y: h * 0.68))
+                back.addLine(to: CGPoint(x: w * 0.16, y: h * 0.22))
+                back.addLine(to: CGPoint(x: w * 0.64, y: h * 0.22))
+                back.addLine(to: CGPoint(x: w * 0.64, y: h * 0.36))
+                ctx.stroke(back, with: .color(.white), style: st)
+                ctx.stroke(Path(roundedRect: CGRect(x: w * 0.50, y: h * 0.36, width: w * 0.34, height: h * 0.46), cornerRadius: w * 0.07), with: .color(.white), style: st)
+
+            case .createCampaign:
+                var horn = Path()
+                horn.move(to: CGPoint(x: w * 0.20, y: h * 0.46))
+                horn.addLine(to: CGPoint(x: w * 0.72, y: h * 0.20))
+                horn.addLine(to: CGPoint(x: w * 0.72, y: h * 0.74))
+                horn.addLine(to: CGPoint(x: w * 0.20, y: h * 0.58))
+                horn.closeSubpath()
+                ctx.fill(horn, with: .color(.white))
+                var handle = Path()
+                handle.move(to: CGPoint(x: w * 0.30, y: h * 0.58))
+                handle.addLine(to: CGPoint(x: w * 0.37, y: h * 0.82))
+                handle.addLine(to: CGPoint(x: w * 0.48, y: h * 0.80))
+                handle.addLine(to: CGPoint(x: w * 0.42, y: h * 0.60))
+                handle.closeSubpath()
+                ctx.fill(handle, with: .color(.white))
+                ctx.fill(Path(roundedRect: CGRect(x: w * 0.77, y: h * 0.38, width: w * 0.09, height: h * 0.20), cornerRadius: w * 0.045), with: .color(.white))
+
+            case .verified:
+                let cx = w * 0.5, cy = h * 0.5
+                var seal = Path()
+                for i in 0..<16 {
+                    let rad = Double(i) * (2.0 * Double.pi / 16.0)
+                    let r = i % 2 == 0 ? w * 0.44 : w * 0.35
+                    let pt = CGPoint(x: cx + CGFloat(cos(rad)) * r, y: cy + CGFloat(sin(rad)) * r)
+                    if i == 0 { seal.move(to: pt) } else { seal.addLine(to: pt) }
+                }
+                seal.closeSubpath()
+                ctx.fill(seal, with: .color(.white))
+                var check = Path()
+                check.move(to: CGPoint(x: w * 0.34, y: h * 0.51))
+                check.addLine(to: CGPoint(x: w * 0.46, y: h * 0.63))
+                check.addLine(to: CGPoint(x: w * 0.68, y: h * 0.39))
+                ctx.stroke(check, with: .color(accentRed), style: StrokeStyle(lineWidth: w * 0.11, lineCap: .round, lineJoin: .round))
+            }
+        }
     }
 }

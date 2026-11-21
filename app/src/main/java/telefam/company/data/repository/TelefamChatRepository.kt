@@ -7,6 +7,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -31,11 +33,17 @@ import telefam.company.data.local.PendingChatOpEntity
 import telefam.company.data.local.SignalKeyStateEntity
 import telefam.company.data.local.TelefamDao
 import telefam.company.data.network.BatchConversationActionRequestDto
+import telefam.company.data.network.CallActionRequestDto
+import telefam.company.data.network.CallSignalRequestDto
+import telefam.company.data.network.ChatCallSessionDto
 import telefam.company.data.network.ChatConversationDto
 import telefam.company.data.network.ChatMessageDto
 import telefam.company.data.network.ChatReceiptRequestDto
 import telefam.company.data.network.ChatSearchPersonDto
 import telefam.company.data.network.ChatSecurityFlagDto
+import telefam.company.data.network.ChatTypingRequestDto
+import telefam.company.data.network.CreateStarCheckoutRequestDto
+import telefam.company.data.network.CreateStarCheckoutResponseDto
 import telefam.company.data.network.E2eeKeyBundleUploadDto
 import telefam.company.data.network.EditChatMessageRequestDto
 import telefam.company.data.network.GiflyMediaItemDto
@@ -44,8 +52,15 @@ import telefam.company.data.network.NetworkQualityMonitor
 import telefam.company.data.network.OneTimePreKeyDto
 import telefam.company.data.network.RecordSecurityFlagRequestDto
 import telefam.company.data.network.SendChatMessageRequestDto
+import telefam.company.data.network.SendStarGiftRequestDto
+import telefam.company.data.network.SendStarGiftResponseDto
+import telefam.company.data.network.StarSummaryResponseDto
+import telefam.company.data.network.StartChatCallRequestDto
 import telefam.company.data.network.TelefamApiService
+import telefam.company.data.network.VerifyStarPaymentRequestDto
+import telefam.company.data.network.VerifyStarPaymentResponseDto
 import java.io.File
+import java.util.Collections
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
@@ -79,12 +94,25 @@ class TelefamChatRepository(
   private val wsClient = ChatWebSocketClient(wsHttpClient, baseHttpUrl)
   val wsEvents: SharedFlow<ChatWsIncomingEvent> = wsClient.events
 
+  private val uploadedBundleUsersThisSession = Collections.synchronizedSet(mutableSetOf<String>())
+
+  @Volatile
+  var activeOpenConversationId: String? = null
+    private set
+
+  private val _migratedConversations = MutableSharedFlow<Pair<String, String>>(extraBufferCapacity = 16)
+  val migratedConversations: SharedFlow<Pair<String, String>> = _migratedConversations.asSharedFlow()
+
   init {
     scope.launch {
       wsClient.events.collect { ev ->
         handleIncomingWsEvent(ev)
       }
     }
+  }
+
+  fun setActiveOpenConversation(conversationId: String?) {
+    activeOpenConversationId = conversationId?.trim()?.takeIf { it.isNotBlank() }
   }
 
   fun observeActiveConversations(): Flow<List<ChatConversationEntity>> = dao.observeActiveConversations()
@@ -106,14 +134,29 @@ class TelefamChatRepository(
   }
 
   fun disconnectWebSocket() {
+    uploadedBundleUsersThisSession.clear()
     wsClient.disconnect()
   }
 
   fun sendTypingIndicator(conversationId: String, mode: String) {
-    wsClient.sendTyping(conversationId, mode)
+    val cleanConvId = conversationId.trim()
+    if (cleanConvId.isBlank()) return
+    wsClient.sendTyping(cleanConvId, mode)
+    if (!wsClient.isConnected() && !cleanConvId.startsWith("local_dm_")) {
+      val api = apiService ?: return
+      scope.launch {
+        val token = identityStore.sessionFlow.first().accessToken.orEmpty()
+        if (token.isBlank()) return@launch
+        val fp = deviceFingerprintProvider()
+        runCatching { api.sendChatTyping("Bearer $token", fp, cleanConvId, ChatTypingRequestDto(mode)) }
+      }
+    }
   }
 
-  suspend fun ensureSignalEngineReady(uploadIfNeeded: Boolean = true): SignalE2eeManager? = withContext(Dispatchers.IO) {
+  suspend fun ensureSignalEngineReady(
+    uploadIfNeeded: Boolean = true,
+    forceUpload: Boolean = false,
+  ): SignalE2eeManager? = withContext(Dispatchers.IO) {
     val uid = identityStore.sessionFlow.first().userId.orEmpty().trim()
     if (uid.isBlank()) return@withContext null
     var bundleUploaded = false
@@ -138,8 +181,11 @@ class TelefamChatRepository(
         created
       }
     }
-    if (uploadIfNeeded && !bundleUploaded) {
-      uploadSignalBundle(uid, engine)
+    val needsSessionUpload = forceUpload || !bundleUploaded || !uploadedBundleUsersThisSession.contains(uid)
+    if (uploadIfNeeded && needsSessionUpload) {
+      if (uploadSignalBundle(uid, engine)) {
+        uploadedBundleUsersThisSession.add(uid)
+      }
     }
     engine
   }
@@ -294,7 +340,7 @@ class TelefamChatRepository(
       val dto = resp?.body()?.conversation
       if (resp?.isSuccessful == true && resp.body()?.success == true && dto != null && dto.conversationId.isNotBlank()) {
         if (optimisticId != dto.conversationId) {
-          dao.setConversationsDeletedLocally(listOf(optimisticId), true)
+          migrateLocalConversationId(optimisticId, dto.conversationId)
         }
         val entity = mapConversationDto(dto, optimistic, optimistic.lastMessagePreviewPlain).copy(unreadCount = 0)
         dao.upsertConversation(entity)
@@ -307,10 +353,24 @@ class TelefamChatRepository(
     dao.getConversation(optimisticId)
   }
 
+  private suspend fun migrateLocalConversationId(oldConvId: String, newConvId: String) {
+    if (oldConvId.isBlank() || newConvId.isBlank() || oldConvId == newConvId) return
+    dao.migrateMessagesConversation(oldConvId, newConvId)
+    dao.migrateChatOpsConversation(oldConvId, newConvId)
+    dao.setConversationsDeletedLocally(listOf(oldConvId), true)
+    if (activeOpenConversationId == oldConvId) {
+      activeOpenConversationId = newConvId
+    }
+    _migratedConversations.tryEmit(oldConvId to newConvId)
+  }
+
   suspend fun loadConversationMessages(conversationId: String) = withContext(Dispatchers.IO) {
     val cleanId = conversationId.trim()
     if (cleanId.isBlank()) return@withContext
-    dao.clearConversationUnread(cleanId)
+    val isActivelyOpen = cleanId == activeOpenConversationId
+    if (isActivelyOpen) {
+      dao.clearConversationUnread(cleanId)
+    }
 
     val api = apiService ?: return@withContext
     val session = identityStore.sessionFlow.first()
@@ -327,8 +387,9 @@ class TelefamChatRepository(
     val convDto = body.conversation
     if (convDto.conversationId.isNotBlank()) {
       val existingConv = dao.getConversation(cleanId)
-      val mappedConv = mapConversationDto(convDto, existingConv, existingConv?.lastMessagePreviewPlain.orEmpty()).copy(unreadCount = 0)
-      dao.upsertConversation(mappedConv)
+      val baseMapped = mapConversationDto(convDto, existingConv, existingConv?.lastMessagePreviewPlain.orEmpty())
+      val resolvedUnread = if (isActivelyOpen) 0 else if (convDto.unreadCount > 0) convDto.unreadCount else existingConv?.unreadCount ?: 0
+      dao.upsertConversation(baseMapped.copy(unreadCount = resolvedUnread))
       ensurePeerSignalSession(engine ?: return@withContext, ownerUid, convDto.peerUserId)
     }
 
@@ -358,16 +419,19 @@ class TelefamChatRepository(
             lastMessagePreviewPlain = previewTextForMessage(latest),
             lastDeliveryStatus = latest.deliveryStatus,
             lastMessageAtMs = latest.createdAtMs,
-            unreadCount = 0,
+            unreadCount = if (isActivelyOpen) 0 else conv.unreadCount,
             updatedAtMs = latest.createdAtMs.coerceAtLeast(conv.updatedAtMs),
           ),
         )
       }
-      // Send read receipts for unread incoming messages if allowed
       val showReceipts = conv?.showReadReceipts ?: true
-      if (showReceipts) {
+      if (isActivelyOpen && showReceipts) {
         updatedMessages.filter { it.senderUserId != ownerUid && it.deliveryStatus != "seen" }.forEach { incoming ->
           runCatching { api.sendChatReceipt("Bearer $token", fp, incoming.messageId, ChatReceiptRequestDto("seen")) }
+        }
+      } else {
+        updatedMessages.filter { it.senderUserId != ownerUid && it.deliveryStatus == "sent" }.forEach { incoming ->
+          runCatching { api.sendChatReceipt("Bearer $token", fp, incoming.messageId, ChatReceiptRequestDto("delivered")) }
         }
       }
     }
@@ -521,9 +585,8 @@ class TelefamChatRepository(
       )
     }
 
-    // 2. Attempt remote encrypt + upload + send immediately when online; on offline/failure queue cleanly to outbox
-    val isOnline = networkMonitor.networkTier.value != telefam.company.core.NetworkTier.OFFLINE
-    val sentRemote = if (isOnline) tryDeliverSingleMessage(localMsg) else false
+    // 2. Always attempt remote encrypt + upload + send immediately; fall back to outbox if network/session fails
+    val sentRemote = tryDeliverSingleMessage(localMsg)
     if (!sentRemote) {
       val opPayload = JSONObject()
         .put("peer_user_id", peerUserId)
@@ -536,11 +599,13 @@ class TelefamChatRepository(
         .put("view_once_ttl_sec", viewOnceTtlSec)
         .put("forwarded_from_user_id", forwardedFromUserId)
         .toString()
+      val isOnline = networkMonitor.networkTier.value != telefam.company.core.NetworkTier.OFFLINE
+      val targetConvId = dao.getChatMessage(localMsg.messageId)?.conversationId ?: conversationId
       dao.enqueueChatOp(
         PendingChatOpEntity(
           opId = clientOpId,
           opKind = "send",
-          conversationId = conversationId,
+          conversationId = targetConvId,
           targetMessageId = clientOpId,
           payloadJson = opPayload,
           createdAtMs = nowMs,
@@ -561,6 +626,24 @@ class TelefamChatRepository(
     val fp = deviceFingerprintProvider()
     val engine = ensureSignalEngineReady(true) ?: return false
 
+    // Resolve canonical remote conversation ID & migrate any optimistic local_dm_ records first
+    var remoteConvId = localMsg.conversationId
+    if (remoteConvId.startsWith("local_dm_") || dao.getConversation(remoteConvId) == null) {
+      val convResp = runCatching { api.openDirectConversation("Bearer $token", fp, localMsg.recipientUserId) }.getOrNull()
+      val remoteConv = convResp?.body()?.conversation
+      if (convResp?.isSuccessful == true && remoteConv != null && remoteConv.conversationId.isNotBlank()) {
+        val oldConvId = remoteConvId
+        remoteConvId = remoteConv.conversationId
+        val mappedConv = mapConversationDto(remoteConv, dao.getConversation(oldConvId), previewTextForMessage(localMsg))
+        dao.upsertConversation(mappedConv.copy(unreadCount = if (remoteConvId == activeOpenConversationId || oldConvId == activeOpenConversationId) 0 else mappedConv.unreadCount))
+        if (oldConvId != remoteConvId) {
+          migrateLocalConversationId(oldConvId, remoteConvId)
+        }
+      } else if (remoteConvId.startsWith("local_dm_")) {
+        return false
+      }
+    }
+
     var resolvedMediaId = localMsg.mediaId
     var resolvedMediaUrl = localMsg.mediaUrl
     if ((localMsg.messageType == "voice" || localMsg.messageType == "voice_once") &&
@@ -569,7 +652,7 @@ class TelefamChatRepository(
     ) {
       val file = File(localMsg.mediaLocalPath)
       if (!file.exists()) return false
-      val convPart = localMsg.conversationId.toRequestBody("text/plain".toMediaTypeOrNull())
+      val convPart = remoteConvId.toRequestBody("text/plain".toMediaTypeOrNull())
       val durPart = localMsg.voiceDurationMs.toString().toRequestBody("text/plain".toMediaTypeOrNull())
       val voPart = (localMsg.messageType == "voice_once").toString().toRequestBody("text/plain".toMediaTypeOrNull())
       val filePart = MultipartBody.Part.createFormData("file", file.name, file.asRequestBody("audio/mp4".toMediaTypeOrNull()))
@@ -582,53 +665,66 @@ class TelefamChatRepository(
       resolvedMediaUrl = AdaptiveStreamSelector.resolveMediaUrl(baseHttpUrl, upBody.mediaUrl)
     }
 
-    // Ensure conversation exists remotely
-    var remoteConvId = localMsg.conversationId
-    if (!ensurePeerSignalSession(engine, ownerUid, localMsg.recipientUserId)) {
-      return false
-    }
-    val convResp = runCatching { api.openDirectConversation("Bearer $token", fp, localMsg.recipientUserId) }.getOrNull()
-    val remoteConv = convResp?.body()?.conversation
-    if (convResp?.isSuccessful == true && remoteConv != null && remoteConv.conversationId.isNotBlank()) {
-      remoteConvId = remoteConv.conversationId
-    }
-
-    val env = runCatching {
-      engine.compressAndEncrypt(localMsg.recipientUserId, localMsg.plainText)
-    }.getOrNull() ?: return false
-    persistSignalState(ownerUid, engine)
-
-    val req = SendChatMessageRequestDto(
-      clientOpId = localMsg.clientOpId,
-      messageType = localMsg.messageType,
-      compressionCodec = env.compressionCodec,
-      encryptionScheme = env.encryptionScheme,
-      ciphertextB64 = env.ciphertextB64,
-      senderCiphertextB64 = env.senderCiphertextB64,
-      signalMsgType = env.signalMsgType,
-      mediaUrl = resolvedMediaUrl,
-      mediaId = resolvedMediaId,
-      voiceDurationMs = localMsg.voiceDurationMs,
-      viewOnceTtlSec = localMsg.viewOnceTtlSec,
-      forwardedFromUserId = localMsg.forwardedFromUserId,
-    )
-    val sendResp = runCatching { api.sendChatMessage("Bearer $token", fp, remoteConvId, req) }.getOrNull()
-    val dto = sendResp?.body()?.message
-    if (sendResp?.isSuccessful == true && sendResp.body()?.success == true && dto != null && dto.messageId.isNotBlank()) {
-      dao.deleteChatMessagePermanently(localMsg.messageId)
-      val persisted = mapMessageDto(dto, localMsg.plainText, localMsg.mediaLocalPath).copy(syncState = "synced")
-      dao.upsertChatMessage(persisted)
-      dao.getConversation(localMsg.conversationId)?.let { conv ->
-        dao.upsertConversation(
-          conv.copy(
-            lastMessageId = persisted.messageId,
-            lastDeliveryStatus = persisted.deliveryStatus,
-            lastMessagePreviewPlain = previewTextForMessage(persisted),
-            updatedAtMs = persisted.createdAtMs,
-          ),
-        )
+    for (attempt in 0..1) {
+      if (attempt > 0) {
+        engine.invalidatePeerSession(localMsg.recipientUserId)
       }
-      return true
+      if (!ensurePeerSignalSession(engine, ownerUid, localMsg.recipientUserId)) {
+        continue
+      }
+      val env = runCatching {
+        engine.compressAndEncrypt(localMsg.recipientUserId, localMsg.plainText)
+      }.getOrNull() ?: continue
+      persistSignalState(ownerUid, engine)
+
+      val req = SendChatMessageRequestDto(
+        clientOpId = localMsg.clientOpId,
+        messageType = localMsg.messageType,
+        compressionCodec = env.compressionCodec,
+        encryptionScheme = env.encryptionScheme,
+        ciphertextB64 = env.ciphertextB64,
+        senderCiphertextB64 = env.senderCiphertextB64,
+        signalMsgType = env.signalMsgType,
+        mediaUrl = resolvedMediaUrl,
+        mediaId = resolvedMediaId,
+        voiceDurationMs = localMsg.voiceDurationMs,
+        viewOnceTtlSec = localMsg.viewOnceTtlSec,
+        forwardedFromUserId = localMsg.forwardedFromUserId,
+      )
+      val sendResp = runCatching { api.sendChatMessage("Bearer $token", fp, remoteConvId, req) }.getOrNull()
+      if (sendResp?.code() == 403) {
+        dao.deleteChatMessagePermanently(localMsg.messageId)
+        dao.getConversation(remoteConvId)?.let { conv ->
+          dao.upsertConversation(conv.copy(isBlocked = true))
+        }
+        return true
+      }
+      val dto = sendResp?.body()?.message
+      if (sendResp?.isSuccessful == true && sendResp.body()?.success == true && dto != null && dto.messageId.isNotBlank()) {
+        dao.deleteChatMessagePermanently(localMsg.messageId)
+        val persisted = mapMessageDto(dto, localMsg.plainText, localMsg.mediaLocalPath).copy(syncState = "synced")
+        dao.upsertChatMessage(persisted)
+        dao.getConversation(persisted.conversationId)?.let { conv ->
+          dao.upsertConversation(
+            conv.copy(
+              lastMessageId = persisted.messageId,
+              lastDeliveryStatus = persisted.deliveryStatus,
+              lastMessagePreviewPlain = previewTextForMessage(persisted),
+              updatedAtMs = persisted.createdAtMs,
+            ),
+          )
+        }
+        return true
+      }
+      if (sendResp?.code() == 404) {
+        val convResp = runCatching { api.openDirectConversation("Bearer $token", fp, localMsg.recipientUserId) }.getOrNull()
+        val remoteConv = convResp?.body()?.conversation
+        if (convResp?.isSuccessful == true && remoteConv != null && remoteConv.conversationId.isNotBlank()) {
+          val oldConv = remoteConvId
+          remoteConvId = remoteConv.conversationId
+          if (oldConv != remoteConvId) migrateLocalConversationId(oldConv, remoteConvId)
+        }
+      }
     }
     return false
   }
@@ -766,7 +862,22 @@ class TelefamChatRepository(
       "mark_read" -> conversationIds.forEach { dao.setConversationUnread(it, 0) }
       "mark_unread" -> conversationIds.forEach { id ->
         val c = dao.getConversation(id)
-        if (c != null && c.unreadCount == 0) dao.setConversationUnread(id, 1)
+        if (c != null) {
+          val msgs = dao.getMessagesForConversation(id)
+          for (i in msgs.indices.reversed()) {
+            val m = msgs[i]
+            if (m.senderUserId != c.peerUserId) break
+            if (m.deliveryStatus == "seen") {
+              dao.updateChatMessageDeliveryStatus(m.messageId, "delivered")
+            }
+          }
+          dao.upsertConversation(
+            c.copy(
+              unreadCount = c.unreadCount.coerceAtLeast(1),
+              lastDeliveryStatus = if (c.lastSenderId == c.peerUserId && c.lastDeliveryStatus == "seen") "delivered" else c.lastDeliveryStatus,
+            ),
+          )
+        }
       }
       "block" -> conversationIds.forEach { id ->
         dao.getConversation(id)?.let { dao.upsertConversation(it.copy(isBlocked = true)) }
@@ -1072,16 +1183,14 @@ class TelefamChatRepository(
         )
       }
       "new_message", "message_new", "message_edited" -> {
-        if (ev.conversationId.isNotBlank()) {
+        refreshConversations()
+        if (ev.conversationId.isNotBlank() && ev.conversationId == activeOpenConversationId) {
           loadConversationMessages(ev.conversationId)
-          refreshConversations()
-        } else {
-          refreshConversations()
         }
       }
       "conversation_updated" -> {
         refreshConversations()
-        if (ev.conversationId.isNotBlank()) {
+        if (ev.conversationId.isNotBlank() && ev.conversationId == activeOpenConversationId) {
           loadConversationMessages(ev.conversationId)
         }
       }
@@ -1159,6 +1268,7 @@ class TelefamChatRepository(
       "clip" -> "Clip"
       "voice" -> "Voice message"
       "voice_once" -> "View-once voice message"
+      "star_gift" -> "Telefam Stars gift"
       else -> {
         val dec = engine?.decryptAndDecompress(
           peerUserId = dto.peerUserId,
@@ -1179,6 +1289,9 @@ class TelefamChatRepository(
     dto: ChatMessageDto,
     cached: ChatMessageEntity?,
   ): String {
+    if (dto.messageType == "star_gift") {
+      return "${dto.starGiftAmount} Telefam Stars"
+    }
     // Double Ratchet forward secrecy deletes single-use message keys after first decryption.
     // Always preserve cached plaintext for same messageId unless message was edited remotely!
     if (cached != null && cached.plainText.isNotBlank() && dto.editedAtMs <= cached.editedAtMs) {
@@ -1199,6 +1312,7 @@ class TelefamChatRepository(
       "clip" -> "Clip"
       "voice" -> "Voice message"
       "voice_once" -> "View-once voice message"
+      "star_gift" -> "${dto.starGiftAmount} Telefam Stars"
       else -> ""
     }
   }
@@ -1273,6 +1387,9 @@ class TelefamChatRepository(
       editedAtMs = dto.editedAtMs,
       isPendingUnsend = false,
       createdAtMs = dto.createdAtMs,
+      starGiftAmount = dto.starGiftAmount,
+      starGiftTxId = dto.starGiftTxId,
+      starGiftVerified = dto.starGiftVerified,
     )
   }
 
@@ -1295,6 +1412,7 @@ class TelefamChatRepository(
     "clip" -> "Clip"
     "voice" -> "Voice message"
     "voice_once" -> "View-once voice message"
+    "star_gift" -> "${msg.starGiftAmount} Telefam Stars"
     else -> msg.plainText.lineSequence().firstOrNull().orEmpty().take(90)
   }
 
@@ -1305,5 +1423,244 @@ class TelefamChatRepository(
   private fun deterministicDirectConvId(a: String, b: String): String {
     val pair = listOf(a, b).sorted()
     return "local_dm_${pair[0]}_${pair[1]}"
+  }
+
+  // ---------- TELEFAM STARS API METHODS ----------
+
+  suspend fun fetchStarsSummary(countryIso: String): Result<StarSummaryResponseDto> = withContext(Dispatchers.IO) {
+    val api = apiService ?: return@withContext Result.failure(IllegalStateException("Network unavailable"))
+    val sess = identityStore.sessionFlow.first()
+    val token = sess.accessToken?.trim().orEmpty()
+    if (token.isBlank()) return@withContext Result.failure(IllegalStateException("Sign in required"))
+    val fp = deviceFingerprintProvider()
+    val resp = runCatching { api.getStarsSummary("Bearer $token", fp, countryIso) }.getOrElse {
+      return@withContext Result.failure(it)
+    }
+    val body = resp.body()
+    if (resp.isSuccessful && body != null && body.success) {
+      Result.success(body)
+    } else {
+      Result.failure(IllegalStateException(extractApiErrorMessage(resp.errorBody()?.string(), "Unable to load Stars")))
+    }
+  }
+
+  suspend fun createStarCheckout(
+    idempotencyKey: String,
+    starAmount: Long,
+    provider: String,
+    countryIso: String,
+  ): Result<CreateStarCheckoutResponseDto> = withContext(Dispatchers.IO) {
+    val api = apiService ?: return@withContext Result.failure(IllegalStateException("Network unavailable"))
+    val sess = identityStore.sessionFlow.first()
+    val token = sess.accessToken?.trim().orEmpty()
+    if (token.isBlank()) return@withContext Result.failure(IllegalStateException("Sign in required"))
+    val fp = deviceFingerprintProvider()
+    val req = CreateStarCheckoutRequestDto(
+      idempotencyKey = idempotencyKey,
+      starAmount = starAmount,
+      provider = provider,
+      countryIso = countryIso,
+    )
+    val resp = runCatching { api.createStarCheckout("Bearer $token", fp, idempotencyKey, req) }.getOrElse {
+      return@withContext Result.failure(it)
+    }
+    val body = resp.body()
+    if (resp.isSuccessful && body != null && body.success) {
+      Result.success(body)
+    } else {
+      Result.failure(IllegalStateException(extractApiErrorMessage(resp.errorBody()?.string(), "Unable to start checkout")))
+    }
+  }
+
+  suspend fun verifyStarPayment(
+    idempotencyKey: String,
+    providerReference: String,
+  ): Result<VerifyStarPaymentResponseDto> = withContext(Dispatchers.IO) {
+    val api = apiService ?: return@withContext Result.failure(IllegalStateException("Network unavailable"))
+    val sess = identityStore.sessionFlow.first()
+    val token = sess.accessToken?.trim().orEmpty()
+    if (token.isBlank()) return@withContext Result.failure(IllegalStateException("Sign in required"))
+    val fp = deviceFingerprintProvider()
+    val key = idempotencyKey.ifBlank { providerReference }
+    val req = VerifyStarPaymentRequestDto(
+      idempotencyKey = idempotencyKey,
+      providerReference = providerReference,
+    )
+    val resp = runCatching { api.verifyStarPayment("Bearer $token", fp, key, req) }.getOrElse {
+      return@withContext Result.failure(it)
+    }
+    val body = resp.body()
+    if (resp.isSuccessful && body != null && body.success) {
+      Result.success(body)
+    } else {
+      Result.failure(IllegalStateException(extractApiErrorMessage(resp.errorBody()?.string(), "Payment verification pending")))
+    }
+  }
+
+  suspend fun sendStarGift(
+    idempotencyKey: String,
+    recipientUserId: String,
+    conversationId: String,
+    starAmount: Long,
+  ): Result<SendStarGiftResponseDto> = withContext(Dispatchers.IO) {
+    val api = apiService ?: return@withContext Result.failure(IllegalStateException("Network unavailable"))
+    val sess = identityStore.sessionFlow.first()
+    val token = sess.accessToken?.trim().orEmpty()
+    if (token.isBlank()) return@withContext Result.failure(IllegalStateException("Sign in required"))
+    val fp = deviceFingerprintProvider()
+    val req = SendStarGiftRequestDto(
+      idempotencyKey = idempotencyKey,
+      recipientUserId = recipientUserId,
+      conversationId = conversationId,
+      starAmount = starAmount,
+      ciphertextB64 = "TELEFAM_STAR_GIFT",
+      senderCiphertextB64 = "TELEFAM_STAR_GIFT",
+    )
+    val resp = runCatching { api.sendStars("Bearer $token", fp, idempotencyKey, req) }.getOrElse {
+      return@withContext Result.failure(it)
+    }
+    val body = resp.body()
+    if (resp.isSuccessful && body != null) {
+      val msgDto = body.message
+      if (body.success && msgDto != null && msgDto.messageId.isNotBlank()) {
+        dao.upsertChatMessage(mapMessageDto(msgDto, "${msgDto.starGiftAmount} Telefam Stars", ""))
+        val convDto = body.conversation
+        if (convDto != null && convDto.conversationId.isNotBlank()) {
+          val existing = dao.getConversation(convDto.conversationId)
+          dao.upsertConversation(mapConversationDto(convDto, existing, "${msgDto.starGiftAmount} Telefam Stars"))
+        }
+      }
+      Result.success(body)
+    } else {
+      Result.failure(IllegalStateException(extractApiErrorMessage(resp.errorBody()?.string(), "Unable to send stars")))
+    }
+  }
+
+  // ---------- AUDIO & VIDEO CALL SIGNALING & MEDIA ----------
+
+  fun sendWsCallAccept(callId: String) = wsClient.sendCallAccept(callId)
+
+  fun sendWsCallReject(callId: String, reason: String = "declined") = wsClient.sendCallReject(callId, reason)
+
+  fun sendWsCallEnd(callId: String, reason: String = "ended") = wsClient.sendCallEnd(callId, reason)
+
+  fun sendWsCallSignal(callId: String, kind: String, payload: String = "") =
+    wsClient.sendCallSignal(callId, kind, payload)
+
+  fun sendWsCallMedia(callId: String, mediaKind: String, mediaB64: String, width: Int = 0, height: Int = 0) =
+    wsClient.sendCallMedia(callId, mediaKind, mediaB64, width, height)
+
+  suspend fun startCall(
+    peerUserId: String,
+    conversationId: String,
+    callType: String,
+  ): Result<ChatCallSessionDto> = withContext(Dispatchers.IO) {
+    val api = apiService ?: return@withContext Result.failure(IllegalStateException("Network unavailable"))
+    val token = identityStore.sessionFlow.first().accessToken?.trim().orEmpty()
+    if (token.isBlank()) return@withContext Result.failure(IllegalStateException("Sign in required"))
+    val fp = deviceFingerprintProvider()
+    val cleanConvId = if (conversationId.startsWith("local_dm_")) "" else conversationId
+    val resp = runCatching {
+      api.startChatCall("Bearer $token", fp, StartChatCallRequestDto(peerUserId, cleanConvId, callType))
+    }.getOrElse { return@withContext Result.failure(it) }
+    val body = resp.body()
+    if (resp.isSuccessful && body != null && body.success && body.call != null) {
+      Result.success(body.call)
+    } else {
+      Result.failure(
+        IllegalStateException(
+          body?.errorMessage?.takeIf { it.isNotBlank() }
+            ?: extractApiErrorMessage(resp.errorBody()?.string(), "Unable to start call"),
+        ),
+      )
+    }
+  }
+
+  suspend fun acceptCall(callId: String): Result<ChatCallSessionDto> = withContext(Dispatchers.IO) {
+    val api = apiService ?: return@withContext Result.failure(IllegalStateException("Network unavailable"))
+    val token = identityStore.sessionFlow.first().accessToken?.trim().orEmpty()
+    if (token.isBlank()) return@withContext Result.failure(IllegalStateException("Sign in required"))
+    val fp = deviceFingerprintProvider()
+    val resp = runCatching { api.acceptChatCall("Bearer $token", fp, callId) }.getOrElse {
+      return@withContext Result.failure(it)
+    }
+    val body = resp.body()
+    if (resp.isSuccessful && body != null && body.success && body.call != null) {
+      Result.success(body.call)
+    } else {
+      Result.failure(
+        IllegalStateException(
+          body?.errorMessage?.takeIf { it.isNotBlank() }
+            ?: extractApiErrorMessage(resp.errorBody()?.string(), "Unable to accept call"),
+        ),
+      )
+    }
+  }
+
+  suspend fun rejectCall(callId: String, reason: String = "declined"): Result<ChatCallSessionDto> = withContext(Dispatchers.IO) {
+    val api = apiService ?: return@withContext Result.failure(IllegalStateException("Network unavailable"))
+    val token = identityStore.sessionFlow.first().accessToken?.trim().orEmpty()
+    if (token.isBlank()) return@withContext Result.failure(IllegalStateException("Sign in required"))
+    val fp = deviceFingerprintProvider()
+    val resp = runCatching { api.rejectChatCall("Bearer $token", fp, callId, CallActionRequestDto(reason)) }.getOrElse {
+      return@withContext Result.failure(it)
+    }
+    val body = resp.body()
+    if (resp.isSuccessful && body != null && body.success && body.call != null) {
+      Result.success(body.call)
+    } else {
+      Result.failure(IllegalStateException(extractApiErrorMessage(resp.errorBody()?.string(), "Call declined")))
+    }
+  }
+
+  suspend fun endCall(callId: String, reason: String = "ended"): Result<ChatCallSessionDto> = withContext(Dispatchers.IO) {
+    val api = apiService ?: return@withContext Result.failure(IllegalStateException("Network unavailable"))
+    val token = identityStore.sessionFlow.first().accessToken?.trim().orEmpty()
+    if (token.isBlank()) return@withContext Result.failure(IllegalStateException("Sign in required"))
+    val fp = deviceFingerprintProvider()
+    val resp = runCatching { api.endChatCall("Bearer $token", fp, callId, CallActionRequestDto(reason)) }.getOrElse {
+      return@withContext Result.failure(it)
+    }
+    val body = resp.body()
+    if (resp.isSuccessful && body != null && body.success && body.call != null) {
+      Result.success(body.call)
+    } else {
+      Result.failure(IllegalStateException(extractApiErrorMessage(resp.errorBody()?.string(), "Call ended")))
+    }
+  }
+
+  suspend fun relayCallSignal(
+    callId: String,
+    kind: String,
+    payload: String = "",
+    mediaB64: String = "",
+    width: Int = 0,
+    height: Int = 0,
+  ): Boolean = withContext(Dispatchers.IO) {
+    val api = apiService ?: return@withContext false
+    val token = identityStore.sessionFlow.first().accessToken?.trim().orEmpty()
+    if (token.isBlank()) return@withContext false
+    val fp = deviceFingerprintProvider()
+    val resp = runCatching {
+      api.relayChatCallSignal("Bearer $token", fp, callId, CallSignalRequestDto(kind, payload, mediaB64, width, height))
+    }.getOrNull()
+    resp?.isSuccessful == true && resp.body()?.success == true
+  }
+
+  suspend fun getActiveCall(): ChatCallSessionDto? = withContext(Dispatchers.IO) {
+    val api = apiService ?: return@withContext null
+    val token = identityStore.sessionFlow.first().accessToken?.trim().orEmpty()
+    if (token.isBlank()) return@withContext null
+    val fp = deviceFingerprintProvider()
+    val resp = runCatching { api.getActiveChatCall("Bearer $token", fp) }.getOrNull()
+    if (resp?.isSuccessful == true && resp.body()?.success == true) resp.body()?.call else null
+  }
+
+  private fun extractApiErrorMessage(raw: String?, fallback: String): String {
+    if (raw.isNullOrBlank()) return fallback
+    val obj = runCatching { JSONObject(raw) }.getOrNull() ?: return fallback
+    return obj.optString("message").ifBlank {
+      obj.optString("error").ifBlank { fallback }
+    }
   }
 }

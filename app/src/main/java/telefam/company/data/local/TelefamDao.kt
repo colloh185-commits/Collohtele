@@ -447,5 +447,11 @@ interface TelefamDao {
 
   @Query("UPDATE pending_chat_ops SET retryCount = :retryCount, nextRetryAtMs = :nextRetryAtMs WHERE opId = :opId")
   suspend fun scheduleChatOpRetry(opId: String, retryCount: Int, nextRetryAtMs: Long)
+
+  @Query("UPDATE chat_messages SET conversationId = :newConvId WHERE conversationId = :oldConvId")
+  suspend fun migrateMessagesConversation(oldConvId: String, newConvId: String)
+
+  @Query("UPDATE pending_chat_ops SET conversationId = :newConvId WHERE conversationId = :oldConvId")
+  suspend fun migrateChatOpsConversation(oldConvId: String, newConvId: String)
 }
 

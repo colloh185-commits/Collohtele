@@ -193,6 +193,15 @@ func (s *Service) ServeWebSocket(w http.ResponseWriter, r *http.Request, userID,
 		TypingMode     string `json:"typing_mode"`
 		MessageID      string `json:"message_id"`
 		Status         string `json:"status"`
+		CallID         string `json:"call_id"`
+		SignalKind     string `json:"signal_kind"`
+		SignalPayload  string `json:"signal_payload"`
+		MediaB64       string `json:"media_b64"`
+		VideoWidth     int    `json:"video_width"`
+		VideoHeight    int    `json:"video_height"`
+		Muted          *bool  `json:"muted"`
+		CameraOn       *bool  `json:"camera_on"`
+		Seq            int64  `json:"seq"`
 	}
 
 	for {
@@ -222,6 +231,27 @@ func (s *Service) ServeWebSocket(w http.ResponseWriter, r *http.Request, userID,
 				s.HandleTypingSignal(userID, msg.ConversationID, msg.TypingMode)
 			case "receipt":
 				_, _ = s.UpdateMessageReceipt(userID, msg.MessageID, msg.Status)
+			case "call_accept":
+				_, _ = s.AcceptCall(userID, msg.CallID, CallActionPayload{AnswerSDP: msg.SignalPayload})
+			case "call_reject":
+				_, _ = s.RejectCall(userID, msg.CallID, CallActionPayload{Reason: msg.Status})
+			case "call_end":
+				_, _ = s.EndCall(userID, msg.CallID, CallActionPayload{Reason: msg.Status})
+			case "call_signal", "call_media":
+				kind := strings.TrimSpace(msg.SignalKind)
+				if kind == "" && strings.EqualFold(msg.Event, "call_media") {
+					kind = "audio_frame"
+				}
+				_ = s.RelayCallSignal(userID, msg.CallID, CallSignalPayload{
+					Kind:        kind,
+					Payload:     msg.SignalPayload,
+					MediaB64:    msg.MediaB64,
+					VideoWidth:  msg.VideoWidth,
+					VideoHeight: msg.VideoHeight,
+					Muted:       msg.Muted,
+					CameraOn:    msg.CameraOn,
+					Seq:         msg.Seq,
+				})
 			}
 		}
 	}

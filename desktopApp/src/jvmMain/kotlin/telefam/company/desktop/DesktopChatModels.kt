@@ -64,6 +64,9 @@ data class DesktopChatMessage(
   val forwardedFromUserId: String = "",
   val deliveryStatus: String = "sent", // sending | sent | delivered | seen
   val syncState: String = "synced", // pending | synced
+  val starGiftAmount: Long = 0L,
+  val starGiftTxId: String = "",
+  val starGiftVerified: Boolean = false,
   val editedAtMs: Long = 0L,
   val createdAtMs: Long = 0L,
 )
@@ -140,7 +143,36 @@ data class DesktopChatWsEvent(
   val isOnline: Boolean = false,
   val lastSeenMs: Long = 0L,
   val lastSeenLabel: String = "",
+  val starGiftAmount: Long = 0L,
+  val starBalanceAvailable: Long = 0L,
+  val starBalanceReceived: Long = 0L,
+  val callId: String = "",
+  val callType: String = "",
+  val callState: String = "",
+  val signalKind: String = "",
+  val signalPayload: String = "",
+  val mediaB64: String = "",
+  val videoWidth: Int = 0,
+  val videoHeight: Int = 0,
   val timestampMs: Long = 0L,
+)
+
+data class DesktopChatCallSession(
+  val callId: String,
+  val conversationId: String,
+  val peerUserId: String,
+  val peerName: String,
+  val peerAvatarUrl: String = "",
+  val callType: String = "audio", // audio | video
+  val state: String = "ringing", // ringing | connected | ended | declined | missed | busy
+  val isOutgoing: Boolean = true,
+  val isMuted: Boolean = false,
+  val isSpeakerOn: Boolean = false,
+  val isVideoEnabled: Boolean = false,
+  val durationSec: Long = 0L,
+  val remoteVideoBytes: ByteArray? = null,
+  val remoteVideoSeq: Long = 0L,
+  val statusLabel: String = "Ringing...",
 )
 
 data class DesktopPeerE2eeBundle(

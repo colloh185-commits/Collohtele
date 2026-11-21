@@ -65,6 +65,16 @@ object ChatSoundEffects {
     }
   }
 
+  fun playStarGiftChime(enabled: Boolean = true) {
+    if (!enabled) return
+    scope.launch {
+      val s1 = generateToneSamples(durationMs = 70, startHz = 783.99, endHz = 783.99, peak = 0.18, decay = 5.0, harmonicMix = 0.25)
+      val s2 = generateToneSamples(durationMs = 70, startHz = 987.77, endHz = 987.77, peak = 0.20, decay = 5.0, harmonicMix = 0.25)
+      val s3 = generateToneSamples(durationMs = 135, startHz = 1318.51, endHz = 1567.98, peak = 0.22, decay = 3.8, harmonicMix = 0.30)
+      playSamples(s1 + s2 + s3)
+    }
+  }
+
   private fun generateToneSamples(
     durationMs: Int,
     startHz: Double,

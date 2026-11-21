@@ -188,9 +188,22 @@ class SignalE2eeManager(
       kyberPub,
       kyberSig,
     )
-    SessionBuilder(store, addr).process(bundle)
+    try {
+      SessionBuilder(store, addr).process(bundle)
+    } catch (_: org.signal.libsignal.protocol.UntrustedIdentityException) {
+      store.saveIdentity(addr, remoteIdentity)
+      store.deleteSession(addr)
+      SessionBuilder(store, addr).process(bundle)
+    }
     sessionAddresses.add(addr)
     trustedIdentities[addressKey(addr)] = b64(remoteIdentity.serialize())
+  }
+
+  fun invalidatePeerSession(peerUserId: String, deviceId: Int = 1) = synchronized(lock) {
+    val addr = SignalProtocolAddress(peerUserId, deviceId)
+    runCatching { store.deleteSession(addr) }
+    sessionAddresses.remove(addr)
+    peerFallbackPubKeysB64.remove(peerUserId)
   }
 
   fun compressAndEncrypt(
@@ -419,6 +432,12 @@ class SignalE2eeManager(
       idArr.put(JSONObject().put("key", key).put("data", valB64))
     }
     root.put("identities", idArr)
+
+    val fallbackObj = JSONObject()
+    peerFallbackPubKeysB64.forEach { (peerUid, keyB64) ->
+      fallbackObj.put(peerUid, keyB64)
+    }
+    root.put("fallback_keys", fallbackObj)
     root.toString()
   }
 
@@ -478,6 +497,15 @@ class SignalE2eeManager(
           val addr = SignalProtocolAddress(obj.getString("name"), obj.optInt("device_id", 1))
           restored.storeSession(addr, SessionRecord(unb64(obj.getString("data"))))
           sessionAddresses.add(addr)
+        }
+      }
+      val fbObj = root.optJSONObject("fallback_keys")
+      if (fbObj != null) {
+        fbObj.keys().forEach { peerUid ->
+          val keyB64 = fbObj.optString(peerUid)
+          if (peerUid.isNotBlank() && keyB64.isNotBlank()) {
+            peerFallbackPubKeysB64[peerUid] = keyB64
+          }
         }
       }
       restored

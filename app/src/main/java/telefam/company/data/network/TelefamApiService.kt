@@ -987,6 +987,9 @@ data class ChatMessageDto(
   @Json(name = "view_once_opened_at_ms") val viewOnceOpenedAtMs: Long = 0L,
   @Json(name = "view_once_expires_at_ms") val viewOnceExpiresAtMs: Long = 0L,
   @Json(name = "forwarded_from_user_id") val forwardedFromUserId: String = "",
+  @Json(name = "star_gift_amount") val starGiftAmount: Long = 0L,
+  @Json(name = "star_gift_tx_id") val starGiftTxId: String = "",
+  @Json(name = "star_gift_verified") val starGiftVerified: Boolean = false,
   @Json(name = "delivery_status") val deliveryStatus: String = "sent",
   @Json(name = "edited_at_ms") val editedAtMs: Long = 0L,
   @Json(name = "created_at_ms") val createdAtMs: Long = 0L,
@@ -1050,6 +1053,58 @@ data class ChatReceiptRequestDto(
 data class BatchConversationActionRequestDto(
   @Json(name = "conversation_ids") val conversationIds: List<String>,
   val action: String,
+)
+
+@JsonClass(generateAdapter = true)
+data class ChatTypingRequestDto(
+  @Json(name = "typing_mode") val typingMode: String = "",
+)
+
+@JsonClass(generateAdapter = true)
+data class ChatCallSessionDto(
+  @Json(name = "call_id") val callId: String = "",
+  @Json(name = "conversation_id") val conversationId: String = "",
+  @Json(name = "caller_user_id") val callerUserId: String = "",
+  @Json(name = "callee_user_id") val calleeUserId: String = "",
+  @Json(name = "caller_name") val callerName: String = "",
+  @Json(name = "caller_avatar_url") val callerAvatarUrl: String = "",
+  @Json(name = "callee_name") val calleeName: String = "",
+  @Json(name = "callee_avatar_url") val calleeAvatarUrl: String = "",
+  @Json(name = "call_type") val callType: String = "audio",
+  val state: String = "ringing",
+  @Json(name = "end_reason") val endReason: String = "",
+  @Json(name = "started_at_ms") val startedAtMs: Long = 0L,
+  @Json(name = "connected_at_ms") val connectedAtMs: Long = 0L,
+  @Json(name = "ended_at_ms") val endedAtMs: Long = 0L,
+  @Json(name = "updated_at_ms") val updatedAtMs: Long = 0L,
+)
+
+@JsonClass(generateAdapter = true)
+data class ChatCallResponseDto(
+  val success: Boolean = false,
+  val call: ChatCallSessionDto? = null,
+  @Json(name = "error_message") val errorMessage: String = "",
+)
+
+@JsonClass(generateAdapter = true)
+data class StartChatCallRequestDto(
+  @Json(name = "peer_user_id") val peerUserId: String,
+  @Json(name = "conversation_id") val conversationId: String = "",
+  @Json(name = "call_type") val callType: String = "audio",
+)
+
+@JsonClass(generateAdapter = true)
+data class CallActionRequestDto(
+  val reason: String = "",
+)
+
+@JsonClass(generateAdapter = true)
+data class CallSignalRequestDto(
+  @Json(name = "signal_kind") val signalKind: String,
+  @Json(name = "signal_payload") val signalPayload: String = "",
+  @Json(name = "media_b64") val mediaB64: String = "",
+  @Json(name = "video_width") val videoWidth: Int = 0,
+  @Json(name = "video_height") val videoHeight: Int = 0,
 )
 
 @JsonClass(generateAdapter = true)
@@ -1136,6 +1191,160 @@ data class ChatGlobalSearchResponseDto(
   val success: Boolean = false,
   val conversations: List<ChatConversationDto> = emptyList(),
   val people: List<ChatSearchPersonDto> = emptyList(),
+)
+
+@JsonClass(generateAdapter = true)
+data class StarPackageDto(
+  @Json(name = "star_amount") val starAmount: Long = 0L,
+  @Json(name = "is_popular") val isPopular: Boolean = false,
+  @Json(name = "local_currency") val localCurrency: String = "USD",
+  @Json(name = "currency_symbol") val currencySymbol: String = "$",
+  @Json(name = "local_minor_unit") val localMinorUnit: Long = 0L,
+  @Json(name = "local_decimals") val localDecimals: Int = 2,
+  @Json(name = "local_display") val localDisplay: String = "",
+)
+
+@JsonClass(generateAdapter = true)
+data class StarWalletDto(
+  @Json(name = "user_id") val userId: String = "",
+  @Json(name = "available_balance") val availableBalance: Long = 0L,
+  @Json(name = "total_received") val totalReceived: Long = 0L,
+  @Json(name = "total_sent") val totalSent: Long = 0L,
+  @Json(name = "total_purchased") val totalPurchased: Long = 0L,
+  @Json(name = "updated_at_ms") val updatedAtMs: Long = 0L,
+)
+
+@JsonClass(generateAdapter = true)
+data class StarSenderSummaryDto(
+  @Json(name = "sender_user_id") val senderUserId: String = "",
+  @Json(name = "sender_name") val senderName: String = "",
+  @Json(name = "sender_username") val senderUsername: String = "",
+  @Json(name = "sender_avatar") val senderAvatar: String = "",
+  @Json(name = "total_stars") val totalStars: Long = 0L,
+  @Json(name = "gifts_count") val giftsCount: Int = 0,
+  @Json(name = "last_gifted_at_ms") val lastGiftedAtMs: Long = 0L,
+)
+
+@JsonClass(generateAdapter = true)
+data class StarTransactionDto(
+  @Json(name = "tx_id") val txId: String = "",
+  @Json(name = "tx_type") val txType: String = "",
+  val direction: String = "",
+  @Json(name = "sender_user_id") val senderUserId: String = "",
+  @Json(name = "sender_name") val senderName: String = "",
+  @Json(name = "sender_username") val senderUsername: String = "",
+  @Json(name = "sender_avatar") val senderAvatar: String = "",
+  @Json(name = "recipient_user_id") val recipientUserId: String = "",
+  @Json(name = "recipient_name") val recipientName: String = "",
+  @Json(name = "conversation_id") val conversationId: String = "",
+  @Json(name = "message_id") val messageId: String = "",
+  @Json(name = "star_amount") val starAmount: Long = 0L,
+  val currency: String = "",
+  @Json(name = "amount_minor") val amountMinor: Long = 0L,
+  val provider: String = "",
+  val status: String = "",
+  @Json(name = "created_at_ms") val createdAtMs: Long = 0L,
+)
+
+@JsonClass(generateAdapter = true)
+data class StarPaymentIntentDto(
+  @Json(name = "intent_id") val intentId: String = "",
+  @Json(name = "idempotency_key") val idempotencyKey: String = "",
+  val provider: String = "",
+  @Json(name = "provider_reference") val providerReference: String = "",
+  @Json(name = "star_amount") val starAmount: Long = 0L,
+  val currency: String = "USD",
+  @Json(name = "expected_amount_minor") val expectedAmountMinor: Long = 0L,
+  @Json(name = "verified_amount_minor") val verifiedAmountMinor: Long = 0L,
+  @Json(name = "amount_display") val amountDisplay: String = "",
+  @Json(name = "checkout_url") val checkoutUrl: String = "",
+  val status: String = "pending",
+  val credited: Boolean = false,
+  @Json(name = "signature_verified") val signatureVerified: Boolean = false,
+  @Json(name = "created_at_ms") val createdAtMs: Long = 0L,
+  @Json(name = "completed_at_ms") val completedAtMs: Long = 0L,
+)
+
+@JsonClass(generateAdapter = true)
+data class StarRateLimitStatusDto(
+  @Json(name = "hourly_sent_stars") val hourlySentStars: Long = 0L,
+  @Json(name = "hourly_sent_limit") val hourlySentLimit: Long = 100_000L,
+  @Json(name = "daily_sent_stars") val dailySentStars: Long = 0L,
+  @Json(name = "daily_sent_limit") val dailySentLimit: Long = 250_000L,
+  @Json(name = "daily_purchased_stars") val dailyPurchasedStars: Long = 0L,
+  @Json(name = "daily_purchased_limit") val dailyPurchasedLimit: Long = 300_000L,
+)
+
+@JsonClass(generateAdapter = true)
+data class StarSummaryResponseDto(
+  val success: Boolean = false,
+  @Json(name = "country_iso") val countryIso: String = "US",
+  val currency: String = "USD",
+  @Json(name = "currency_symbol") val currencySymbol: String = "$",
+  val wallet: StarWalletDto = StarWalletDto(),
+  val packages: List<StarPackageDto> = emptyList(),
+  val senders: List<StarSenderSummaryDto> = emptyList(),
+  val transactions: List<StarTransactionDto> = emptyList(),
+  @Json(name = "pending_intents") val pendingIntents: List<StarPaymentIntentDto> = emptyList(),
+  @Json(name = "rate_limit_status") val rateLimitStatus: StarRateLimitStatusDto = StarRateLimitStatusDto(),
+  @Json(name = "server_epoch_ms") val serverEpochMs: Long = 0L,
+)
+
+@JsonClass(generateAdapter = true)
+data class CreateStarCheckoutRequestDto(
+  @Json(name = "idempotency_key") val idempotencyKey: String,
+  @Json(name = "star_amount") val starAmount: Long,
+  val provider: String,
+  @Json(name = "country_iso") val countryIso: String,
+  @Json(name = "return_url") val returnUrl: String = "telefam://stars/callback?status=success",
+  @Json(name = "cancel_url") val cancelUrl: String = "telefam://stars/callback?status=cancelled",
+)
+
+@JsonClass(generateAdapter = true)
+data class CreateStarCheckoutResponseDto(
+  val success: Boolean = false,
+  val replayed: Boolean = false,
+  val intent: StarPaymentIntentDto = StarPaymentIntentDto(),
+  val wallet: StarWalletDto = StarWalletDto(),
+  @Json(name = "server_epoch_ms") val serverEpochMs: Long = 0L,
+)
+
+@JsonClass(generateAdapter = true)
+data class VerifyStarPaymentRequestDto(
+  @Json(name = "idempotency_key") val idempotencyKey: String = "",
+  @Json(name = "provider_reference") val providerReference: String = "",
+)
+
+@JsonClass(generateAdapter = true)
+data class VerifyStarPaymentResponseDto(
+  val success: Boolean = false,
+  val intent: StarPaymentIntentDto = StarPaymentIntentDto(),
+  val wallet: StarWalletDto = StarWalletDto(),
+  @Json(name = "server_epoch_ms") val serverEpochMs: Long = 0L,
+)
+
+@JsonClass(generateAdapter = true)
+data class SendStarGiftRequestDto(
+  @Json(name = "idempotency_key") val idempotencyKey: String,
+  @Json(name = "recipient_user_id") val recipientUserId: String,
+  @Json(name = "conversation_id") val conversationId: String = "",
+  @Json(name = "star_amount") val starAmount: Long,
+  @Json(name = "ciphertext_b64") val ciphertextB64: String = "",
+  @Json(name = "sender_ciphertext_b64") val senderCiphertextB64: String = "",
+)
+
+@JsonClass(generateAdapter = true)
+data class SendStarGiftResponseDto(
+  val success: Boolean = false,
+  val replayed: Boolean = false,
+  @Json(name = "insufficient_balance") val insufficientBalance: Boolean = false,
+  @Json(name = "required_star_amount") val requiredStarAmount: Long = 0L,
+  @Json(name = "available_balance") val availableBalance: Long = 0L,
+  val wallet: StarWalletDto = StarWalletDto(),
+  val transaction: StarTransactionDto? = null,
+  val message: ChatMessageDto? = null,
+  val conversation: ChatConversationDto? = null,
+  @Json(name = "server_epoch_ms") val serverEpochMs: Long = 0L,
 )
 
 interface TelefamApiService {
@@ -1731,6 +1940,89 @@ interface TelefamApiService {
     @Header("X-Telefam-Device-FP") deviceFingerprint: String,
     @Query("q") query: String = "",
   ): Response<ChatGlobalSearchResponseDto>
+
+  @POST("v1/chat/conversations/{id}/typing")
+  suspend fun sendChatTyping(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Path("id") conversationId: String,
+    @Body body: ChatTypingRequestDto,
+  ): Response<GenericSuccessDto>
+
+  @POST("v1/chat/calls/start")
+  suspend fun startChatCall(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Body body: StartChatCallRequestDto,
+  ): Response<ChatCallResponseDto>
+
+  @POST("v1/chat/calls/{callId}/accept")
+  suspend fun acceptChatCall(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Path("callId") callId: String,
+  ): Response<ChatCallResponseDto>
+
+  @POST("v1/chat/calls/{callId}/reject")
+  suspend fun rejectChatCall(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Path("callId") callId: String,
+    @Body body: CallActionRequestDto = CallActionRequestDto("declined"),
+  ): Response<ChatCallResponseDto>
+
+  @POST("v1/chat/calls/{callId}/end")
+  suspend fun endChatCall(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Path("callId") callId: String,
+    @Body body: CallActionRequestDto = CallActionRequestDto("ended"),
+  ): Response<ChatCallResponseDto>
+
+  @POST("v1/chat/calls/{callId}/signal")
+  suspend fun relayChatCallSignal(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Path("callId") callId: String,
+    @Body body: CallSignalRequestDto,
+  ): Response<GenericSuccessDto>
+
+  @GET("v1/chat/calls/active")
+  suspend fun getActiveChatCall(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+  ): Response<ChatCallResponseDto>
+
+  @GET("v1/stars/summary")
+  suspend fun getStarsSummary(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Query("country") country: String = "",
+  ): Response<StarSummaryResponseDto>
+
+  @POST("v1/stars/checkout")
+  suspend fun createStarCheckout(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Header("Idempotency-Key") idempotencyKey: String,
+    @Body body: CreateStarCheckoutRequestDto,
+  ): Response<CreateStarCheckoutResponseDto>
+
+  @POST("v1/stars/payments/verify")
+  suspend fun verifyStarPayment(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Header("Idempotency-Key") idempotencyKey: String,
+    @Body body: VerifyStarPaymentRequestDto,
+  ): Response<VerifyStarPaymentResponseDto>
+
+  @POST("v1/stars/send")
+  suspend fun sendStars(
+    @Header("Authorization") bearer: String,
+    @Header("X-Telefam-Device-FP") deviceFingerprint: String,
+    @Header("Idempotency-Key") idempotencyKey: String,
+    @Body body: SendStarGiftRequestDto,
+  ): Response<SendStarGiftResponseDto>
 
   @GET
   suspend fun downloadMedia(@Url url: String): Response<ResponseBody>

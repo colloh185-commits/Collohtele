@@ -460,6 +460,9 @@ data class ChatMessageEntity(
   val editedAtMs: Long,
   val isPendingUnsend: Boolean,
   val createdAtMs: Long,
+  val starGiftAmount: Long = 0L,
+  val starGiftTxId: String = "",
+  val starGiftVerified: Boolean = false,
 )
 
 @Entity(

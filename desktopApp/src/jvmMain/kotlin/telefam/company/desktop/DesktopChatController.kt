@@ -27,6 +27,7 @@ class DesktopChatController(
   private var localStore: DesktopChatLocalStore? = null
   private var maintenanceJob: Job? = null
   private var viewOnceBurnJob: Job? = null
+  var onStarWsEvent: ((DesktopChatWsEvent) -> Unit)? = null
 
   private val _conversations = MutableStateFlow<List<DesktopChatConversation>>(emptyList())
   val conversations: StateFlow<List<DesktopChatConversation>> = _conversations.asStateFlow()
@@ -839,14 +840,20 @@ class DesktopChatController(
     val lastSender = DesktopJson.str(m, "last_sender_id")
     val lastCipher = DesktopJson.str(m, "last_ciphertext_b64")
     val lastSelfCipher = DesktopJson.str(m, "last_sender_ciphertext_b64")
-    val plain = e2ee?.decryptAndDecompress(lastSender == ownerUid, lastCipher, lastSelfCipher, "zlib")
-      ?: when (DesktopJson.str(m, "last_message_type")) {
-        "voice", "voice_once" -> "Voice message"
-        "sticker" -> "Sticker"
-        "gif" -> "GIF"
-        "clip" -> "Clip"
-        else -> ""
-      }
+    val lastMsgType = DesktopJson.str(m, "last_message_type")
+    val rawStarAmt = DesktopJson.long(m, "last_star_gift_amount", 0L)
+    val plain = if (lastMsgType == "star_gift") {
+      if (rawStarAmt > 0L) "${DesktopStarsCatalog.formatComma(rawStarAmt)} Stars" else "Sent Stars"
+    } else {
+      e2ee?.decryptAndDecompress(lastSender == ownerUid, lastCipher, lastSelfCipher, "zlib")
+        ?: when (lastMsgType) {
+          "voice", "voice_once" -> "Voice message"
+          "sticker" -> "Sticker"
+          "gif" -> "GIF"
+          "clip" -> "Clip"
+          else -> ""
+        }
+    }
     return DesktopChatConversation(
       conversationId = convId,
       peerUserId = DesktopJson.str(m, "peer_user_id"),
@@ -876,15 +883,21 @@ class DesktopChatController(
     val cipher = DesktopJson.str(m, "ciphertext_b64")
     val selfCipher = DesktopJson.str(m, "sender_ciphertext_b64")
     val codec = DesktopJson.str(m, "compression_codec").ifBlank { "zlib" }
-    val decoded = e2ee?.decryptAndDecompress(senderId == ownerUid, cipher, selfCipher, codec)
-      ?: fallbackPlain.ifBlank { "[Encrypted message]" }
+    val msgType = DesktopJson.str(m, "message_type").ifBlank { "text" }
+    val starAmt = DesktopJson.long(m, "star_gift_amount", 0L)
+    val decoded = if (msgType == "star_gift") {
+      if (starAmt > 0L) "${DesktopStarsCatalog.formatComma(starAmt)} Stars" else "Stars Gift"
+    } else {
+      e2ee?.decryptAndDecompress(senderId == ownerUid, cipher, selfCipher, codec)
+        ?: fallbackPlain.ifBlank { "[Encrypted message]" }
+    }
     return DesktopChatMessage(
       messageId = DesktopJson.str(m, "message_id"),
       conversationId = DesktopJson.str(m, "conversation_id"),
       senderUserId = senderId,
       recipientUserId = DesktopJson.str(m, "recipient_user_id"),
       clientOpId = DesktopJson.str(m, "client_op_id"),
-      messageType = DesktopJson.str(m, "message_type").ifBlank { "text" },
+      messageType = msgType,
       compressionCodec = codec,
       encryptionScheme = DesktopJson.str(m, "encryption_scheme").ifBlank { "telefam_ecdh_v1" },
       ciphertextB64 = cipher,
@@ -901,6 +914,9 @@ class DesktopChatController(
       forwardedFromUserId = DesktopJson.str(m, "forwarded_from_user_id"),
       deliveryStatus = DesktopJson.str(m, "delivery_status").ifBlank { "sent" },
       syncState = "synced",
+      starGiftAmount = starAmt,
+      starGiftTxId = DesktopJson.str(m, "star_gift_tx_id"),
+      starGiftVerified = DesktopJson.bool(m, "star_gift_verified"),
       editedAtMs = DesktopJson.long(m, "edited_at_ms", 0L),
       createdAtMs = DesktopJson.long(m, "created_at_ms", 0L),
     )
@@ -953,6 +969,15 @@ class DesktopChatController(
         }
       }
       "new_message", "message_new", "message_edited", "conversation_updated" -> {
+        if (ev.starGiftAmount > 0L) onStarWsEvent?.invoke(ev)
+        if (ev.conversationId.isNotBlank()) syncConversationMessages(ev.conversationId)
+        refreshConversations(false)
+      }
+      "star_balance_updated" -> {
+        onStarWsEvent?.invoke(ev)
+      }
+      "star_gift_received" -> {
+        onStarWsEvent?.invoke(ev)
         if (ev.conversationId.isNotBlank()) syncConversationMessages(ev.conversationId)
         refreshConversations(false)
       }
@@ -1067,6 +1092,7 @@ class DesktopChatController(
   }
 
   private fun previewTextFor(msg: DesktopChatMessage): String = when (msg.messageType) {
+    "star_gift" -> if (msg.starGiftAmount > 0L) "${DesktopStarsCatalog.formatComma(msg.starGiftAmount)} Stars" else "Sent Stars"
     "sticker" -> "Sticker"
     "gif" -> "GIF"
     "clip" -> "Clip"

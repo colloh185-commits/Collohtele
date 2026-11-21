@@ -57,6 +57,7 @@ data class TelefamChatUiState(
   val isSearchingHomeChats: Boolean = false,
   val sharedMediaTab: String? = null,
   val toastMessage: String? = null,
+  val activeCall: ActiveChatCallUiState? = null,
 ) {
   val activeConversation: ChatConversationEntity?
     get() = activeConversationId?.let { id -> conversations.firstOrNull { it.conversationId == id } }

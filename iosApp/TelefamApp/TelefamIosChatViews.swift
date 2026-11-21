@@ -417,6 +417,7 @@ struct TelefamIosChatsHostView: View {
     let onOpenUserProfile: (String) -> Void
     let onOpenPrivacy: () -> Void
     let onBrowseContacts: () -> Void
+    var onOpenSendStars: (TelefamIosChatConversation) -> Void = { _ in }
 
     @State private var selectedConvIds: Set<String> = []
     @State private var showArchivedSheet: Bool = false
@@ -448,7 +449,8 @@ struct TelefamIosChatsHostView: View {
                             safeBottomInset: safeBottomInset,
                             onBack: { chatStore.closeConversation() },
                             onOpenProfile: { onOpenUserProfile(conv.peerUserId) },
-                            onOpenPrivacy: onOpenPrivacy
+                            onOpenPrivacy: onOpenPrivacy,
+                            onOpenSendStars: { onOpenSendStars(conv) }
                         )
                         .transition(.move(edge: .trailing))
                         .zIndex(5)
@@ -472,7 +474,8 @@ struct TelefamIosChatsHostView: View {
                             safeBottomInset: 0,
                             onBack: { chatStore.closeConversation() },
                             onOpenProfile: { onOpenUserProfile(conv.peerUserId) },
-                            onOpenPrivacy: onOpenPrivacy
+                            onOpenPrivacy: onOpenPrivacy,
+                            onOpenSendStars: { onOpenSendStars(conv) }
                         )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {
@@ -962,6 +965,7 @@ struct TelefamIosOneOnOneChatView: View {
     let onBack: () -> Void
     let onOpenProfile: () -> Void
     let onOpenPrivacy: () -> Void
+    var onOpenSendStars: () -> Void = {}
 
     @State private var draftText: String = ""
     @State private var editingMsg: TelefamIosChatMessage? = nil
@@ -1439,7 +1443,7 @@ struct TelefamIosOneOnOneChatView: View {
 
                         if !hasText {
                             Button {
-                                chatStore.showToast("Gifts — Coming soon")
+                                if !isBlocked { onOpenSendStars() }
                             } label: {
                                 ChatSvgIcon(kind: .gift, color: TelefamPalette.textMuted(colorScheme), size: 20)
                                     .frame(width: 38, height: 40)
@@ -1615,7 +1619,16 @@ private struct MessageBubbleRow: View {
             if isOwn { Spacer(minLength: 48) }
 
             ZStack {
-                if msg.messageType == "sticker" || msg.messageType == "gif" || msg.messageType == "clip" {
+                if msg.messageType == "star_gift" {
+                    TelefamIosStarGiftBubble(
+                        msg: msg,
+                        isOwn: isOwn,
+                        peerAvatarUrl: peerAvatarUrl,
+                        peerName: peerName,
+                        showReadReceipts: permissions.showReadReceipts,
+                        chatStore: chatStore
+                    )
+                } else if msg.messageType == "sticker" || msg.messageType == "gif" || msg.messageType == "clip" {
                     mediaMessageContent
                 } else {
                     bubbleMessageContent
@@ -1636,7 +1649,7 @@ private struct MessageBubbleRow: View {
                         Label("Copy", systemImage: "doc.on.doc")
                     }
                 }
-                if permissions.canShareChats && msg.messageType != "voice_once" {
+                if permissions.canShareChats && msg.messageType != "voice_once" && msg.messageType != "star_gift" {
                     Button {
                         onForward()
                     } label: {
@@ -1650,7 +1663,7 @@ private struct MessageBubbleRow: View {
                         Label("Edit", systemImage: "pencil")
                     }
                 }
-                if isOwn {
+                if isOwn && msg.messageType != "star_gift" {
                     Button(role: .destructive) {
                         onUnsend()
                     } label: {
@@ -1825,7 +1838,7 @@ private struct MessageBubbleRow: View {
     }
 }
 
-private struct DeliveryTickBadge: View {
+struct DeliveryTickBadge: View {
     let status: String
     let peerAvatarUrl: String
     let peerName: String
@@ -2084,7 +2097,7 @@ private struct SharedMediaVaultSheet: View {
     }
 }
 
-private func formatCompactChatTime(_ epochMs: Int64) -> String {
+func formatCompactChatTime(_ epochMs: Int64) -> String {
     guard epochMs > 0 else { return "" }
     let d = Date(timeIntervalSince1970: Double(epochMs) / 1000.0)
     let f = DateFormatter()

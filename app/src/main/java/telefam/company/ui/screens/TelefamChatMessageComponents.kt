@@ -352,6 +352,26 @@ fun ChatMessageRowItem(
           }
         }
 
+        "star_gift" -> {
+          Box(
+            modifier = Modifier.combinedClickable(
+              onClick = {},
+              onLongClick = { showMenu = true },
+            ),
+          ) {
+            TelefamStarGiftBubble(
+              starAmount = msg.starGiftAmount.coerceAtLeast(1L),
+              verified = msg.starGiftVerified,
+              isOwn = isOwn,
+              peerName = peerName,
+              peerAvatarUrl = peerAvatarUrl,
+              deliveryStatus = msg.deliveryStatus,
+              timeLabel = timeLabel,
+              isDark = isDark,
+            )
+          }
+        }
+
         else -> {
           val incomingBg = if (isDark) Color(0xFF21242B).copy(alpha = 0.94f) else TelefamPureWhite.copy(alpha = 0.96f)
           val textColor = if (isOwn) TelefamPureWhite else if (isDark) Color(0xFFF3F4F6) else Color(0xFF16181F)
@@ -476,7 +496,7 @@ fun ChatMessageRowItem(
             modifier = Modifier.testTag("msg_action_edit"),
           )
         }
-        if (isOwn) {
+        if (isOwn && msg.messageType != "star_gift") {
           DropdownMenuItem(
             text = { Text(stringResource(R.string.chat_action_unsend), color = TelefamCrimson) },
             leadingIcon = { Icon(Icons.Filled.AutoAwesome, contentDescription = null, tint = TelefamCrimson, modifier = Modifier.size(18.dp)) },

@@ -25,6 +25,7 @@ import (
 	"telefam.company/backend/internal/posts"
 	"telefam.company/backend/internal/ratelimit"
 	"telefam.company/backend/internal/security"
+	"telefam.company/backend/internal/stars"
 )
 
 type RequestOtpPayload struct {
@@ -196,6 +197,7 @@ type Handler struct {
 	posts               *posts.Service
 	feeds               *feeds.Engine
 	chat                *chat.Service
+	stars               *stars.Service
 	mu                  sync.Mutex
 	profiles            map[string]storedProfile
 	usernames           map[string]string
@@ -328,7 +330,21 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/chat/stickers/greeting", h.handleGiflyGreetingSticker)
 	mux.HandleFunc("GET /v1/chat/stickers/search", h.handleGiflySearch)
 	mux.HandleFunc("GET /v1/chat/search", h.handleChatGlobalSearch)
+	mux.HandleFunc("POST /v1/chat/conversations/{id}/typing", h.handleChatTyping)
+	mux.HandleFunc("POST /v1/chat/calls/start", h.handleStartChatCall)
+	mux.HandleFunc("POST /v1/chat/calls/{callId}/accept", h.handleAcceptChatCall)
+	mux.HandleFunc("POST /v1/chat/calls/{callId}/reject", h.handleRejectChatCall)
+	mux.HandleFunc("POST /v1/chat/calls/{callId}/end", h.handleEndChatCall)
+	mux.HandleFunc("POST /v1/chat/calls/{callId}/signal", h.handleRelayChatCallSignal)
+	mux.HandleFunc("GET /v1/chat/calls/active", h.handleGetActiveChatCall)
 	mux.HandleFunc("GET /v1/chat/ws", h.handleChatWebSocket)
+	mux.HandleFunc("GET /v1/stars/summary", h.handleGetStarsSummary)
+	mux.HandleFunc("POST /v1/stars/checkout", h.handleCreateStarCheckout)
+	mux.HandleFunc("POST /v1/stars/payments/verify", h.handleVerifyStarPayment)
+	mux.HandleFunc("POST /v1/stars/send", h.handleSendStars)
+	mux.HandleFunc("GET /v1/stars/callback", h.handleStarsCallbackPage)
+	mux.HandleFunc("POST /v1/webhooks/paystack", h.handlePaystackWebhook)
+	mux.HandleFunc("POST /v1/webhooks/paypal", h.handlePayPalWebhook)
 	mux.HandleFunc("PUT /v1/settings/notifications", h.handleUpdateNotificationSettings)
 	mux.HandleFunc("PUT /v1/settings/content-preferences", h.handleUpdateContentPreferences)
 	mux.HandleFunc("GET /v1/settings/sync", h.handleGetSyncSettings)

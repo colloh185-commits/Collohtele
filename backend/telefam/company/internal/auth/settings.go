@@ -294,6 +294,7 @@ func (h *Handler) handleUpdatePrivacySettings(w http.ResponseWriter, r *http.Req
 		cleaned.DataSharingPersonalization && cleaned.PersonalizationCookies,
 		false,
 	)
+	h.ensureChatService().NotifyPrivacyChanged(claims.UserID)
 	h.audit.Record(claims.UserID, "privacy_settings_updated", deviceFP, ipFP, map[string]string{
 		"is_private_account": fmt.Sprintf("%t", cleaned.IsPrivateAccount),
 	})

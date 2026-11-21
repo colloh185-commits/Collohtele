@@ -485,7 +485,19 @@ fun DesktopChatMessageBubble(
           }
         }
 
-      if (isStickerOrMedia) {
+      if (msg.messageType == "star_gift") {
+        DesktopStarGiftBubble(
+          starAmount = msg.starGiftAmount.coerceAtLeast(5L),
+          isOwn = isOwn,
+          isVerified = msg.starGiftVerified,
+          isDark = isDark,
+          deliveryStatus = msg.deliveryStatus,
+          peerAvatarUrl = peerAvatarUrl,
+          formattedTime = formattedTime,
+          apiClient = apiClient,
+          modifier = clickModifier,
+        )
+      } else if (isStickerOrMedia) {
         Column(
           modifier = clickModifier.padding(4.dp),
           horizontalAlignment = if (isOwn) Alignment.End else Alignment.Start,
@@ -640,7 +652,7 @@ fun DesktopChatMessageBubble(
             },
           )
         }
-        if (canForward && msg.messageType != "voice_once") {
+        if (canForward && msg.messageType != "voice_once" && msg.messageType != "star_gift") {
           DropdownMenuItem(
             text = { Text("Forward") },
             leadingIcon = { DesktopChatVectorIcon(DesktopChatSvg.FORWARD, MaterialTheme.colorScheme.onSurface, 16.dp) },
@@ -660,7 +672,7 @@ fun DesktopChatMessageBubble(
             },
           )
         }
-        if (isOwn) {
+        if (isOwn && msg.messageType != "star_gift") {
           DropdownMenuItem(
             text = { Text("Unsend", color = DesktopCrimson) },
             leadingIcon = { DesktopChatVectorIcon(DesktopChatSvg.TRASH, DesktopCrimson, 16.dp) },

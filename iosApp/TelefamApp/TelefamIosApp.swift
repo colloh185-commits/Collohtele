@@ -67,6 +67,10 @@ struct TelefamIosApp: App {
                 }
             }
             .onOpenURL { incomingURL in
+                if incomingURL.scheme?.lowercased() == "telefam" && incomingURL.host?.lowercased() == "stars" {
+                    NotificationCenter.default.post(name: .telefamStarsCheckoutCallback, object: incomingURL)
+                    return
+                }
                 guard let comps = URLComponents(url: incomingURL, resolvingAgainstBaseURL: false),
                       let token = comps.queryItems?.first(where: { $0.name == "token" })?.value,
                       !token.isEmpty else {

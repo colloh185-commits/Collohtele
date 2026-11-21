@@ -10,6 +10,9 @@ import telefam.company.data.network.AppVersionResponseDto
 import telefam.company.data.network.AuditEventDto
 import telefam.company.data.network.AuthSessionResponseDto
 import telefam.company.data.network.BatchConversationActionRequestDto
+import telefam.company.data.network.CallActionRequestDto
+import telefam.company.data.network.CallSignalRequestDto
+import telefam.company.data.network.ChatCallResponseDto
 import telefam.company.data.network.ChatConversationsResponseDto
 import telefam.company.data.network.ChatGlobalSearchResponseDto
 import telefam.company.data.network.ChatMessageSingleResponseDto
@@ -17,12 +20,15 @@ import telefam.company.data.network.ChatMessagesListResponseDto
 import telefam.company.data.network.ChatPrivacyResponseDto
 import telefam.company.data.network.ChatPrivacySettingsDto
 import telefam.company.data.network.ChatReceiptRequestDto
+import telefam.company.data.network.ChatTypingRequestDto
 import telefam.company.data.network.ContactActionDto
 import telefam.company.data.network.ContactSyncBatchRequestDto
 import telefam.company.data.network.ContactsPageResponseDto
 import telefam.company.data.network.ContentPreferencesDto
 import telefam.company.data.network.CreatePostRequestDto
 import telefam.company.data.network.CreatePostResponseDto
+import telefam.company.data.network.CreateStarCheckoutRequestDto
+import telefam.company.data.network.CreateStarCheckoutResponseDto
 import telefam.company.data.network.DeviceContextTelemetryDto
 import telefam.company.data.network.DeviceContextTelemetryResponseDto
 import telefam.company.data.network.E2eeKeyBundleResponseDto
@@ -69,8 +75,12 @@ import telefam.company.data.network.RestrictedAccountsResponseDto
 import telefam.company.data.network.SecurityFlagResponseDto
 import telefam.company.data.network.SecurityFlagsListResponseDto
 import telefam.company.data.network.SendChatMessageRequestDto
+import telefam.company.data.network.SendStarGiftRequestDto
+import telefam.company.data.network.SendStarGiftResponseDto
 import telefam.company.data.network.SettingsBundleResponseDto
 import telefam.company.data.network.SongsSearchResponseDto
+import telefam.company.data.network.StarSummaryResponseDto
+import telefam.company.data.network.StartChatCallRequestDto
 import telefam.company.data.network.SupportTicketsResponseDto
 import telefam.company.data.network.SyncBatchRequestDto
 import telefam.company.data.network.SyncBatchResponseDto
@@ -89,6 +99,8 @@ import telefam.company.data.network.UserReportResponseDto
 import telefam.company.data.network.UsernameCheckResponseDto
 import telefam.company.data.network.VerifyLinkDto
 import telefam.company.data.network.VerifyOtpDto
+import telefam.company.data.network.VerifyStarPaymentRequestDto
+import telefam.company.data.network.VerifyStarPaymentResponseDto
 import telefam.company.data.network.ViewOnceOpenResponseDto
 import telefam.company.data.network.VoiceMediaUploadResponseDto
 
@@ -604,4 +616,76 @@ abstract class AbstractTestChatApiStub : TelefamApiService {
     deviceFingerprint: String,
     query: String,
   ): Response<ChatGlobalSearchResponseDto> = Response.success(ChatGlobalSearchResponseDto(success = true))
+
+  override suspend fun getStarsSummary(
+    bearer: String,
+    deviceFingerprint: String,
+    country: String,
+  ): Response<StarSummaryResponseDto> = Response.success(StarSummaryResponseDto(success = true))
+
+  override suspend fun createStarCheckout(
+    bearer: String,
+    deviceFingerprint: String,
+    idempotencyKey: String,
+    body: CreateStarCheckoutRequestDto,
+  ): Response<CreateStarCheckoutResponseDto> = Response.success(CreateStarCheckoutResponseDto(success = true))
+
+  override suspend fun verifyStarPayment(
+    bearer: String,
+    deviceFingerprint: String,
+    idempotencyKey: String,
+    body: VerifyStarPaymentRequestDto,
+  ): Response<VerifyStarPaymentResponseDto> = Response.success(VerifyStarPaymentResponseDto(success = true))
+
+  override suspend fun sendStars(
+    bearer: String,
+    deviceFingerprint: String,
+    idempotencyKey: String,
+    body: SendStarGiftRequestDto,
+  ): Response<SendStarGiftResponseDto> = Response.success(SendStarGiftResponseDto(success = true))
+
+  override suspend fun sendChatTyping(
+    bearer: String,
+    deviceFingerprint: String,
+    conversationId: String,
+    body: ChatTypingRequestDto,
+  ): Response<GenericSuccessDto> = Response.success(GenericSuccessDto(success = true))
+
+  override suspend fun startChatCall(
+    bearer: String,
+    deviceFingerprint: String,
+    body: StartChatCallRequestDto,
+  ): Response<ChatCallResponseDto> = Response.success(ChatCallResponseDto(success = true))
+
+  override suspend fun acceptChatCall(
+    bearer: String,
+    deviceFingerprint: String,
+    callId: String,
+  ): Response<ChatCallResponseDto> = Response.success(ChatCallResponseDto(success = true))
+
+  override suspend fun rejectChatCall(
+    bearer: String,
+    deviceFingerprint: String,
+    callId: String,
+    body: CallActionRequestDto,
+  ): Response<ChatCallResponseDto> = Response.success(ChatCallResponseDto(success = true))
+
+  override suspend fun endChatCall(
+    bearer: String,
+    deviceFingerprint: String,
+    callId: String,
+    body: CallActionRequestDto,
+  ): Response<ChatCallResponseDto> = Response.success(ChatCallResponseDto(success = true))
+
+  override suspend fun relayChatCallSignal(
+    bearer: String,
+    deviceFingerprint: String,
+    callId: String,
+    body: CallSignalRequestDto,
+  ): Response<GenericSuccessDto> = Response.success(GenericSuccessDto(success = true))
+
+  override suspend fun getActiveChatCall(
+    bearer: String,
+    deviceFingerprint: String,
+  ): Response<ChatCallResponseDto> = Response.success(ChatCallResponseDto(success = true))
 }

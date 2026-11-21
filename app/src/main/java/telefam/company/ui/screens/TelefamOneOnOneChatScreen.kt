@@ -147,9 +147,12 @@ fun TelefamOneOnOneChatScreen(
   onBlockPeer: () -> Unit,
   onReportPeer: (String, String) -> Unit,
   onOpenSharedMediaTab: (String?) -> Unit,
+  onOpenSendStars: () -> Unit,
   onTriggerComingSoon: (String, String) -> Unit,
   onDismissToast: () -> Unit,
   showEmbeddedSplitHeader: Boolean = false,
+  onStartAudioCall: () -> Unit = {},
+  onStartVideoCall: () -> Unit = {},
 ) {
   val context = LocalContext.current
   val isDark = LocalTelefamDarkTheme.current
@@ -174,6 +177,23 @@ fun TelefamOneOnOneChatScreen(
       onStartVoiceRecording()
     } else {
       Toast.makeText(context, "Microphone permission is required for voice messages", Toast.LENGTH_SHORT).show()
+    }
+  }
+
+  var pendingCallIsVideo by remember { mutableStateOf(false) }
+  val callPermissionsLauncher = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.RequestMultiplePermissions(),
+  ) { perms ->
+    val audioGranted = perms[Manifest.permission.RECORD_AUDIO] == true ||
+      ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+    if (!audioGranted) {
+      Toast.makeText(context, "Microphone permission is required for calls", Toast.LENGTH_SHORT).show()
+      return@rememberLauncherForActivityResult
+    }
+    if (pendingCallIsVideo) {
+      onStartVideoCall()
+    } else {
+      onStartAudioCall()
     }
   }
 
@@ -344,7 +364,14 @@ fun TelefamOneOnOneChatScreen(
             verticalAlignment = Alignment.CenterVertically,
           ) {
             IconButton(
-              onClick = { onTriggerComingSoon("Audio Call", "chat_audio_call") },
+              onClick = {
+                pendingCallIsVideo = false
+                if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                  onStartAudioCall()
+                } else {
+                  callPermissionsLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO))
+                }
+              },
               modifier = Modifier
                 .size(38.dp)
                 .testTag("chat_audio_call_button"),
@@ -357,7 +384,21 @@ fun TelefamOneOnOneChatScreen(
               )
             }
             IconButton(
-              onClick = { onTriggerComingSoon("Video Call", "chat_video_call") },
+              onClick = {
+                pendingCallIsVideo = true
+                val missing = mutableListOf<String>()
+                if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                  missing.add(Manifest.permission.RECORD_AUDIO)
+                }
+                if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                  missing.add(Manifest.permission.CAMERA)
+                }
+                if (missing.isEmpty()) {
+                  onStartVideoCall()
+                } else {
+                  callPermissionsLauncher.launch(missing.toTypedArray())
+                }
+              },
               modifier = Modifier
                 .size(38.dp)
                 .testTag("chat_video_call_button"),
@@ -659,7 +700,7 @@ fun TelefamOneOnOneChatScreen(
               // Hide Gift and Paperclip smoothly when user starts typing to free input space!
               if (!hasText) {
                 IconButton(
-                  onClick = { if (!isBlockedChat) onTriggerComingSoon("Gift", "chat_gift_tapped") },
+                  onClick = { if (!isBlockedChat) onOpenSendStars() },
                   enabled = !isBlockedChat,
                   modifier = Modifier
                     .size(36.dp)

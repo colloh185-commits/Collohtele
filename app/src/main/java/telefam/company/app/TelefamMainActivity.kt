@@ -50,10 +50,14 @@ import telefam.company.ui.screens.TelefamChatPrivacyHostScreen
 import telefam.company.ui.screens.TelefamHomeScreen
 import telefam.company.ui.screens.TelefamOneOnOneChatScreen
 import telefam.company.ui.screens.TelefamPostScreen
+import telefam.company.ui.screens.TelefamProfileMenuScreen
 import telefam.company.ui.screens.TelefamProfileSetupScreen
 import telefam.company.ui.screens.TelefamSearchScreen
 import telefam.company.ui.screens.TelefamSettingsScreen
+import telefam.company.ui.screens.TelefamStarGiftCelebrationOverlay
+import telefam.company.ui.screens.TelefamStarsModalHost
 import telefam.company.ui.screens.TelefamUserProfileScreen
+import telefam.company.stars.StarScreenRoute
 import telefam.company.ui.theme.TelefamTheme
 import telefam.company.ui.theme.ThemeMode
 import telefam.company.ui.viewmodel.AuthStep
@@ -112,6 +116,8 @@ class TelefamMainActivity : ComponentActivity() {
         uiState.profileViewerItems != null,
         uiState.postComposer.isOpen,
         uiState.activeSettingsDestination != null,
+        uiState.showProfileMenuModal,
+        uiState.starsState.currentRoute,
         uiState.activeChatPrivacyRoute,
         uiState.incomingLoginRequest != null,
         uiState.loginApprovedOverlay != null,
@@ -123,7 +129,11 @@ class TelefamMainActivity : ComponentActivity() {
         val statusBarIsDark = when {
           isApprovalOverlayVisible || isWaitScreenVisible -> true
           uiState.postComposer.isOpen -> true
+          route == AppRootRoute.HOME && uiState.starsState.currentRoute != null -> {
+            if (uiState.starsState.currentRoute == StarScreenRoute.STARS_HUB) useDarkBars else true
+          }
           route == AppRootRoute.HOME && uiState.activeSettingsDestination != null -> true
+          route == AppRootRoute.HOME && uiState.showProfileMenuModal -> useDarkBars
           route == AppRootRoute.HOME && uiState.activeChatPrivacyRoute != null -> {
             if (uiState.activeChatPrivacyRoute == ChatPrivacyRoute.CHATS_THEME) useDarkBars else true
           }
@@ -175,6 +185,27 @@ class TelefamMainActivity : ComponentActivity() {
         if (uiState.isSessionInitialized) {
           delay(420L)
           showSplash = false
+        }
+      }
+
+      LaunchedEffect(uiState.starsState.launchCheckoutUrl) {
+        val url = uiState.starsState.launchCheckoutUrl
+        if (!url.isNullOrBlank()) {
+          viewModel.starsController.consumeLaunchCheckoutUrl()
+          runCatching {
+            val viewIntent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+            startActivity(viewIntent)
+          }.onFailure {
+            Toast.makeText(this@TelefamMainActivity, "Open browser to complete checkout", Toast.LENGTH_SHORT).show()
+          }
+        }
+      }
+
+      LaunchedEffect(uiState.starsState.statusMessage) {
+        val msg = uiState.starsState.statusMessage
+        if (!msg.isNullOrBlank()) {
+          Toast.makeText(this@TelefamMainActivity, msg, Toast.LENGTH_SHORT).show()
+          viewModel.starsController.clearStatusMessage()
         }
       }
 
@@ -325,7 +356,7 @@ class TelefamMainActivity : ComponentActivity() {
                   onOpenEditProfile = viewModel::openEditProfileModal,
                   onOpenProfileBackgrounds = viewModel::openOwnerBackgroundsModal,
                   onOpenProfileSettings = viewModel::openOwnerSettingsModal,
-                  onMenuClick = { viewModel.triggerComingSoon("Menu", "profile_menu_tapped") },
+                  onMenuClick = viewModel::openProfileMenuModal,
                   onSelectProfileFilter = viewModel::selectProfilePostFilter,
                   onSelectProfileSort = viewModel::selectProfileSortOrder,
                   onOpenProfilePostViewer = viewModel::openProfilePostViewer,
@@ -387,9 +418,12 @@ class TelefamMainActivity : ComponentActivity() {
                         onBlockPeer = viewModel.chatController::blockPeerFromActiveChat,
                         onReportPeer = viewModel.chatController::reportPeerFromActiveChat,
                         onOpenSharedMediaTab = viewModel.chatController::openSharedMediaTab,
+                        onOpenSendStars = { viewModel.starsController.openSendStarsForConversation(splitConv) },
                         onTriggerComingSoon = viewModel::triggerComingSoon,
                         onDismissToast = viewModel.chatController::dismissChatToast,
                         showEmbeddedSplitHeader = true,
+                        onStartAudioCall = { viewModel.chatController.startAudioOrVideoCall(isVideo = false) },
+                        onStartVideoCall = { viewModel.chatController.startAudioOrVideoCall(isVideo = true) },
                       )
                     }
                   },
@@ -443,9 +477,12 @@ class TelefamMainActivity : ComponentActivity() {
                 onBlockPeer = viewModel.chatController::blockPeerFromActiveChat,
                 onReportPeer = viewModel.chatController::reportPeerFromActiveChat,
                 onOpenSharedMediaTab = viewModel.chatController::openSharedMediaTab,
+                onOpenSendStars = { viewModel.starsController.openSendStarsForConversation(activeConv) },
                 onTriggerComingSoon = viewModel::triggerComingSoon,
                 onDismissToast = viewModel.chatController::dismissChatToast,
                 showEmbeddedSplitHeader = false,
+                onStartAudioCall = { viewModel.chatController.startAudioOrVideoCall(isVideo = false) },
+                onStartVideoCall = { viewModel.chatController.startAudioOrVideoCall(isVideo = true) },
               )
             }
           }
@@ -561,7 +598,7 @@ class TelefamMainActivity : ComponentActivity() {
                 onOpenEditProfile = viewModel::openEditProfileModal,
                 onOpenBackgrounds = viewModel::openOwnerBackgroundsModal,
                 onOpenSettings = viewModel::openOwnerSettingsModal,
-                onOpenMenu = { viewModel.triggerComingSoon("Menu", "profile_menu_tapped") },
+                onOpenMenu = viewModel::openProfileMenuModal,
                 onSelectFilter = { filter -> viewModel.selectProfilePostFilter(activeProfile.userId, filter) },
                 onSelectSort = { sort -> viewModel.selectProfileSortOrder(activeProfile.userId, sort) },
                 onOpenPostAtIndex = viewModel::openProfilePostViewer,
@@ -726,6 +763,48 @@ class TelefamMainActivity : ComponentActivity() {
           }
 
           AnimatedVisibility(
+            visible = route == AppRootRoute.HOME && uiState.showProfileMenuModal,
+            enter = slideInVertically(initialOffsetY = { it / 6 }) + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { it / 6 }) + fadeOut(),
+          ) {
+            TelefamProfileMenuScreen(
+              onBack = viewModel::dismissProfileMenuModal,
+              onStarsClick = {
+                viewModel.starsController.openStarsHubFromMenu()
+              },
+              onComingSoonItemClick = { title, tag ->
+                viewModel.triggerComingSoon(title, tag)
+              },
+            )
+          }
+
+          AnimatedVisibility(
+            visible = route == AppRootRoute.HOME && uiState.starsState.currentRoute != null,
+            enter = slideInVertically(initialOffsetY = { it / 6 }) + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { it / 6 }) + fadeOut(),
+          ) {
+            TelefamStarsModalHost(
+              state = uiState.starsState,
+              onBack = viewModel.starsController::navigateBack,
+              onRefreshSummary = viewModel.starsController::refreshSummary,
+              onSendStarsTier = viewModel.starsController::sendStarsTier,
+              onOpenBuyStars = viewModel.starsController::openBuyStars,
+              onSelectPackageForCheckout = viewModel.starsController::selectPackageForCheckout,
+              onSelectProvider = viewModel.starsController::selectProvider,
+              onProceedToPay = viewModel.starsController::proceedToPay,
+              onVerifyPayment = { viewModel.starsController.verifyPendingPayment() },
+              onOpenCheckoutUrlAgain = { url ->
+                runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+              },
+              onOpenRecipientProfile = { uid ->
+                viewModel.starsController.navigateBack()
+                viewModel.openUserProfile(uid)
+              },
+              onClearError = viewModel.starsController::clearError,
+            )
+          }
+
+          AnimatedVisibility(
             visible = route == AppRootRoute.HOME && uiState.activeChatPrivacyRoute != null,
             enter = slideInVertically(initialOffsetY = { it / 6 }) + fadeIn(),
             exit = slideOutVertically(targetOffsetY = { it / 6 }) + fadeOut(),
@@ -809,9 +888,33 @@ class TelefamMainActivity : ComponentActivity() {
             }
           }
 
+          TelefamStarGiftCelebrationOverlay(
+            celebration = uiState.starsState.activeCelebration,
+            onDismiss = viewModel.starsController::dismissCelebration,
+          )
+
+          TelefamCallOverlayScreen(
+            callState = uiState.chatState.activeCall,
+            onAccept = viewModel.chatController::acceptIncomingCall,
+            onReject = viewModel.chatController::rejectIncomingCall,
+            onEnd = viewModel.chatController::endActiveCall,
+            onToggleMute = viewModel.chatController::toggleCallMute,
+            onToggleSpeaker = viewModel.chatController::toggleCallSpeaker,
+            onToggleVideo = viewModel.chatController::toggleCallVideo,
+            onFlipCamera = viewModel.chatController::flipCallCamera,
+          )
+
           TelefamAnimatedSplashOverlay(visible = showSplash)
         }
       }
+    }
+  }
+
+  override fun onResume() {
+    super.onResume()
+    val pending = viewModel.uiState.value.starsState.pendingCheckoutIntent
+    if (pending != null && !pending.credited) {
+      viewModel.starsController.verifyPendingPayment()
     }
   }
 
@@ -822,6 +925,16 @@ class TelefamMainActivity : ComponentActivity() {
 
   private fun handleVerificationIntent(intent: Intent?) {
     val data: Uri = intent?.data ?: return
+    if (data.scheme == "telefam" && data.host == "stars") {
+      val ref = data.getQueryParameter("reference")
+        ?: data.getQueryParameter("trxref")
+        ?: data.getQueryParameter("token")
+      viewModel.starsController.handleCheckoutCallback(
+        status = data.getQueryParameter("status"),
+        reference = ref,
+      )
+      return
+    }
     val token = data.getQueryParameter("token")
     if (!token.isNullOrBlank()) {
       viewModel.handleVerificationDeepLink(token)

@@ -393,8 +393,100 @@ struct TelefamIosChatMessage: Codable, Identifiable, Equatable {
     var forwardedFromUserId: String = ""
     var deliveryStatus: String = "sent"
     var syncState: String = "synced"
+    var starGiftAmount: Int64 = 0
+    var starGiftTxId: String = ""
+    var starGiftVerified: Bool = false
     var editedAtMs: Int64 = 0
     var createdAtMs: Int64 = 0
+
+    init(
+        messageId: String,
+        conversationId: String,
+        senderUserId: String,
+        recipientUserId: String,
+        clientOpId: String = "",
+        messageType: String = "text",
+        compressionCodec: String = "zlib",
+        encryptionScheme: String = "telefam_ecdh_v1",
+        ciphertextB64: String = "",
+        senderCiphertextB64: String = "",
+        signalMsgType: Int = 3,
+        plainText: String = "",
+        mediaUrl: String = "",
+        mediaLocalPath: String = "",
+        mediaId: String = "",
+        voiceDurationMs: Int64 = 0,
+        viewOnceTtlSec: Int = 0,
+        viewOnceOpenedAtMs: Int64 = 0,
+        viewOnceExpiresAtMs: Int64 = 0,
+        forwardedFromUserId: String = "",
+        deliveryStatus: String = "sent",
+        syncState: String = "synced",
+        starGiftAmount: Int64 = 0,
+        starGiftTxId: String = "",
+        starGiftVerified: Bool = false,
+        editedAtMs: Int64 = 0,
+        createdAtMs: Int64 = 0
+    ) {
+        self.messageId = messageId
+        self.conversationId = conversationId
+        self.senderUserId = senderUserId
+        self.recipientUserId = recipientUserId
+        self.clientOpId = clientOpId
+        self.messageType = messageType
+        self.compressionCodec = compressionCodec
+        self.encryptionScheme = encryptionScheme
+        self.ciphertextB64 = ciphertextB64
+        self.senderCiphertextB64 = senderCiphertextB64
+        self.signalMsgType = signalMsgType
+        self.plainText = plainText
+        self.mediaUrl = mediaUrl
+        self.mediaLocalPath = mediaLocalPath
+        self.mediaId = mediaId
+        self.voiceDurationMs = voiceDurationMs
+        self.viewOnceTtlSec = viewOnceTtlSec
+        self.viewOnceOpenedAtMs = viewOnceOpenedAtMs
+        self.viewOnceExpiresAtMs = viewOnceExpiresAtMs
+        self.forwardedFromUserId = forwardedFromUserId
+        self.deliveryStatus = deliveryStatus
+        self.syncState = syncState
+        self.starGiftAmount = starGiftAmount
+        self.starGiftTxId = starGiftTxId
+        self.starGiftVerified = starGiftVerified
+        self.editedAtMs = editedAtMs
+        self.createdAtMs = createdAtMs
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        messageId = (try? c.decode(String.self, forKey: .messageId)) ?? ""
+        conversationId = (try? c.decode(String.self, forKey: .conversationId)) ?? ""
+        senderUserId = (try? c.decode(String.self, forKey: .senderUserId)) ?? ""
+        recipientUserId = (try? c.decode(String.self, forKey: .recipientUserId)) ?? ""
+        clientOpId = (try? c.decodeIfPresent(String.self, forKey: .clientOpId)) ?? ""
+        messageType = (try? c.decodeIfPresent(String.self, forKey: .messageType)) ?? "text"
+        compressionCodec = (try? c.decodeIfPresent(String.self, forKey: .compressionCodec)) ?? "zlib"
+        encryptionScheme = (try? c.decodeIfPresent(String.self, forKey: .encryptionScheme)) ?? "telefam_ecdh_v1"
+        ciphertextB64 = (try? c.decodeIfPresent(String.self, forKey: .ciphertextB64)) ?? ""
+        senderCiphertextB64 = (try? c.decodeIfPresent(String.self, forKey: .senderCiphertextB64)) ?? ""
+        signalMsgType = (try? c.decodeIfPresent(Int.self, forKey: .signalMsgType)) ?? 3
+        plainText = (try? c.decodeIfPresent(String.self, forKey: .plainText)) ?? ""
+        mediaUrl = (try? c.decodeIfPresent(String.self, forKey: .mediaUrl)) ?? ""
+        mediaLocalPath = (try? c.decodeIfPresent(String.self, forKey: .mediaLocalPath)) ?? ""
+        mediaId = (try? c.decodeIfPresent(String.self, forKey: .mediaId)) ?? ""
+        voiceDurationMs = (try? c.decodeIfPresent(Int64.self, forKey: .voiceDurationMs)) ?? 0
+        viewOnceTtlSec = (try? c.decodeIfPresent(Int.self, forKey: .viewOnceTtlSec)) ?? 0
+        viewOnceOpenedAtMs = (try? c.decodeIfPresent(Int64.self, forKey: .viewOnceOpenedAtMs)) ?? 0
+        viewOnceExpiresAtMs = (try? c.decodeIfPresent(Int64.self, forKey: .viewOnceExpiresAtMs)) ?? 0
+        forwardedFromUserId = (try? c.decodeIfPresent(String.self, forKey: .forwardedFromUserId)) ?? ""
+        deliveryStatus = (try? c.decodeIfPresent(String.self, forKey: .deliveryStatus)) ?? "sent"
+        syncState = (try? c.decodeIfPresent(String.self, forKey: .syncState)) ?? "synced"
+        starGiftAmount = (try? c.decodeIfPresent(Int64.self, forKey: .starGiftAmount)) ?? 0
+        starGiftTxId = (try? c.decodeIfPresent(String.self, forKey: .starGiftTxId)) ?? ""
+        starGiftVerified = (try? c.decodeIfPresent(Bool.self, forKey: .starGiftVerified)) ?? false
+        editedAtMs = (try? c.decodeIfPresent(Int64.self, forKey: .editedAtMs)) ?? 0
+        createdAtMs = (try? c.decodeIfPresent(Int64.self, forKey: .createdAtMs)) ?? 0
+    }
 }
 
 struct TelefamIosChatSecurityFlag: Codable, Identifiable, Equatable {
@@ -548,6 +640,10 @@ final class TelefamIosChatAudioEngine: NSObject, AVAudioPlayerDelegate {
         }
     }
 
+    func playStarGiftChime(enabled: Bool) {
+        playTone(freqStart: 784, freqEnd: 1318.5, durationMs: 150, gain: 0.24, enabled: enabled)
+    }
+
     private static func buildWavTone(freqStart: Double, freqEnd: Double, durationMs: Int, gain: Double) -> Data {
         let sampleRate = 22050
         let count = max(1, (sampleRate * durationMs) / 1000)
@@ -627,6 +723,7 @@ final class TelefamIosChatStore: ObservableObject {
     }
 
     let audio = TelefamIosChatAudioEngine()
+    var onStarWsEvent: (([String: Any]) -> Void)? = nil
     private var e2ee: TelefamIosE2eeManager?
     private var attachedUserId: String = ""
 
@@ -1329,6 +1426,14 @@ final class TelefamIosChatStore: ObservableObject {
             }
             publishLists()
         case "new_message", "message_new", "message_edited", "conversation_updated":
+            let starAmt = (obj["star_gift_amount"] as? NSNumber)?.int64Value ?? 0
+            if starAmt > 0 { onStarWsEvent?(obj) }
+            if !cid.isEmpty { await syncMessages(convId: cid) }
+            await refreshConversations(archived: false)
+        case "star_balance_updated":
+            onStarWsEvent?(obj)
+        case "star_gift_received":
+            onStarWsEvent?(obj)
             if !cid.isEmpty { await syncMessages(convId: cid) }
             await refreshConversations(archived: false)
         case "message_unsent", "view_once_burned", "view_once_consumed":
@@ -1431,7 +1536,7 @@ final class TelefamIosChatStore: ObservableObject {
         publishLists()
     }
 
-    private func syncMessages(convId: String) async {
+    func syncMessages(convId: String) async {
         let sinceMs = allMsgs.values.filter { $0.conversationId == convId && $0.syncState == "synced" }
             .map { max($0.createdAtMs, $0.editedAtMs) }.max() ?? 0
         let enc = convId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? convId
@@ -1561,8 +1666,15 @@ final class TelefamIosChatStore: ObservableObject {
         let sender = m["last_sender_id"] as? String ?? ""
         let cB64 = m["last_ciphertext_b64"] as? String ?? ""
         let sB64 = m["last_sender_ciphertext_b64"] as? String ?? ""
-        let plain = e2ee?.decryptAndDecompress(isOwn: sender == attachedUserId, ciphertextB64: cB64, senderCiphertextB64: sB64, codec: "zlib")
-            ?? defaultTypeLabel(m["last_message_type"] as? String ?? "")
+        let lastType = m["last_message_type"] as? String ?? ""
+        let lastStarAmt = (m["last_star_gift_amount"] as? NSNumber)?.int64Value ?? 0
+        let plain: String = {
+            if lastType == "star_gift" {
+                return lastStarAmt > 0 ? "\(IosStarsCatalog.formatComma(lastStarAmt)) Stars" : "Sent Stars"
+            }
+            return e2ee?.decryptAndDecompress(isOwn: sender == attachedUserId, ciphertextB64: cB64, senderCiphertextB64: sB64, codec: "zlib")
+                ?? defaultTypeLabel(lastType)
+        }()
         var perms = TelefamIosChatCapabilities()
         if let pDict = m["permissions"] as? [String: Any],
            let pData = try? JSONSerialization.data(withJSONObject: pDict),
@@ -1576,7 +1688,7 @@ final class TelefamIosChatStore: ObservableObject {
             peerUsername: m["peer_username"] as? String ?? "",
             peerAvatarUrl: m["peer_avatar_url"] as? String ?? "",
             lastMessageId: m["last_message_id"] as? String ?? "",
-            lastMessageType: m["last_message_type"] as? String ?? "",
+            lastMessageType: lastType,
             lastSenderId: sender,
             lastMessagePreviewPlain: plain,
             lastDeliveryStatus: m["last_delivery_status"] as? String ?? "sent",
@@ -1596,15 +1708,22 @@ final class TelefamIosChatStore: ObservableObject {
         let cB64 = m["ciphertext_b64"] as? String ?? ""
         let sB64 = m["sender_ciphertext_b64"] as? String ?? ""
         let codec = m["compression_codec"] as? String ?? "zlib"
-        let plain = e2ee?.decryptAndDecompress(isOwn: sender == attachedUserId, ciphertextB64: cB64, senderCiphertextB64: sB64, codec: codec)
-            ?? (fallbackPlain.isEmpty ? "[Encrypted message]" : fallbackPlain)
+        let msgType = m["message_type"] as? String ?? "text"
+        let starAmt = (m["star_gift_amount"] as? NSNumber)?.int64Value ?? 0
+        let plain: String = {
+            if msgType == "star_gift" {
+                return starAmt > 0 ? "\(IosStarsCatalog.formatComma(starAmt)) Stars" : "Stars Gift"
+            }
+            return e2ee?.decryptAndDecompress(isOwn: sender == attachedUserId, ciphertextB64: cB64, senderCiphertextB64: sB64, codec: codec)
+                ?? (fallbackPlain.isEmpty ? "[Encrypted message]" : fallbackPlain)
+        }()
         return TelefamIosChatMessage(
             messageId: m["message_id"] as? String ?? "",
             conversationId: m["conversation_id"] as? String ?? "",
             senderUserId: sender,
             recipientUserId: m["recipient_user_id"] as? String ?? "",
             clientOpId: m["client_op_id"] as? String ?? "",
-            messageType: m["message_type"] as? String ?? "text",
+            messageType: msgType,
             compressionCodec: codec,
             encryptionScheme: m["encryption_scheme"] as? String ?? "telefam_ecdh_v1",
             ciphertextB64: cB64,
@@ -1621,6 +1740,9 @@ final class TelefamIosChatStore: ObservableObject {
             forwardedFromUserId: m["forwarded_from_user_id"] as? String ?? "",
             deliveryStatus: m["delivery_status"] as? String ?? "sent",
             syncState: "synced",
+            starGiftAmount: starAmt,
+            starGiftTxId: m["star_gift_tx_id"] as? String ?? "",
+            starGiftVerified: m["star_gift_verified"] as? Bool ?? false,
             editedAtMs: (m["edited_at_ms"] as? NSNumber)?.int64Value ?? 0,
             createdAtMs: (m["created_at_ms"] as? NSNumber)?.int64Value ?? 0
         )
@@ -1641,6 +1763,7 @@ final class TelefamIosChatStore: ObservableObject {
 
     private func previewText(for msg: TelefamIosChatMessage) -> String {
         switch msg.messageType {
+        case "star_gift": return msg.starGiftAmount > 0 ? "\(IosStarsCatalog.formatComma(msg.starGiftAmount)) Stars" : "Sent Stars"
         case "sticker": return "Sticker"
         case "gif": return "GIF"
         case "clip": return "Clip"
@@ -1652,6 +1775,7 @@ final class TelefamIosChatStore: ObservableObject {
 
     private func defaultTypeLabel(_ type: String) -> String {
         switch type {
+        case "star_gift": return "Sent Stars"
         case "voice", "voice_once": return "Voice message"
         case "sticker": return "Sticker"
         case "gif": return "GIF"

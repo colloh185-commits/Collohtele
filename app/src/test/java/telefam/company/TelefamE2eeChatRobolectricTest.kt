@@ -405,6 +405,7 @@ class TelefamE2eeChatRobolectricTest {
           onBlockPeer = {},
           onReportPeer = { _, _ -> },
           onOpenSharedMediaTab = {},
+          onOpenSendStars = {},
           onTriggerComingSoon = { _, _ -> },
           onDismissToast = {},
         )
@@ -478,6 +479,7 @@ class TelefamE2eeChatRobolectricTest {
           onBlockPeer = {},
           onReportPeer = { _, _ -> },
           onOpenSharedMediaTab = {},
+          onOpenSendStars = {},
           onTriggerComingSoon = { _, _ -> },
           onDismissToast = {},
         )

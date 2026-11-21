@@ -28,6 +28,20 @@ class ChatFeatureController(
 ) {
   private val chatRepo = repository.chatRepository
   private val voiceAudio = ChatVoiceAudioManager(repository.applicationContext())
+  private val callManager = ChatCallManager(
+    appContext = repository.applicationContext(),
+    chatRepo = chatRepo,
+    ownerUserIdProvider = { uiStateFlow.value.userId },
+    peerLookupProvider = { peerUid ->
+      val conv = uiStateFlow.value.chatState.conversations.firstOrNull { it.peerUserId == peerUid }
+      Triple(
+        conv?.peerFullName?.ifBlank { conv.peerUsername }.orEmpty(),
+        conv?.peerAvatarUrl.orEmpty(),
+        conv?.conversationId.orEmpty(),
+      )
+    },
+    baseHttpUrl = repository.baseHttpUrl(),
+  )
 
   private var typingDebounceJob: Job? = null
   private var lastSentTypingMs: Long = 0L
@@ -47,14 +61,17 @@ class ChatFeatureController(
         .distinctUntilChanged()
         .collect { (authed, uid) ->
           if (authed && uid.isNotBlank()) {
-            chatRepo.ensureSignalEngineReady(true)
+            chatRepo.ensureSignalEngineReady(uploadIfNeeded = true, forceUpload = true)
             chatRepo.connectWebSocket()
             chatRepo.flushPendingChatOps()
             chatRepo.refreshConversations()
+            callManager.syncActiveCallFromServer()
           } else {
+            chatRepo.setActiveOpenConversation(null)
             chatRepo.disconnectWebSocket()
             voiceAudio.stopPlayback()
             voiceAudio.discardRecording()
+            callManager.cleanup()
             viewOnceTimerJob?.cancel()
             updateChat { TelefamChatUiState() }
           }
@@ -69,6 +86,7 @@ class ChatFeatureController(
         if (snap.isAuthenticated && snap.userId.isNotBlank()) {
           chatRepo.flushPendingChatOps()
           chatRepo.refreshConversations()
+          callManager.syncActiveCallFromServer()
           val activeConvId = snap.chatState.activeConversationId
           if (!activeConvId.isNullOrBlank()) {
             chatRepo.loadConversationMessages(activeConvId)
@@ -155,11 +173,23 @@ class ChatFeatureController(
               ChatSoundEffects.playIncomingChime(soundAllowed(conv?.isMuted == true))
             }
           }
+          "call_incoming", "call_state", "call_accepted", "call_connected", "call_rejected", "call_ended", "call_signal", "call_media" -> {
+            callManager.handleWsEvent(ev)
+          }
         }
       }
     }
 
-    // 5. Observe voice recording and playback states
+    // 4b. Seamless local_dm_ -> conv_ migration listener
+    scope.launch {
+      chatRepo.migratedConversations.collect { (oldId, newId) ->
+        if (uiStateFlow.value.chatState.activeConversationId == oldId) {
+          updateChat { it.copy(activeConversationId = newId) }
+        }
+      }
+    }
+
+    // 5. Observe voice recording, playback, and active call states
     scope.launch {
       voiceAudio.recording.collect { rec ->
         updateChat { it.copy(voiceRecording = rec) }
@@ -168,6 +198,11 @@ class ChatFeatureController(
     scope.launch {
       voiceAudio.playback.collect { pb ->
         updateChat { it.copy(voicePlayback = pb) }
+      }
+    }
+    scope.launch {
+      callManager.callState.collect { call ->
+        updateChat { it.copy(activeCall = call) }
       }
     }
   }
@@ -208,6 +243,7 @@ class ChatFeatureController(
 
   fun openConversation(conversationId: String, peerUserId: String = "") {
     seenIncomingMessageIds.clear()
+    chatRepo.setActiveOpenConversation(conversationId)
     updateChat {
       it.copy(
         activeConversationId = conversationId,
@@ -231,6 +267,7 @@ class ChatFeatureController(
 
   fun closeActiveConversation() {
     val activeId = uiStateFlow.value.chatState.activeConversationId
+    chatRepo.setActiveOpenConversation(null)
     if (!activeId.isNullOrBlank()) {
       chatRepo.sendTypingIndicator(activeId, "")
     }
@@ -712,6 +749,57 @@ class ChatFeatureController(
     }
   }
 
+  // 1-on-1 Live Audio & Video Call Controls
+  fun startAudioOrVideoCall(isVideo: Boolean) {
+    val conv = uiStateFlow.value.chatState.activeConversation ?: return
+    if (conv.isBlocked) {
+      updateChat { it.copy(toastMessage = "You cannot call this user") }
+      return
+    }
+    if (!conv.canCall) {
+      updateChat { it.copy(toastMessage = "Calls are disabled by this user's privacy settings") }
+      return
+    }
+    callManager.startCall(
+      peerUserId = conv.peerUserId,
+      peerName = conv.peerFullName.ifBlank { conv.peerUsername },
+      peerAvatarUrl = conv.peerAvatarUrl,
+      conversationId = conv.conversationId,
+      callType = if (isVideo) "video" else "audio",
+      onError = { errMsg ->
+        updateChat { it.copy(toastMessage = errMsg) }
+      },
+    )
+  }
+
+  fun acceptIncomingCall() {
+    callManager.acceptIncomingCall()
+  }
+
+  fun rejectIncomingCall() {
+    callManager.rejectIncomingCall()
+  }
+
+  fun endActiveCall() {
+    callManager.endActiveCall()
+  }
+
+  fun toggleCallMute() {
+    callManager.toggleMute()
+  }
+
+  fun toggleCallSpeaker() {
+    callManager.toggleSpeaker()
+  }
+
+  fun toggleCallVideo() {
+    callManager.toggleVideo()
+  }
+
+  fun flipCallCamera() {
+    callManager.flipCamera()
+  }
+
   fun openSharedMediaTab(tab: String?) {
     updateChat { it.copy(sharedMediaTab = tab) }
   }
@@ -727,6 +815,7 @@ class ChatFeatureController(
   fun cleanup() {
     voiceAudio.stopPlayback()
     voiceAudio.discardRecording()
+    callManager.cleanup()
     viewOnceTimerJob?.cancel()
   }
 }

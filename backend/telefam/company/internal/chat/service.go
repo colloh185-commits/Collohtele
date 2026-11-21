@@ -118,28 +118,32 @@ type Service struct {
 	messages      map[string][]*storedMessage
 	messageIndex  map[string]*storedMessage
 	clientOpIndex map[string]*storedMessage
-	voiceMedia    map[string]*storedVoiceMedia
-	flags         map[string][]SecurityFlagDTO
-	wsClients     map[string]map[*wsClient]struct{}
-	lastSeenMs    map[string]int64
-	nowFunc       func() time.Time
+	voiceMedia     map[string]*storedVoiceMedia
+	flags          map[string][]SecurityFlagDTO
+	wsClients      map[string]map[*wsClient]struct{}
+	lastSeenMs     map[string]int64
+	calls          map[string]*storedCall
+	userActiveCall map[string]string
+	nowFunc        func() time.Time
 }
 
 func NewService(hooks HostHooks) *Service {
 	return &Service{
-		hooks:         hooks,
-		Gifly:         NewGiflyClient(""),
-		keyBundles:    make(map[string]*storedKeyBundle),
-		conversations: make(map[string]*storedConversation),
-		pairIndex:     make(map[string]string),
-		messages:      make(map[string][]*storedMessage),
-		messageIndex:  make(map[string]*storedMessage),
-		clientOpIndex: make(map[string]*storedMessage),
-		voiceMedia:    make(map[string]*storedVoiceMedia),
-		flags:         make(map[string][]SecurityFlagDTO),
-		wsClients:     make(map[string]map[*wsClient]struct{}),
-		lastSeenMs:    make(map[string]int64),
-		nowFunc:       time.Now,
+		hooks:          hooks,
+		Gifly:          NewGiflyClient(""),
+		keyBundles:     make(map[string]*storedKeyBundle),
+		conversations:  make(map[string]*storedConversation),
+		pairIndex:      make(map[string]string),
+		messages:       make(map[string][]*storedMessage),
+		messageIndex:   make(map[string]*storedMessage),
+		clientOpIndex:  make(map[string]*storedMessage),
+		voiceMedia:     make(map[string]*storedVoiceMedia),
+		flags:          make(map[string][]SecurityFlagDTO),
+		wsClients:      make(map[string]map[*wsClient]struct{}),
+		lastSeenMs:     make(map[string]int64),
+		calls:          make(map[string]*storedCall),
+		userActiveCall: make(map[string]string),
+		nowFunc:        time.Now,
 	}
 }
 
@@ -377,6 +381,9 @@ func (s *Service) ListMessagesDelta(callerID, convID string, sinceMs int64) ([]M
 }
 
 func (s *Service) SendMessage(callerID, convID string, req SendMessagePayload) (MessageDTO, error) {
+	if strings.EqualFold(strings.TrimSpace(req.MessageType), "star_gift") {
+		return MessageDTO{}, ErrForbidden
+	}
 	msgType := normalizeMsgType(req.MessageType)
 	if strings.TrimSpace(req.CiphertextB64) == "" && strings.TrimSpace(req.MediaURL) == "" {
 		return MessageDTO{}, ErrBadRequest
@@ -485,6 +492,130 @@ func (s *Service) SendMessage(callerID, convID string, req SendMessagePayload) (
 		TimestampMs:    now,
 	})
 	return dto, nil
+}
+
+// CreateVerifiedStarGiftMessage appends an authoritative server-verified star_gift bubble
+// into the 1-on-1 conversation (never callable directly by untrusted clients).
+func (s *Service) CreateVerifiedStarGiftMessage(
+	senderID, recipientID, convID, txID string,
+	starAmount int64,
+	cipherB64, senderCipherB64, clientOpID string,
+) (MessageDTO, ConversationDTO, error) {
+	if starAmount <= 0 || txID == "" || senderID == "" || recipientID == "" || senderID == recipientID {
+		return MessageDTO{}, ConversationDTO{}, ErrBadRequest
+	}
+	if s.hooks.IsBlocked != nil && s.hooks.IsBlocked(senderID, recipientID) {
+		return MessageDTO{}, ConversationDTO{}, ErrForbidden
+	}
+
+	// Ensure conversation exists (create direct conversation cleanly if needed)
+	var conv DTOConvResult
+	if convID == "" {
+		c, err := s.OpenOrCreateDirectConversation(senderID, recipientID)
+		if err != nil {
+			return MessageDTO{}, ConversationDTO{}, err
+		}
+		convID = c.ConversationID
+		conv.conv = c
+	}
+
+	s.mu.Lock()
+	c, ok := s.conversations[convID]
+	if !ok {
+		s.mu.Unlock()
+		return MessageDTO{}, ConversationDTO{}, ErrNotFound
+	}
+	if (c.UserA != senderID && c.UserB != senderID) || (c.UserA != recipientID && c.UserB != recipientID) {
+		s.mu.Unlock()
+		return MessageDTO{}, ConversationDTO{}, ErrForbidden
+	}
+	opID := strings.TrimSpace(clientOpID)
+	if opID != "" {
+		if prev, exists := s.clientOpIndex[opID]; exists {
+			dto := prev.DTO
+			convDTO := s.toConversationDTOLocked(senderID, c)
+			s.mu.Unlock()
+			return dto, convDTO, nil
+		}
+	}
+
+	now := s.nowMs()
+	initialStatus := "sent"
+	if s.isOnlineLocked(recipientID) {
+		initialStatus = "delivered"
+	}
+	cipher := strings.TrimSpace(cipherB64)
+	if cipher == "" {
+		cipher = "TELEFAM_STAR_GIFT"
+	}
+	dto := MessageDTO{
+		MessageID:           newRandomID("msg"),
+		ConversationID:      convID,
+		SenderUserID:        senderID,
+		RecipientUserID:     recipientID,
+		ClientOpID:          opID,
+		MessageType:         "star_gift",
+		CompressionCodec:    "plain",
+		EncryptionScheme:    "server_star_v1",
+		CiphertextB64:       cipher,
+		SenderCiphertextB64: strings.TrimSpace(senderCipherB64),
+		SignalMsgType:       3,
+		StarGiftAmount:      starAmount,
+		StarGiftTxID:        txID,
+		StarGiftVerified:    true,
+		DeliveryStatus:      initialStatus,
+		CreatedAtMs:         now,
+	}
+	rec := &storedMessage{DTO: dto}
+	s.messages[convID] = append(s.messages[convID], rec)
+	s.messageIndex[dto.MessageID] = rec
+	if opID != "" {
+		s.clientOpIndex[opID] = rec
+	}
+
+	c.LastMessageID = dto.MessageID
+	c.LastMessageType = dto.MessageType
+	c.LastSenderID = senderID
+	c.LastCiphertext = dto.CiphertextB64
+	c.LastSenderCipher = dto.SenderCiphertextB64
+	c.LastSignalMsgType = dto.SignalMsgType
+	c.LastDelivery = dto.DeliveryStatus
+	c.LastMessageAtMs = now
+	c.UpdatedAtMs = now
+	if recipientID == c.UserA {
+		c.UnreadA++
+		c.ArchivedA = false
+	} else {
+		c.UnreadB++
+		c.ArchivedB = false
+	}
+	s.lastSeenMs[senderID] = now
+	conv.conv = s.toConversationDTOLocked(senderID, c)
+	s.mu.Unlock()
+
+	s.pushWSEvent(recipientID, WebSocketEvent{
+		Event:          "message_new",
+		ConversationID: convID,
+		UserID:         senderID,
+		MessageID:      dto.MessageID,
+		StarGiftAmount: starAmount,
+		Message:        &dto,
+		TimestampMs:    now,
+	})
+	s.pushWSEvent(senderID, WebSocketEvent{
+		Event:          "message_new",
+		ConversationID: convID,
+		UserID:         senderID,
+		MessageID:      dto.MessageID,
+		StarGiftAmount: starAmount,
+		Message:        &dto,
+		TimestampMs:    now,
+	})
+	return dto, conv.conv, nil
+}
+
+type DTOConvResult struct {
+	conv ConversationDTO
 }
 
 func (s *Service) EditMessage(callerID, messageID string, req EditMessagePayload) (MessageDTO, error) {
@@ -819,6 +950,15 @@ func (s *Service) BatchConversationAction(callerID string, payload BatchConversa
 		return nil, ErrBadRequest
 	}
 	now := s.nowMs()
+	type receiptRevert struct {
+		peerID    string
+		convID    string
+		messageID string
+	}
+	reverts := make([]receiptRevert, 0)
+	markUnreadPeers := make([]receiptRevert, 0)
+	blockNotifyPeers := make([]receiptRevert, 0)
+
 	s.mu.Lock()
 	for _, convID := range payload.ConversationIDs {
 		c, ok := s.conversations[convID]
@@ -871,6 +1011,30 @@ func (s *Service) BatchConversationAction(callerID string, payload BatchConversa
 					c.UnreadB = 1
 				}
 			}
+			// Revert trailing seen messages from peer back to delivered so sender sees unread/delivered instead of read
+			msgs := s.messages[convID]
+			for i := len(msgs) - 1; i >= 0; i-- {
+				m := msgs[i]
+				if m.DTO.SenderUserID == peerID {
+					if m.DTO.DeliveryStatus == "seen" {
+						m.DTO.DeliveryStatus = "delivered"
+						reverts = append(reverts, receiptRevert{
+							peerID:    peerID,
+							convID:    convID,
+							messageID: m.DTO.MessageID,
+						})
+					} else if len(reverts) > 0 {
+						break
+					}
+				} else if m.DTO.SenderUserID == callerID && len(reverts) > 0 {
+					break
+				}
+			}
+			if c.LastSenderID == peerID && c.LastDelivery == "seen" {
+				c.LastDelivery = "delivered"
+			}
+			c.UpdatedAtMs = now
+			markUnreadPeers = append(markUnreadPeers, receiptRevert{peerID: peerID, convID: convID})
 		case "delete":
 			if isA {
 				c.DeletedBeforeAMs = now
@@ -883,16 +1047,97 @@ func (s *Service) BatchConversationAction(callerID string, payload BatchConversa
 			if s.hooks.BlockUser != nil {
 				s.hooks.BlockUser(callerID, peerID)
 			}
-			s.pushWSEvent(peerID, WebSocketEvent{
-				Event:          "conversation_updated",
-				ConversationID: convID,
-				UserID:         callerID,
-				TimestampMs:    now,
-			})
+			blockNotifyPeers = append(blockNotifyPeers, receiptRevert{peerID: peerID, convID: convID})
 		}
 	}
 	s.mu.Unlock()
+
+	for _, rev := range reverts {
+		s.pushWSEvent(rev.peerID, WebSocketEvent{
+			Event:          "message_receipt",
+			ConversationID: rev.convID,
+			UserID:         callerID,
+			MessageID:      rev.messageID,
+			Status:         "delivered",
+			TimestampMs:    now,
+		})
+	}
+	for _, n := range markUnreadPeers {
+		s.pushWSEvent(n.peerID, WebSocketEvent{
+			Event:          "conversation_updated",
+			ConversationID: n.convID,
+			UserID:         callerID,
+			TimestampMs:    now,
+		})
+	}
+	for _, n := range blockNotifyPeers {
+		s.pushWSEvent(n.peerID, WebSocketEvent{
+			Event:          "conversation_updated",
+			ConversationID: n.convID,
+			UserID:         callerID,
+			TimestampMs:    now,
+		})
+	}
 	return s.ListConversations(callerID, false), nil
+}
+
+func (s *Service) NotifyPrivacyChanged(userID string) {
+	now := s.nowMs()
+	type convPeer struct {
+		convID   string
+		peerID   string
+		isOnline bool
+		lastSeen int64
+	}
+	s.mu.Lock()
+	peers := make([]convPeer, 0)
+	online := s.isOnlineLocked(userID)
+	lastSeen := s.lastSeenMs[userID]
+	for _, conv := range s.conversations {
+		if conv.UserA == userID {
+			peers = append(peers, convPeer{convID: conv.ConversationID, peerID: conv.UserB, isOnline: online, lastSeen: lastSeen})
+		} else if conv.UserB == userID {
+			peers = append(peers, convPeer{convID: conv.ConversationID, peerID: conv.UserA, isOnline: online, lastSeen: lastSeen})
+		}
+	}
+	s.mu.Unlock()
+
+	for _, p := range peers {
+		canSee := s.canSeePresence(userID, p.peerID)
+		label := "last seen recently"
+		shownOnline := false
+		shownLastSeen := int64(0)
+		if canSee {
+			shownOnline = p.isOnline
+			shownLastSeen = p.lastSeen
+			if shownOnline {
+				label = "online"
+			} else if shownLastSeen > 0 {
+				label = "last seen just now"
+			}
+		}
+		s.pushWSEvent(p.peerID, WebSocketEvent{
+			Event:          "presence",
+			ConversationID: p.convID,
+			UserID:         userID,
+			IsOnline:       shownOnline,
+			LastSeenMs:     shownLastSeen,
+			LastSeenLabel:  label,
+			TimestampMs:    now,
+		})
+		s.pushWSEvent(p.peerID, WebSocketEvent{
+			Event:          "conversation_updated",
+			ConversationID: p.convID,
+			UserID:         userID,
+			TimestampMs:    now,
+		})
+		s.pushWSEvent(userID, WebSocketEvent{
+			Event:          "conversation_updated",
+			ConversationID: p.convID,
+			UserID:         p.peerID,
+			TimestampMs:    now,
+		})
+	}
 }
 
 func (s *Service) NotifyBlockStateChanged(callerID, targetUserID string) {
@@ -1136,6 +1381,10 @@ func (s *Service) canSeePresence(owner, viewer string) bool {
 	}
 	pv := s.hooks.GetPrivacy(owner)
 	return s.allowsRule(owner, viewer, pv.OnlineIndicators)
+}
+
+func (s *Service) PushUserEvent(targetUserID string, ev WebSocketEvent) {
+	s.pushWSEvent(targetUserID, ev)
 }
 
 func (s *Service) pushWSEvent(targetUserID string, ev WebSocketEvent) {

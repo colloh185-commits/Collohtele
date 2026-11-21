@@ -351,8 +351,8 @@
     <string name="chat_search_title">Search chats &amp; people</string>
     <string name="chat_search_hint">Search messages, chats, or people</string>
     <string name="chat_forward_title">Forward to</string>
-    <string name="cd_audio_call">Audio call coming soon</string>
-    <string name="cd_video_call">Video call coming soon</string>
+    <string name="cd_audio_call">Audio call</string>
+    <string name="cd_video_call">Video call</string>
     <string name="cd_stickers">Open stickers</string>
     <string name="cd_gift">Gift coming soon</string>
     <string name="cd_attach_file">File sending coming soon</string>
@@ -361,4 +361,15 @@
     <string name="chat_blocked_composer_notice">You cannot message this user</string>
     <string name="chat_split_select_title">Select a conversation</string>
     <string name="chat_split_select_subtitle">Choose a chat on the left or start a new end-to-end encrypted conversation.</string>
+    <string name="call_status_ringing">Ringing...</string>
+    <string name="call_status_connecting">Connecting...</string>
+    <string name="call_status_incoming_audio">Incoming Telefam audio call</string>
+    <string name="call_status_incoming_video">Incoming Telefam video call</string>
+    <string name="call_action_accept">Accept</string>
+    <string name="call_action_decline">Decline</string>
+    <string name="call_action_end">End</string>
+    <string name="call_action_mute">Mute</string>
+    <string name="call_action_speaker">Speaker</string>
+    <string name="call_action_camera">Camera</string>
+    <string name="call_action_flip">Flip</string>
 </resources>

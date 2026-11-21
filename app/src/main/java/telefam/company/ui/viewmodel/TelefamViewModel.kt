@@ -29,6 +29,8 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import telefam.company.chat.ChatFeatureController
 import telefam.company.chat.TelefamChatUiState
+import telefam.company.stars.StarsFeatureController
+import telefam.company.stars.TelefamStarsUiState
 import telefam.company.core.AdaptiveStreamSelector
 import telefam.company.core.AppVersionCheckResult
 import telefam.company.core.ChatAudienceOption
@@ -420,6 +422,7 @@ data class TelefamUiState(
   val isUploadingBackground: Boolean = false,
   val backgroundError: String? = null,
   val showEditProfileModal: Boolean = false,
+  val showProfileMenuModal: Boolean = false,
   val isSavingEditedProfile: Boolean = false,
   val editProfileError: String? = null,
   val editProfileCropBitmap: Bitmap? = null,
@@ -434,6 +437,7 @@ data class TelefamUiState(
   val chatPrivacy: ChatPrivacySettingsState = ChatPrivacySettingsState(),
   val chatPrivacyBackStack: List<ChatPrivacyRoute> = emptyList(),
   val chatState: TelefamChatUiState = TelefamChatUiState(),
+  val starsState: TelefamStarsUiState = TelefamStarsUiState(),
 ) {
   val activeUserProfile: UserProfileScreenState?
     get() = profileBackStack.lastOrNull()
@@ -477,6 +481,7 @@ class TelefamViewModel(
   private val profileMutationEpoch = mutableMapOf<String, Long>()
 
   val chatController = ChatFeatureController(viewModelScope, repository, _uiState)
+  val starsController = StarsFeatureController(viewModelScope, repository, _uiState)
 
   init {
     viewModelScope.launch {
@@ -2984,6 +2989,14 @@ class TelefamViewModel(
     updateProfileInState(userId) { it.copy(activeOwnerTab = tab) }
   }
 
+  fun openProfileMenuModal() {
+    _uiState.update { it.copy(showProfileMenuModal = true) }
+  }
+
+  fun dismissProfileMenuModal() {
+    _uiState.update { it.copy(showProfileMenuModal = false) }
+  }
+
   fun openOwnerSettingsModal() {
     _uiState.update {
       it.copy(
@@ -3132,6 +3145,7 @@ class TelefamViewModel(
     viewModelScope.launch {
       val persisted = repository.saveChatPrivacy(stamped)
       _uiState.update { it.copy(chatPrivacy = persisted) }
+      chatController.refreshConversations()
     }
   }
 
@@ -3184,6 +3198,7 @@ class TelefamViewModel(
     }
     viewModelScope.launch {
       repository.savePrivacySettings(stamped)
+      chatController.refreshConversations()
     }
   }
 

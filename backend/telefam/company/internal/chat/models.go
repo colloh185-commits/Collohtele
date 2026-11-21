@@ -78,7 +78,7 @@ type MessageDTO struct {
 	SenderUserID         string `json:"sender_user_id"`
 	RecipientUserID      string `json:"recipient_user_id"`
 	ClientOpID           string `json:"client_op_id"`
-	MessageType          string `json:"message_type"` // text | sticker | gif | clip | voice | voice_once
+	MessageType          string `json:"message_type"` // text | sticker | gif | clip | voice | voice_once | star_gift
 	CompressionCodec     string `json:"compression_codec"`
 	EncryptionScheme     string `json:"encryption_scheme"`
 	CiphertextB64        string `json:"ciphertext_b64"`
@@ -91,6 +91,9 @@ type MessageDTO struct {
 	ViewOnceOpenedAtMs   int64  `json:"view_once_opened_at_ms,omitempty"`
 	ViewOnceExpiresAtMs  int64  `json:"view_once_expires_at_ms,omitempty"`
 	ForwardedFromUserID  string `json:"forwarded_from_user_id,omitempty"`
+	StarGiftAmount       int64  `json:"star_gift_amount,omitempty"`
+	StarGiftTxID         string `json:"star_gift_tx_id,omitempty"`
+	StarGiftVerified     bool   `json:"star_gift_verified,omitempty"`
 	DeliveryStatus       string `json:"delivery_status"` // sent | delivered | seen
 	EditedAtMs           int64  `json:"edited_at_ms,omitempty"`
 	CreatedAtMs          int64  `json:"created_at_ms"`
@@ -178,17 +181,84 @@ type ChatSearchPersonDTO struct {
 	ConversationID string `json:"conversation_id,omitempty"`
 }
 
+type TypingSignalPayload struct {
+	TypingMode string `json:"typing_mode"` // typing | recording_voice | idle
+}
+
+type CallSessionDTO struct {
+	CallID         string `json:"call_id"`
+	ConversationID string `json:"conversation_id"`
+	CallerUserID   string `json:"caller_user_id"`
+	CalleeUserID   string `json:"callee_user_id"`
+	CallerName     string `json:"caller_name"`
+	CallerUsername string `json:"caller_username,omitempty"`
+	CallerAvatar   string `json:"caller_avatar,omitempty"`
+	CalleeName     string `json:"callee_name"`
+	CalleeUsername string `json:"callee_username,omitempty"`
+	CalleeAvatar   string `json:"callee_avatar,omitempty"`
+	CallType       string `json:"call_type"` // audio | video
+	State          string `json:"state"`     // ringing | connecting | connected | ended
+	EndReason      string `json:"end_reason,omitempty"`
+	CallerMuted    bool   `json:"caller_muted"`
+	CalleeMuted    bool   `json:"callee_muted"`
+	CallerCameraOn bool   `json:"caller_camera_on"`
+	CalleeCameraOn bool   `json:"callee_camera_on"`
+	OfferSDP       string `json:"offer_sdp,omitempty"`
+	AnswerSDP      string `json:"answer_sdp,omitempty"`
+	CreatedAtMs    int64  `json:"created_at_ms"`
+	ConnectedAtMs  int64  `json:"connected_at_ms,omitempty"`
+	EndedAtMs      int64  `json:"ended_at_ms,omitempty"`
+}
+
+type StartCallPayload struct {
+	ConversationID string `json:"conversation_id,omitempty"`
+	PeerUserID     string `json:"peer_user_id"`
+	CallType       string `json:"call_type"` // audio | video
+	OfferSDP       string `json:"offer_sdp,omitempty"`
+}
+
+type CallActionPayload struct {
+	AnswerSDP string `json:"answer_sdp,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+type CallSignalPayload struct {
+	Kind        string `json:"kind"` // offer | answer | ice | media_state | audio_frame | video_frame
+	Payload     string `json:"payload,omitempty"`
+	MediaB64    string `json:"media_b64,omitempty"`
+	VideoWidth  int    `json:"video_width,omitempty"`
+	VideoHeight int    `json:"video_height,omitempty"`
+	Muted       *bool  `json:"muted,omitempty"`
+	CameraOn    *bool  `json:"camera_on,omitempty"`
+	Seq         int64  `json:"seq,omitempty"`
+}
+
 type WebSocketEvent struct {
-	Event          string           `json:"event"`
-	ConversationID string           `json:"conversation_id,omitempty"`
-	UserID         string           `json:"user_id,omitempty"`
-	MessageID      string           `json:"message_id,omitempty"`
-	Status         string           `json:"status,omitempty"`
-	TypingMode     string           `json:"typing_mode,omitempty"` // typing | recording | idle
-	IsOnline       bool             `json:"is_online,omitempty"`
-	LastSeenMs     int64            `json:"last_seen_ms,omitempty"`
-	LastSeenLabel  string           `json:"last_seen_label,omitempty"`
-	Message        *MessageDTO      `json:"message,omitempty"`
-	Flag           *SecurityFlagDTO `json:"flag,omitempty"`
-	TimestampMs    int64            `json:"timestamp_ms"`
+	Event                string           `json:"event"`
+	ConversationID       string           `json:"conversation_id,omitempty"`
+	UserID               string           `json:"user_id,omitempty"`
+	MessageID            string           `json:"message_id,omitempty"`
+	Status               string           `json:"status,omitempty"`
+	TypingMode           string           `json:"typing_mode,omitempty"` // typing | recording | idle
+	IsOnline             bool             `json:"is_online,omitempty"`
+	LastSeenMs           int64            `json:"last_seen_ms,omitempty"`
+	LastSeenLabel        string           `json:"last_seen_label,omitempty"`
+	StarGiftAmount       int64            `json:"star_gift_amount,omitempty"`
+	StarBalanceAvailable int64            `json:"star_balance_available,omitempty"`
+	StarBalanceReceived  int64            `json:"star_balance_received,omitempty"`
+	CallID               string           `json:"call_id,omitempty"`
+	CallType             string           `json:"call_type,omitempty"`
+	CallState            string           `json:"call_state,omitempty"`
+	Call                 *CallSessionDTO  `json:"call,omitempty"`
+	SignalKind           string           `json:"signal_kind,omitempty"`
+	SignalPayload        string           `json:"signal_payload,omitempty"`
+	MediaB64             string           `json:"media_b64,omitempty"`
+	VideoWidth           int              `json:"video_width,omitempty"`
+	VideoHeight          int              `json:"video_height,omitempty"`
+	CallerMuted          *bool            `json:"caller_muted,omitempty"`
+	CallerCameraOn       *bool            `json:"caller_camera_on,omitempty"`
+	Seq                  int64            `json:"seq,omitempty"`
+	Message              *MessageDTO      `json:"message,omitempty"`
+	Flag                 *SecurityFlagDTO `json:"flag,omitempty"`
+	TimestampMs          int64            `json:"timestamp_ms"`
 }
