@@ -42,7 +42,11 @@ func NewResendClientFromEnv() *ResendClient {
 	return NewResendClient(key, from, defaultResendEndpoint)
 }
 
-func NewResendClient(apiKey, fromEmail, endpoint string) *ResendClient {
+func NewResendClient(apiKey, fromEmail string, endpoints ...string) *ResendClient {
+	endpoint := defaultResendEndpoint
+	if len(endpoints) > 0 {
+		endpoint = endpoints[0]
+	}
 	if strings.TrimSpace(fromEmail) == "" {
 		fromEmail = "Telefam <onboarding@resend.dev>"
 	}

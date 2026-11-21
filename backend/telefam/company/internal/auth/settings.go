@@ -59,11 +59,11 @@ type ContentPreferencesDTO struct {
 }
 
 type RestrictedAccountItemDTO struct {
-	UserID     string `json:"user_id"`
-	FullName   string `json:"full_name"`
-	Username   string `json:"username"`
-	AvatarURL  string `json:"avatar_url,omitempty"`
-	CreatedAtMs int64 `json:"created_at_ms"`
+	UserID      string `json:"user_id"`
+	FullName    string `json:"full_name"`
+	Username    string `json:"username"`
+	AvatarURL   string `json:"avatar_url,omitempty"`
+	CreatedAtMs int64  `json:"created_at_ms"`
 }
 
 type ProblemReportPayload struct {
@@ -652,10 +652,10 @@ func (h *Handler) handleSystemStatus(w http.ResponseWriter, r *http.Request) {
 		{ServiceName: "Notifications & Support Desk", Status: "operational", LatencyMs: 21, Summary: "Delivery pipelines and ticket intake accepting submissions."},
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"success":         true,
-		"overall_status":  "operational",
-		"services":        services,
-		"checked_at_ms":   nowMs,
+		"success":        true,
+		"overall_status": "operational",
+		"services":       services,
+		"checked_at_ms":  nowMs,
 	})
 }
 

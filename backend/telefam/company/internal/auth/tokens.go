@@ -34,10 +34,10 @@ type AccessClaims struct {
 }
 
 type TokenPair struct {
-	AccessToken          string `json:"access_token"`
-	RefreshToken         string `json:"refresh_token"`
-	AccessExpiresInSec   int64  `json:"access_expires_in_seconds"`
-	RefreshExpiresInSec  int64  `json:"refresh_expires_in_seconds"`
+	AccessToken         string `json:"access_token"`
+	RefreshToken        string `json:"refresh_token"`
+	AccessExpiresInSec  int64  `json:"access_expires_in_seconds"`
+	RefreshExpiresInSec int64  `json:"refresh_expires_in_seconds"`
 }
 
 type refreshRecord struct {
@@ -53,11 +53,11 @@ type refreshRecord struct {
 }
 
 type TokenService struct {
-	mu                   sync.Mutex
-	signingSecret        []byte
-	refreshStore         map[string]*refreshRecord // key: sha256(refreshToken)
-	familyRevoked        map[string]bool
-	userRevokedBefore    map[string]int64
+	mu                sync.Mutex
+	signingSecret     []byte
+	refreshStore      map[string]*refreshRecord // key: sha256(refreshToken)
+	familyRevoked     map[string]bool
+	userRevokedBefore map[string]int64
 }
 
 func NewTokenService(secret []byte) *TokenService {
@@ -73,7 +73,29 @@ func NewTokenService(secret []byte) *TokenService {
 
 func (ts *TokenService) IssueInitialPair(userID, email, deviceFP string) (TokenPair, string, error) {
 	familyID := randomHex(16)
-	return ts.issueForFamily(userID, email, deviceFP, familyID)
+	return ts.issueForFamily(userID, email, ts.normalizeDeviceFingerprint(deviceFP), familyID)
+}
+
+// IssueSessionTokens is a compatibility helper for callers that only need a new session
+// and do not have an email address available.
+func (ts *TokenService) IssueSessionTokens(userID, deviceFP string) (string, string, string, error) {
+	pair, familyID, err := ts.IssueInitialPair(userID, "", deviceFP)
+	if err != nil {
+		return "", "", "", err
+	}
+	return pair.AccessToken, pair.RefreshToken, familyID, nil
+}
+
+func (ts *TokenService) normalizeDeviceFingerprint(deviceFP string) string {
+	deviceFP = strings.TrimSpace(deviceFP)
+	if len(deviceFP) == sha256.Size*2 {
+		if _, err := hex.DecodeString(deviceFP); err == nil {
+			return deviceFP
+		}
+	}
+	mac := hmac.New(sha256.New, ts.signingSecret)
+	_, _ = mac.Write([]byte("dev:" + deviceFP))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 // RevokeFamily invalidates all tokens in a single device's refresh family.
@@ -178,7 +200,7 @@ func (ts *TokenService) VerifyAccessToken(token string, expectedDeviceFP string)
 	if err := json.Unmarshal(payloadBytes, &claims); err != nil {
 		return AccessClaims{}, ErrTokenInvalid
 	}
-	if time.Now().Unix() > claims.ExpiresAt || claims.DeviceFP != expectedDeviceFP {
+	if time.Now().Unix() > claims.ExpiresAt || claims.DeviceFP != ts.normalizeDeviceFingerprint(expectedDeviceFP) {
 		return AccessClaims{}, ErrTokenInvalid
 	}
 

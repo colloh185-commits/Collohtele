@@ -21,11 +21,11 @@ func IsValidStarTier(amount int64) bool {
 }
 
 type CountryCurrencyRule struct {
-	Currency      string
-	Symbol        string
-	RatePerStar   float64 // Display/major currency unit per 1 star (KE = 1.00 KES -> 5 Stars = Ksh 5)
-	Decimals      int
-	MinorFactor   int64 // 100 for cents/kobo, 1 for zero-decimal currencies
+	Currency    string
+	Symbol      string
+	RatePerStar float64 // Display/major currency unit per 1 star (KE = 1.00 KES -> 5 Stars = Ksh 5)
+	Decimals    int
+	MinorFactor int64 // 100 for cents/kobo, 1 for zero-decimal currencies
 }
 
 var currencyRulesByCode = map[string]CountryCurrencyRule{

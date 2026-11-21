@@ -47,8 +47,8 @@ func NormalizePrivacy(raw string) PostPrivacy {
 }
 
 var (
-	ErrInvalidPost = errors.New("invalid post payload")
-	ErrTooManyTags = errors.New("too many tags")
+	ErrInvalidPost  = errors.New("invalid post payload")
+	ErrTooManyTags  = errors.New("too many tags")
 	ErrPostNotFound = errors.New("post not found")
 	ErrNotPostOwner = errors.New("not post owner")
 )
@@ -132,13 +132,13 @@ type StoredPost struct {
 }
 
 type Service struct {
-	mu          sync.RWMutex
-	postsByID   map[string]*StoredPost
-	opToPostID  map[string]string
-	hashtags    map[string]int64
-	httpClient  *http.Client
-	itunesURL   string
-	deezerURL   string
+	mu         sync.RWMutex
+	postsByID  map[string]*StoredPost
+	opToPostID map[string]string
+	hashtags   map[string]int64
+	httpClient *http.Client
+	itunesURL  string
+	deezerURL  string
 }
 
 func NewService() *Service {
@@ -320,7 +320,11 @@ func (s *Service) SearchHashtags(rawQuery string) []HashtagInfo {
 	return results
 }
 
-func (s *Service) CreatePost(authorUserID string, req CreatePostRequest, videoRenditions []media.VideoRendition) (*StoredPost, error) {
+func (s *Service) CreatePost(authorUserID string, req CreatePostRequest, renditionArgs ...[]media.VideoRendition) (*StoredPost, error) {
+	var videoRenditions []media.VideoRendition
+	if len(renditionArgs) > 0 {
+		videoRenditions = renditionArgs[0]
+	}
 	if strings.TrimSpace(authorUserID) == "" {
 		return nil, ErrInvalidPost
 	}

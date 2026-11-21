@@ -870,7 +870,7 @@ func (e *Engine) computeDynamicScoreLocked(
 	score += math.Log1p(engagement) * 1.4
 
 	ageHours := float64(max64(0, nowMs-p.CreatedAtMs)) / 3_600_000.0
-	freshness := math.Exp(-ageHours / 48.0) * 3.0
+	freshness := math.Exp(-ageHours/48.0) * 3.0
 	score += freshness
 
 	if p.AuthorUserID == viewerUserID && hasVisibleRepost {

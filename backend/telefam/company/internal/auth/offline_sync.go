@@ -95,10 +95,10 @@ func (h *Handler) handleGetSyncSettings(w http.ResponseWriter, r *http.Request) 
 	h.mu.Unlock()
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"success":           true,
-		"sync_preferences":  sp,
-		"checkpoint_epoch":  checkpoint,
-		"server_epoch_ms":   time.Now().UnixMilli(),
+		"success":          true,
+		"sync_preferences": sp,
+		"checkpoint_epoch": checkpoint,
+		"server_epoch_ms":  time.Now().UnixMilli(),
 	})
 }
 

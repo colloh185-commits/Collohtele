@@ -13,7 +13,7 @@ import (
 func TestCallsStateTransitionsPrivacyAndMarkUnreadRevert(t *testing.T) {
 	h, mux, tokens := newTestMuxAndTokens()
 	dfpAlice := "device-call-alice"
-	dfpBob := "device-call-bob"
+	dfpBob := "device-call-bobby"
 	alicePair, _, _ := tokens.IssueInitialPair("u_call_alice", "alicecall@telefam.company", dfpAlice)
 	bobPair, _, _ := tokens.IssueInitialPair("u_call_bob", "bobcall@telefam.company", dfpBob)
 

@@ -48,55 +48,55 @@ type ChatPeerCapabilitiesDTO struct {
 }
 
 type ConversationDTO struct {
-	ConversationID        string                  `json:"conversation_id"`
-	PeerUserID            string                  `json:"peer_user_id"`
-	PeerFullName          string                  `json:"peer_full_name"`
-	PeerUsername          string                  `json:"peer_username"`
-	PeerAvatarURL         string                  `json:"peer_avatar_url,omitempty"`
-	LastMessageID         string                  `json:"last_message_id,omitempty"`
-	LastMessageType       string                  `json:"last_message_type,omitempty"`
-	LastSenderID          string                  `json:"last_sender_id,omitempty"`
-	LastCiphertextB64     string                  `json:"last_ciphertext_b64,omitempty"`
-	LastSenderCipherB64   string                  `json:"last_sender_ciphertext_b64,omitempty"`
-	LastSignalMsgType     int                     `json:"last_signal_msg_type,omitempty"`
-	LastDeliveryStatus    string                  `json:"last_delivery_status,omitempty"`
-	LastMessageAtMs       int64                   `json:"last_message_at_ms"`
-	UnreadCount           int                     `json:"unread_count"`
-	IsArchived            bool                    `json:"is_archived"`
-	IsMuted               bool                    `json:"is_muted"`
-	IsOnline              bool                    `json:"is_online"`
-	LastSeenMs            int64                   `json:"last_seen_ms"`
-	LastSeenLabel         string                  `json:"last_seen_label"`
-	Permissions           ChatPeerCapabilitiesDTO `json:"permissions"`
-	CreatedAtMs           int64                   `json:"created_at_ms"`
-	UpdatedAtMs           int64                   `json:"updated_at_ms"`
+	ConversationID      string                  `json:"conversation_id"`
+	PeerUserID          string                  `json:"peer_user_id"`
+	PeerFullName        string                  `json:"peer_full_name"`
+	PeerUsername        string                  `json:"peer_username"`
+	PeerAvatarURL       string                  `json:"peer_avatar_url,omitempty"`
+	LastMessageID       string                  `json:"last_message_id,omitempty"`
+	LastMessageType     string                  `json:"last_message_type,omitempty"`
+	LastSenderID        string                  `json:"last_sender_id,omitempty"`
+	LastCiphertextB64   string                  `json:"last_ciphertext_b64,omitempty"`
+	LastSenderCipherB64 string                  `json:"last_sender_ciphertext_b64,omitempty"`
+	LastSignalMsgType   int                     `json:"last_signal_msg_type,omitempty"`
+	LastDeliveryStatus  string                  `json:"last_delivery_status,omitempty"`
+	LastMessageAtMs     int64                   `json:"last_message_at_ms"`
+	UnreadCount         int                     `json:"unread_count"`
+	IsArchived          bool                    `json:"is_archived"`
+	IsMuted             bool                    `json:"is_muted"`
+	IsOnline            bool                    `json:"is_online"`
+	LastSeenMs          int64                   `json:"last_seen_ms"`
+	LastSeenLabel       string                  `json:"last_seen_label"`
+	Permissions         ChatPeerCapabilitiesDTO `json:"permissions"`
+	CreatedAtMs         int64                   `json:"created_at_ms"`
+	UpdatedAtMs         int64                   `json:"updated_at_ms"`
 }
 
 type MessageDTO struct {
-	MessageID            string `json:"message_id"`
-	ConversationID       string `json:"conversation_id"`
-	SenderUserID         string `json:"sender_user_id"`
-	RecipientUserID      string `json:"recipient_user_id"`
-	ClientOpID           string `json:"client_op_id"`
-	MessageType          string `json:"message_type"` // text | sticker | gif | clip | voice | voice_once | star_gift
-	CompressionCodec     string `json:"compression_codec"`
-	EncryptionScheme     string `json:"encryption_scheme"`
-	CiphertextB64        string `json:"ciphertext_b64"`
-	SenderCiphertextB64  string `json:"sender_ciphertext_b64"`
-	SignalMsgType        int    `json:"signal_msg_type"`
-	MediaURL             string `json:"media_url,omitempty"`
-	MediaID              string `json:"media_id,omitempty"`
-	VoiceDurationMs      int64  `json:"voice_duration_ms,omitempty"`
-	ViewOnceTTLSec       int    `json:"view_once_ttl_sec,omitempty"`
-	ViewOnceOpenedAtMs   int64  `json:"view_once_opened_at_ms,omitempty"`
-	ViewOnceExpiresAtMs  int64  `json:"view_once_expires_at_ms,omitempty"`
-	ForwardedFromUserID  string `json:"forwarded_from_user_id,omitempty"`
-	StarGiftAmount       int64  `json:"star_gift_amount,omitempty"`
-	StarGiftTxID         string `json:"star_gift_tx_id,omitempty"`
-	StarGiftVerified     bool   `json:"star_gift_verified,omitempty"`
-	DeliveryStatus       string `json:"delivery_status"` // sent | delivered | seen
-	EditedAtMs           int64  `json:"edited_at_ms,omitempty"`
-	CreatedAtMs          int64  `json:"created_at_ms"`
+	MessageID           string `json:"message_id"`
+	ConversationID      string `json:"conversation_id"`
+	SenderUserID        string `json:"sender_user_id"`
+	RecipientUserID     string `json:"recipient_user_id"`
+	ClientOpID          string `json:"client_op_id"`
+	MessageType         string `json:"message_type"` // text | sticker | gif | clip | voice | voice_once | star_gift
+	CompressionCodec    string `json:"compression_codec"`
+	EncryptionScheme    string `json:"encryption_scheme"`
+	CiphertextB64       string `json:"ciphertext_b64"`
+	SenderCiphertextB64 string `json:"sender_ciphertext_b64"`
+	SignalMsgType       int    `json:"signal_msg_type"`
+	MediaURL            string `json:"media_url,omitempty"`
+	MediaID             string `json:"media_id,omitempty"`
+	VoiceDurationMs     int64  `json:"voice_duration_ms,omitempty"`
+	ViewOnceTTLSec      int    `json:"view_once_ttl_sec,omitempty"`
+	ViewOnceOpenedAtMs  int64  `json:"view_once_opened_at_ms,omitempty"`
+	ViewOnceExpiresAtMs int64  `json:"view_once_expires_at_ms,omitempty"`
+	ForwardedFromUserID string `json:"forwarded_from_user_id,omitempty"`
+	StarGiftAmount      int64  `json:"star_gift_amount,omitempty"`
+	StarGiftTxID        string `json:"star_gift_tx_id,omitempty"`
+	StarGiftVerified    bool   `json:"star_gift_verified,omitempty"`
+	DeliveryStatus      string `json:"delivery_status"` // sent | delivered | seen
+	EditedAtMs          int64  `json:"edited_at_ms,omitempty"`
+	CreatedAtMs         int64  `json:"created_at_ms"`
 }
 
 type SendMessagePayload struct {

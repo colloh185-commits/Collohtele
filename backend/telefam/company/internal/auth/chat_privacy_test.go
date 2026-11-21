@@ -29,10 +29,10 @@ func TestChatPrivacyThemesAndBubbleColorsEndpoints(t *testing.T) {
 		t.Fatalf("GET /v1/chat/privacy failed: %d %s", w.Code, w.Body.String())
 	}
 	var initial struct {
-		Success      bool                     `json:"success"`
-		ChatPrivacy  ChatPrivacySettingsDTO   `json:"chat_privacy"`
+		Success      bool                      `json:"success"`
+		ChatPrivacy  ChatPrivacySettingsDTO    `json:"chat_privacy"`
 		Themes       []ChatThemeCatalogItemDTO `json:"themes"`
-		BubbleColors []ChatBubbleColorDTO     `json:"bubble_colors"`
+		BubbleColors []ChatBubbleColorDTO      `json:"bubble_colors"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &initial); err != nil {
 		t.Fatalf("unmarshal initial failed: %v", err)

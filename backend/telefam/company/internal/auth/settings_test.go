@@ -44,8 +44,8 @@ func authReq(method, path string, body any, token, deviceFP string) *http.Reques
 
 func TestSettingsPrivacyMutesTicketsAndLogoutAllDevices(t *testing.T) {
 	h, mux, tokens := newTestMuxAndTokens()
-	dfp1 := "device-fp-1"
-	dfp2 := "device-fp-2"
+	dfp1 := "device-fp-one-001"
+	dfp2 := "device-fp-two-002"
 	pair1, _, err := tokens.IssueInitialPair("u_caller", "caller@telefam.company", dfp1)
 	if err != nil {
 		t.Fatalf("IssueInitialPair 1 failed: %v", err)
@@ -54,7 +54,7 @@ func TestSettingsPrivacyMutesTicketsAndLogoutAllDevices(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IssueInitialPair 2 failed: %v", err)
 	}
-	targetPair, _, err := tokens.IssueInitialPair("u_target", "target@telefam.company", "device-target")
+	targetPair, _, err := tokens.IssueInitialPair("u_target", "target@telefam.company", "device-target-001")
 	if err != nil {
 		t.Fatalf("IssueInitialPair target failed: %v", err)
 	}
@@ -65,11 +65,11 @@ func TestSettingsPrivacyMutesTicketsAndLogoutAllDevices(t *testing.T) {
 	h.mu.Unlock()
 
 	_, _ = h.posts.CreatePost("u_target", posts.CreatePostRequest{
-		ClientOpID: "op-target-1",
-		Mode:       posts.ModeText,
-		Privacy:    posts.PrivacyPublic,
+		ClientOpID:  "op-target-1",
+		Mode:        posts.ModeText,
+		Privacy:     posts.PrivacyPublic,
 		TextContent: "Sports update tonight",
-		Hashtags:   []string{"sports"},
+		Hashtags:    []string{"sports"},
 	})
 
 	// 1. Target turns on Private account & Only-Me following visibility
@@ -82,7 +82,7 @@ func TestSettingsPrivacyMutesTicketsAndLogoutAllDevices(t *testing.T) {
 		ShowActivityStatus:  false,
 		LikesVisibility:     "only_me",
 		FollowingVisibility: "only_me",
-	}, targetPair.AccessToken, "device-target"))
+	}, targetPair.AccessToken, "device-target-001"))
 	if w.Code != http.StatusOK {
 		t.Fatalf("privacy update failed: %d %s", w.Code, w.Body.String())
 	}

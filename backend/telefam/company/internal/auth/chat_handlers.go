@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -36,7 +37,7 @@ func (h *Handler) ensureChatService() *chat.Service {
 						Location:  prof.Location,
 					}, true
 				}
-				du, _, ok := h.contacts.GetUserForViewer("", userID)
+				du, ok := h.contacts.GetUserByID(userID)
 				if ok {
 					avatar := ""
 					if du.AvatarMediaID != "" {
@@ -181,6 +182,37 @@ func (h *Handler) handleListChatConversations(w http.ResponseWriter, r *http.Req
 		"conversations":   items,
 		"server_epoch_ms": time.Now().UnixMilli(),
 	})
+}
+
+// handleConversationPost dispatches the two POST routes below the conversations prefix.
+// They are handled together because Go 1.22's ServeMux considers
+// /conversations/{id}/messages and /conversations/direct/{userId} ambiguous for the
+// literal path /conversations/direct/messages.
+func (h *Handler) handleConversationPost(w http.ResponseWriter, r *http.Request) {
+	const prefix = "/v1/chat/conversations/"
+	rest := strings.TrimPrefix(r.URL.Path, prefix)
+	if strings.HasPrefix(rest, "direct/") {
+		userID, err := url.PathUnescape(strings.TrimPrefix(rest, "direct/"))
+		if err != nil || userID == "" || strings.Contains(userID, "/") {
+			http.NotFound(w, r)
+			return
+		}
+		r.SetPathValue("userId", userID)
+		h.handleOpenDirectConversation(w, r)
+		return
+	}
+	parts := strings.Split(strings.Trim(rest, "/"), "/")
+	if len(parts) != 2 || parts[1] != "messages" {
+		http.NotFound(w, r)
+		return
+	}
+	conversationID, err := url.PathUnescape(parts[0])
+	if err != nil || conversationID == "" {
+		http.NotFound(w, r)
+		return
+	}
+	r.SetPathValue("id", conversationID)
+	h.handleSendChatMessage(w, r)
 }
 
 func (h *Handler) handleOpenDirectConversation(w http.ResponseWriter, r *http.Request) {

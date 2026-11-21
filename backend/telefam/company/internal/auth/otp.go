@@ -21,12 +21,12 @@ var (
 )
 
 type otpChallenge struct {
-	Email            string
-	AccountHash      string
-	CodeHash         []byte
-	MagicTokenHash   []byte
-	DeviceFP         string
-	ExpiresAt        time.Time
+	Email             string
+	AccountHash       string
+	CodeHash          []byte
+	MagicTokenHash    []byte
+	DeviceFP          string
+	ExpiresAt         time.Time
 	RemainingAttempts int
 }
 

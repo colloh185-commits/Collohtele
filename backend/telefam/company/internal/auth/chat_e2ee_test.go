@@ -21,7 +21,7 @@ import (
 func TestE2eeChatLifecycleViewOnceFlagsAndGifly(t *testing.T) {
 	h, mux, tokens := newTestMuxAndTokens()
 	dfp1 := "device-chat-alice"
-	dfp2 := "device-chat-bob"
+	dfp2 := "device-chat-bobby"
 	alicePair, _, _ := tokens.IssueInitialPair("u_alice", "alice@telefam.company", dfp1)
 	bobPair, _, _ := tokens.IssueInitialPair("u_bob", "bob@telefam.company", dfp2)
 

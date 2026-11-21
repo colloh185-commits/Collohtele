@@ -31,7 +31,7 @@ type StarSenderSummaryDTO struct {
 
 type StarTransactionDTO struct {
 	TxID           string `json:"tx_id"`
-	TxType         string `json:"tx_type"` // purchase | gift
+	TxType         string `json:"tx_type"`   // purchase | gift
 	Direction      string `json:"direction"` // received | sent | purchased
 	SenderUserID   string `json:"sender_user_id,omitempty"`
 	SenderName     string `json:"sender_name,omitempty"`
@@ -68,12 +68,12 @@ type StarPaymentIntentDTO struct {
 }
 
 type StarRateLimitStatusDTO struct {
-	HourlySentStars       int64 `json:"hourly_sent_stars"`
-	HourlySentLimit       int64 `json:"hourly_sent_limit"`
-	DailySentStars        int64 `json:"daily_sent_stars"`
-	DailySentLimit        int64 `json:"daily_sent_limit"`
-	DailyPurchasedStars   int64 `json:"daily_purchased_stars"`
-	DailyPurchasedLimit   int64 `json:"daily_purchased_limit"`
+	HourlySentStars     int64 `json:"hourly_sent_stars"`
+	HourlySentLimit     int64 `json:"hourly_sent_limit"`
+	DailySentStars      int64 `json:"daily_sent_stars"`
+	DailySentLimit      int64 `json:"daily_sent_limit"`
+	DailyPurchasedStars int64 `json:"daily_purchased_stars"`
+	DailyPurchasedLimit int64 `json:"daily_purchased_limit"`
 }
 
 type StarSummaryResponse struct {
@@ -130,14 +130,14 @@ type SendStarGiftRequest struct {
 }
 
 type SendStarGiftResponse struct {
-	Success              bool               `json:"success"`
-	Replayed             bool               `json:"replayed"`
-	InsufficientBalance  bool               `json:"insufficient_balance,omitempty"`
-	RequiredStarAmount   int64              `json:"required_star_amount,omitempty"`
-	AvailableBalance     int64              `json:"available_balance"`
-	Wallet               StarWalletDTO      `json:"wallet"`
-	Transaction          *StarTransactionDTO `json:"transaction,omitempty"`
-	Message              any                `json:"message,omitempty"`
-	Conversation         any                `json:"conversation,omitempty"`
-	ServerEpochMs        int64              `json:"server_epoch_ms"`
+	Success             bool                `json:"success"`
+	Replayed            bool                `json:"replayed"`
+	InsufficientBalance bool                `json:"insufficient_balance,omitempty"`
+	RequiredStarAmount  int64               `json:"required_star_amount,omitempty"`
+	AvailableBalance    int64               `json:"available_balance"`
+	Wallet              StarWalletDTO       `json:"wallet"`
+	Transaction         *StarTransactionDTO `json:"transaction,omitempty"`
+	Message             any                 `json:"message,omitempty"`
+	Conversation        any                 `json:"conversation,omitempty"`
+	ServerEpochMs       int64               `json:"server_epoch_ms"`
 }

@@ -109,15 +109,15 @@ type storedVoiceMedia struct {
 }
 
 type Service struct {
-	hooks         HostHooks
-	Gifly         *GiflyClient
-	mu            sync.Mutex
-	keyBundles    map[string]*storedKeyBundle
-	conversations map[string]*storedConversation
-	pairIndex     map[string]string // sorted "a|b" -> conversation_id
-	messages      map[string][]*storedMessage
-	messageIndex  map[string]*storedMessage
-	clientOpIndex map[string]*storedMessage
+	hooks          HostHooks
+	Gifly          *GiflyClient
+	mu             sync.Mutex
+	keyBundles     map[string]*storedKeyBundle
+	conversations  map[string]*storedConversation
+	pairIndex      map[string]string // sorted "a|b" -> conversation_id
+	messages       map[string][]*storedMessage
+	messageIndex   map[string]*storedMessage
+	clientOpIndex  map[string]*storedMessage
 	voiceMedia     map[string]*storedVoiceMedia
 	flags          map[string][]SecurityFlagDTO
 	wsClients      map[string]map[*wsClient]struct{}

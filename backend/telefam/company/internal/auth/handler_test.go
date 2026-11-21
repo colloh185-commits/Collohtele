@@ -18,6 +18,7 @@ import (
 	"telefam.company/backend/internal/feeds"
 	"telefam.company/backend/internal/fingerprint"
 	"telefam.company/backend/internal/mailer"
+	"telefam.company/backend/internal/posts"
 	"telefam.company/backend/internal/ratelimit"
 )
 
@@ -130,7 +131,7 @@ func TestContactsRelationshipsPaginationAndRateLimit(t *testing.T) {
 
 	deviceA := "android_device_a_123456"
 	deviceFP, _ := fp.ExtractDeviceFingerprint(&http.Request{Header: http.Header{"X-Telefam-Device-FP": []string{deviceA}}})
-	pairA, _, _ := tokens.IssueInitialPair("user_a", "a@telefam.company", deviceFP)
+	pairA, _, _ := tokens.IssueInitialPair("user_a", "a@telefam.company", deviceA)
 
 	contactsSvc.RegisterOrUpdateUser(contacts.DirectoryUser{UserID: "user_a", FullName: "Alpha User", Username: "alpha", Country: "Kenya", CountryISO: "KE"}, deviceFP)
 	contactsSvc.RegisterOrUpdateUser(contacts.DirectoryUser{UserID: "user_b", FullName: "Amara Okafor", Username: "amara_reads", Country: "Nigeria", CountryISO: "NG"}, "dev_b")
@@ -186,8 +187,7 @@ func TestPostMediaSongsHashtagsAndContentID(t *testing.T) {
 
 	h.SetPostsService(posts.NewServiceWithSongEndpoints(itunesMock.URL, itunesMock.URL))
 	deviceA := "android_device_post_123"
-	deviceFP, _ := fp.ExtractDeviceFingerprint(&http.Request{Header: http.Header{"X-Telefam-Device-FP": []string{deviceA}}})
-	pairA, _, _ := tokens.IssueInitialPair("author_1", "author@telefam.company", deviceFP)
+	pairA, _, _ := tokens.IssueInitialPair("author_1", "author@telefam.company", deviceA)
 
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
@@ -258,9 +258,9 @@ func TestFeedsDynamicRecommendationsRangeStreamingRepostAndOwnerEditDelete(t *te
 	contactsSvc.RegisterOrUpdateUser(contacts.DirectoryUser{UserID: "creator_cook", Username: "chef_amara", FullName: "Amara"}, fpA)
 	contactsSvc.RegisterOrUpdateUser(contacts.DirectoryUser{UserID: "creator_night", Username: "rohan.verma", FullName: "Rohan"}, fpB)
 
-	pairViewer, _, _ := tokens.IssueInitialPair("viewer_1", "viewer@telefam.company", fpA)
-	pairCook, _, _ := tokens.IssueInitialPair("creator_cook", "cook@telefam.company", fpA)
-	pairNight, _, _ := tokens.IssueInitialPair("creator_night", "night@telefam.company", fpB)
+	pairViewer, _, _ := tokens.IssueInitialPair("viewer_1", "viewer@telefam.company", deviceA)
+	pairCook, _, _ := tokens.IssueInitialPair("creator_cook", "cook@telefam.company", deviceA)
+	pairNight, _, _ := tokens.IssueInitialPair("creator_night", "night@telefam.company", deviceB)
 
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
@@ -413,8 +413,8 @@ func TestUserProfileViewsConnectionsBlockAndReport(t *testing.T) {
 	contactsSvc.SetFollowing("alex_p", "viewer_p", fpB, true)
 	contactsSvc.SetFollowing("friend_p", "alex_p", fpB, true)
 
-	pairViewer, _, _ := tokens.IssueInitialPair("viewer_p", "viewerp@telefam.company", fpA)
-	pairAlex, _, _ := tokens.IssueInitialPair("alex_p", "alexp@telefam.company", fpB)
+	pairViewer, _, _ := tokens.IssueInitialPair("viewer_p", "viewerp@telefam.company", deviceA)
+	pairAlex, _, _ := tokens.IssueInitialPair("alex_p", "alexp@telefam.company", deviceB)
 
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
@@ -549,9 +549,9 @@ func TestProfileBackgroundsEditingUsernameCooldownAndPostPrivacy(t *testing.T) {
 	fpFriend, _ := fp.ExtractDeviceFingerprint(&http.Request{Header: http.Header{"X-Telefam-Device-FP": []string{devFriend}}})
 	fpStranger, _ := fp.ExtractDeviceFingerprint(&http.Request{Header: http.Header{"X-Telefam-Device-FP": []string{devStranger}}})
 
-	pairOwner, _, _ := tokens.IssueInitialPair("owner_u1", "felistar@telefam.company", fpOwner)
-	pairFriend, _, _ := tokens.IssueInitialPair("friend_u2", "friend@telefam.company", fpFriend)
-	pairStranger, _, _ := tokens.IssueInitialPair("stranger_u3", "stranger@telefam.company", fpStranger)
+	pairOwner, _, _ := tokens.IssueInitialPair("owner_u1", "felistar@telefam.company", devOwner)
+	pairFriend, _, _ := tokens.IssueInitialPair("friend_u2", "friend@telefam.company", devFriend)
+	pairStranger, _, _ := tokens.IssueInitialPair("stranger_u3", "stranger@telefam.company", devStranger)
 
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
@@ -739,7 +739,3 @@ func TestProfileBackgroundsEditingUsernameCooldownAndPostPrivacy(t *testing.T) {
 		t.Fatalf("expected private post excluded from friend's For You feed, got %+v", friendFeedAfter.Items)
 	}
 }
-
-
-
-

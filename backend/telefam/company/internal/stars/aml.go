@@ -29,14 +29,14 @@ type AmlDecision struct {
 }
 
 type AmlLimiter struct {
-	mu           sync.Mutex
-	sendsByUser  map[string][]starEventRecord
-	sendsByDev   map[string][]starEventRecord
-	sendsByIP    map[string][]starEventRecord
-	sendsByPair  map[string][]starEventRecord
-	buysByUser   map[string][]starEventRecord
-	buysByDev    map[string][]starEventRecord
-	nowFunc      func() time.Time
+	mu          sync.Mutex
+	sendsByUser map[string][]starEventRecord
+	sendsByDev  map[string][]starEventRecord
+	sendsByIP   map[string][]starEventRecord
+	sendsByPair map[string][]starEventRecord
+	buysByUser  map[string][]starEventRecord
+	buysByDev   map[string][]starEventRecord
+	nowFunc     func() time.Time
 }
 
 func NewAmlLimiter() *AmlLimiter {

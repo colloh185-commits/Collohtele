@@ -314,10 +314,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /v1/chat/e2ee/keys", h.handleUploadE2eeKeys)
 	mux.HandleFunc("GET /v1/chat/e2ee/keys/{userId}", h.handleFetchPeerE2eeKeys)
 	mux.HandleFunc("GET /v1/chat/conversations", h.handleListChatConversations)
-	mux.HandleFunc("POST /v1/chat/conversations/direct/{userId}", h.handleOpenDirectConversation)
+	mux.HandleFunc("POST /v1/chat/conversations/", h.handleConversationPost)
 	mux.HandleFunc("POST /v1/chat/conversations/batch-action", h.handleBatchConversationAction)
 	mux.HandleFunc("GET /v1/chat/conversations/{id}/messages", h.handleListChatMessages)
-	mux.HandleFunc("POST /v1/chat/conversations/{id}/messages", h.handleSendChatMessage)
 	mux.HandleFunc("PATCH /v1/chat/messages/{id}", h.handleEditChatMessage)
 	mux.HandleFunc("DELETE /v1/chat/messages/{id}", h.handleDeleteChatMessage)
 	mux.HandleFunc("POST /v1/chat/messages/{id}/receipt", h.handleChatMessageReceipt)
@@ -1350,34 +1349,34 @@ func (h *Handler) handleGetUserProfile(w http.ResponseWriter, r *http.Request) {
 	})
 
 	resp := UserProfileResponse{
-		Success:              true,
-		UserID:               u.UserID,
-		FullName:             u.FullName,
-		Username:             u.Username,
-		AvatarURL:            avatarURL,
-		Bio:                  sp.Bio,
-		Location:             u.Country,
-		CountryISO:           u.CountryISO,
-		BackgroundURLs:       bgURLs,
-		Backgrounds:          bgItems,
-		FollowingCount:       followingCount,
-		FollowersCount:       followersCount,
-		LikesCount:           likesCount,
-		IsFollowing:          isFollowing,
-		FollowsYou:           followsYou,
-		IsOwner:              isOwner,
-		IsBlocked:            isBlocked,
-		IsMuted:              isMuted,
-		IsPrivateAccount:     targetPrivacy.IsPrivateAccount,
-		WhoCanComment:        targetPrivacy.WhoCanComment,
-		WhoCanMention:        targetPrivacy.WhoCanMention,
-		LikesVisibility:      targetPrivacy.LikesVisibility,
-		FollowingVisibility:  targetPrivacy.FollowingVisibility,
-		ShowActivityStatus:   targetPrivacy.ShowActivityStatus,
-		RiskScore:            h.contacts.GetRiskScore(targetID),
-		RelationshipState:    string(contacts.ComputeRelationship(isFollowing, followsYou)),
-		Videos:               videoItems,
-		Posts:                feedItems,
+		Success:             true,
+		UserID:              u.UserID,
+		FullName:            u.FullName,
+		Username:            u.Username,
+		AvatarURL:           avatarURL,
+		Bio:                 sp.Bio,
+		Location:            u.Country,
+		CountryISO:          u.CountryISO,
+		BackgroundURLs:      bgURLs,
+		Backgrounds:         bgItems,
+		FollowingCount:      followingCount,
+		FollowersCount:      followersCount,
+		LikesCount:          likesCount,
+		IsFollowing:         isFollowing,
+		FollowsYou:          followsYou,
+		IsOwner:             isOwner,
+		IsBlocked:           isBlocked,
+		IsMuted:             isMuted,
+		IsPrivateAccount:    targetPrivacy.IsPrivateAccount,
+		WhoCanComment:       targetPrivacy.WhoCanComment,
+		WhoCanMention:       targetPrivacy.WhoCanMention,
+		LikesVisibility:     targetPrivacy.LikesVisibility,
+		FollowingVisibility: targetPrivacy.FollowingVisibility,
+		ShowActivityStatus:  targetPrivacy.ShowActivityStatus,
+		RiskScore:           h.contacts.GetRiskScore(targetID),
+		RelationshipState:   string(contacts.ComputeRelationship(isFollowing, followsYou)),
+		Videos:              videoItems,
+		Posts:               feedItems,
 	}
 	if isOwner {
 		resp.Gender = sp.Gender
@@ -1425,11 +1424,11 @@ func (h *Handler) writeUserConnectionsResponse(w http.ResponseWriter, r *http.Re
 		h.mu.Unlock()
 		_, _, isFollowing, followsYou := h.contacts.GetUserRelationshipForViewer(claims.UserID, targetID)
 		if targetPrivacy.IsPrivateAccount && !isFollowing {
-			writeJSON(w, http.StatusOK, contacts.ConnectionsPageResponse{Success: true, Page: 1, HasMore: false})
+			writeJSON(w, http.StatusOK, contacts.ContactsPageResponse{Success: true, Page: 1, HasMore: false})
 			return
 		}
 		if !isFollowers && (targetPrivacy.FollowingVisibility == "only_me" || (targetPrivacy.FollowingVisibility == "friends" && !(isFollowing && followsYou))) {
-			writeJSON(w, http.StatusOK, contacts.ConnectionsPageResponse{Success: true, Page: 1, HasMore: false})
+			writeJSON(w, http.StatusOK, contacts.ContactsPageResponse{Success: true, Page: 1, HasMore: false})
 			return
 		}
 	}
